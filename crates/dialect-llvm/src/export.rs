@@ -1459,7 +1459,11 @@ impl<'a> ModuleExportState<'a> {
                     write!(output, ", ptr ").unwrap();
                 }
                 self.export_value(ptr, value_names, output)?;
-                writeln!(output).unwrap();
+                // Emit `align N` so libNVVM / LLVM's load-store vectorizer
+                // can fuse aggregate loads (`[N x T]`, `<N x T>`) into a
+                // single `ld.global.v4.f32` instead of N scalar loads.
+                let align = self.natural_alignment(ty);
+                writeln!(output, ", align {align}").unwrap();
             }
             id if id == ops::StoreOp::get_opid_static() => {
                 let val = op_ref.get_operand(0);
@@ -1482,7 +1486,8 @@ impl<'a> ModuleExportState<'a> {
                     write!(output, ", ptr ").unwrap();
                 }
                 self.export_value(ptr, value_names, output)?;
-                writeln!(output).unwrap();
+                let align = self.natural_alignment(val.get_type(self.ctx));
+                writeln!(output, ", align {align}").unwrap();
             }
             // --- Atomic Ops ---
             id if id == ops::AtomicLoadOp::get_opid_static() => {
@@ -2290,17 +2295,58 @@ impl<'a> ModuleExportState<'a> {
     }
 
     /// Compute natural alignment (in bytes) for a type.
-    /// Used for atomic load/store which require explicit alignment in LLVM IR.
+    ///
+    /// Used by both atomic load/store and plain load/store exporters so the
+    /// emitted LLVM IR carries `align N`. Without this, LLVM's load/store
+    /// vectorizer assumes 1-byte alignment for aggregate accesses and won't
+    /// fuse them into vector instructions (e.g., libNVVM never emits
+    /// `st.global.v4.f32` from a 4 × scalar-store pattern lacking align).
+    ///
+    /// Rules:
+    /// * Scalars: width-based (`ceil(bits / 8)` for ints; 2 for f16; 4 for
+    ///   f32; 8 for f64).
+    /// * Arrays `[N x T]` and vectors `<N x T>`: power-of-2 rounded `N *
+    ///   align_of(T)`, capped at 128 bytes. This matches LLVM's preferred
+    ///   alignment for vector-sized aggregates and lets the load/store
+    ///   vectorizer fuse 4 × scalar stores of a 16-byte aligned `[f32; 4]`
+    ///   into a single `st.global.v4.f32`.
+    /// * Structs: max of field alignments, computed recursively.
+    /// * Pointers, void, unknown: conservative default of 8.
     fn natural_alignment(&self, ty: Ptr<TypeObj>) -> u32 {
         let ty_ref = ty.deref(self.ctx);
         if let Some(int_ty) = ty_ref.downcast_ref::<IntegerType>() {
-            let width = int_ty.width();
-            // Alignment = ceil(width / 8), minimum 1
-            std::cmp::max(1, width / 8)
+            // ceil(width / 8), minimum 1.
+            std::cmp::max(1, int_ty.width() / 8)
         } else if ty_ref.is::<pliron::builtin::types::FP32Type>() {
             4
         } else if ty_ref.is::<pliron::builtin::types::FP64Type>() {
             8
+        } else if ty_ref.is::<HalfType>() {
+            2
+        } else if let Some(array_ty) = ty_ref.downcast_ref::<crate::types::ArrayType>() {
+            let elem_align = self.natural_alignment(array_ty.elem_type());
+            let total = elem_align.saturating_mul(array_ty.size() as u32);
+            // Round down to nearest power of 2, clamped to 128 bytes.
+            let mut a: u32 = 1;
+            while a.saturating_mul(2) <= total && a < 128 {
+                a *= 2;
+            }
+            a
+        } else if let Some(vec_ty) = ty_ref.downcast_ref::<crate::types::VectorType>() {
+            let elem_align = self.natural_alignment(vec_ty.elem_type());
+            let total = elem_align.saturating_mul(vec_ty.size() as u32);
+            let mut a: u32 = 1;
+            while a.saturating_mul(2) <= total && a < 128 {
+                a *= 2;
+            }
+            a
+        } else if let Some(struct_ty) = ty_ref.downcast_ref::<StructType>() {
+            // Max alignment across fields (1 if empty).
+            struct_ty
+                .fields()
+                .map(|f| self.natural_alignment(f))
+                .max()
+                .unwrap_or(1)
         } else {
             // Default: 8 bytes (conservative for pointers, etc.)
             8
