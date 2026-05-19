@@ -178,8 +178,52 @@ pub fn codegen_run(
     }
     println!();
 
+    // Pass 1: produce .stable.embed.o (via the rustc-codegen-cuda STABLE
+    // COPY patch). On aarch64-linux this binary's panic (`ModuleNotFound`)
+    // because of the missing `.oxart` section is the expected Pass-1
+    // outcome; we treat it as a retry trigger when embed.o files exist.
     let status = cmd.status().expect("Failed to run cargo");
-    if !status.success() {
+    let pass1_ok = status.success();
+    let mut did_retry = false;
+
+    if aarch64_two_pass_enabled() {
+        let embed_objects = discover_stable_embed_objects(&example_dir);
+        if !embed_objects.is_empty() {
+            did_retry = true;
+            let augmented = rustflags_with_embed_objects(&rustflags, &embed_objects);
+            eprintln!(
+                "[cargo-oxide] aarch64 relink pass: appending {} embed object(s) to RUSTFLAGS",
+                embed_objects.len()
+            );
+            let mut cmd2 = Command::new("cargo");
+            cmd2.args(["run", "--release"])
+                .current_dir(&example_dir)
+                .env("RUSTFLAGS", &augmented);
+            if let Some(bin) = bin {
+                cmd2.args(["--bin", bin]);
+            }
+            if let Some(features) = features {
+                cmd2.args(["--features", features]);
+            }
+            if verbose || std::env::var("CUDA_OXIDE_VERBOSE").is_ok() {
+                cmd2.env("CUDA_OXIDE_VERBOSE", "1");
+            } else {
+                cmd2.env_remove("CUDA_OXIDE_VERBOSE");
+            }
+            forward_env_var(&mut cmd2, "CUDA_OXIDE_SHOW_RUSTC_MIR");
+            forward_env_var(&mut cmd2, "CUDA_OXIDE_DUMP_MIR");
+            forward_env_var(&mut cmd2, "CUDA_OXIDE_DUMP_LLVM");
+            apply_output_mode(&mut cmd2, emit_nvvm_ir, forwarded_arch);
+            apply_ld_library_path(&mut cmd2);
+            let status2 = cmd2.status().expect("Failed to run cargo (aarch64 relink pass)");
+            if !status2.success() {
+                eprintln!("\nRelink pass failed with exit code: {:?}", status2.code());
+                std::process::exit(status2.code().unwrap_or(1));
+            }
+        }
+    }
+
+    if !pass1_ok && !did_retry {
         eprintln!("\nFailed with exit code: {:?}", status.code());
         std::process::exit(status.code().unwrap_or(1));
     }
@@ -243,10 +287,44 @@ pub fn codegen_build_example(
     println!("Building {}...", example);
     println!();
 
+    // Pass 1: as in codegen_run.
     let status = cmd.status().expect("Failed to run cargo");
     if !status.success() {
         eprintln!("\nBuild failed with exit code: {:?}", status.code());
         std::process::exit(status.code().unwrap_or(1));
+    }
+
+    if aarch64_two_pass_enabled() {
+        let embed_objects = discover_stable_embed_objects(&example_dir);
+        if !embed_objects.is_empty() {
+            let augmented = rustflags_with_embed_objects(&rustflags, &embed_objects);
+            eprintln!(
+                "[cargo-oxide] aarch64 relink pass: appending {} embed object(s) to RUSTFLAGS",
+                embed_objects.len()
+            );
+            let mut cmd2 = Command::new("cargo");
+            cmd2.args(["build", "--release"])
+                .current_dir(&example_dir)
+                .env("RUSTFLAGS", &augmented);
+            if let Some(features) = features {
+                cmd2.args(["--features", features]);
+            }
+            if verbose || std::env::var("CUDA_OXIDE_VERBOSE").is_ok() {
+                cmd2.env("CUDA_OXIDE_VERBOSE", "1");
+            } else {
+                cmd2.env_remove("CUDA_OXIDE_VERBOSE");
+            }
+            forward_env_var(&mut cmd2, "CUDA_OXIDE_SHOW_RUSTC_MIR");
+            forward_env_var(&mut cmd2, "CUDA_OXIDE_DUMP_MIR");
+            forward_env_var(&mut cmd2, "CUDA_OXIDE_DUMP_LLVM");
+            apply_output_mode(&mut cmd2, emit_nvvm_ir, arch);
+            apply_ld_library_path(&mut cmd2);
+            let status2 = cmd2.status().expect("Failed to run cargo (aarch64 relink pass)");
+            if !status2.success() {
+                eprintln!("\nRelink pass failed with exit code: {:?}", status2.code());
+                std::process::exit(status2.code().unwrap_or(1));
+            }
+        }
     }
 
     println!();
@@ -807,6 +885,81 @@ fn resolve_example_dir(ctx: &Context, example: &str) -> PathBuf {
         std::process::exit(1);
     }
     example_dir
+}
+
+
+/// Walk `example_dir/.oxide-artifacts/<bundle>/<host-triple>/` for any
+/// `*.stable.embed.o` (written by the local rustc-codegen-cuda STABLE COPY
+/// patch) and append `-Clink-arg=<path>` for each. Used by the
+/// [`aarch64_two_pass_build`] workaround for the upstream aarch64 link-
+/// propagation gap (see `packages/cloth-solver/docs/notes/cuda_oxide_upstream_issue.md`).
+fn discover_stable_embed_objects(example_dir: &Path) -> Vec<std::path::PathBuf> {
+    let artifacts_root = example_dir.join(".oxide-artifacts");
+    if !artifacts_root.is_dir() {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    let walker = walkdir::WalkDir::new(&artifacts_root).max_depth(4);
+    for entry in walker.into_iter().flatten() {
+        let path = entry.path();
+        if path.is_file() && path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(".stable.embed.o")) {
+            found.push(path.to_path_buf());
+        }
+    }
+    // Also accept a sibling stable.embed.o written next to Cargo.toml — the
+    // STABLE COPY patch in rustc-codegen-cuda writes there for top-level
+    // crates whose ptx_output_dir == current_dir.
+    for entry in std::fs::read_dir(example_dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_file() && path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(".stable.embed.o")) {
+            found.push(path);
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// Decide whether to apply the aarch64-linux two-pass build workaround.
+///
+/// Upstream gap (rustc nightly-2026-04-03): rustc auto-link silently
+/// drops `CompiledModule { object: Some(...) }` items on aarch64-linux,
+/// so the `.oxart` section never reaches the final binary and
+/// `kernels::load(&ctx)` fails at runtime with `ModuleNotFound`. Pinned
+/// in `packages/cloth-solver/docs/notes/cuda_oxide_upstream_issue.md`.
+///
+/// The workaround: after Pass 1 produces `*.stable.embed.o` files (via
+/// the STABLE COPY patch in rustc-codegen-cuda), invoke cargo a second
+/// time with `RUSTFLAGS="$rustflags -Clink-arg=<embed.o> -Clink-arg=-Wl,--no-gc-sections"`.
+/// Cargo's RUSTFLAGS fingerprint changes, the binary re-links with the
+/// new arg, and `.oxart` is preserved.
+///
+/// The override `CUDA_OXIDE_DISABLE_AARCH64_RELINK=1` opts out (for the
+/// day this becomes obsolete or a downstream fork ships the proper fix).
+fn aarch64_two_pass_enabled() -> bool {
+    if std::env::var("CUDA_OXIDE_DISABLE_AARCH64_RELINK")
+        .ok()
+        .filter(|v| !v.is_empty() && v != "0")
+        .is_some()
+    {
+        return false;
+    }
+    cfg!(target_os = "linux") && cfg!(target_arch = "aarch64")
+}
+
+/// Compose the augmented RUSTFLAGS string for the relink pass: original
+/// rustflags + one `-Clink-arg=<path>` per embed.o + `-Wl,--no-gc-sections`.
+fn rustflags_with_embed_objects(base: &str, embed_objects: &[std::path::PathBuf]) -> String {
+    let mut out = base.to_string();
+    for path in embed_objects {
+        out.push_str(" -Clink-arg=");
+        out.push_str(&path.to_string_lossy());
+    }
+    // --no-gc-sections is belt-and-suspenders: the .oxart section has
+    // SHF_GNU_RETAIN, but the explicit linker flag protects against any
+    // older binutils that don't honor SHF_GNU_RETAIN correctly.
+    out.push_str(" -Clink-arg=-Wl,--no-gc-sections");
+    out
 }
 
 /// Construct the `RUSTFLAGS` string that configures rustc to use our backend.

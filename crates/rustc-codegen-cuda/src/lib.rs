@@ -683,6 +683,9 @@ fn write_ptx_artifact_object(
         std::process::id(),
     ));
     std::fs::write(&object_path, object)?;
+    let stable_path = output_dir.join(format!("{safe_output_name}.{artifact_id}.stable.embed.o"));
+    std::fs::copy(&object_path, &stable_path)?;
+    eprintln!("[rustc_codegen_cuda] STABLE COPY -> {}", stable_path.display());
     Ok(object_path)
 }
 
