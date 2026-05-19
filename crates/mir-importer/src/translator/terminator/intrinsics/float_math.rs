@@ -97,6 +97,15 @@ pub enum RustFloatMathIntrinsic {
     CopysignF32,
     /// `core::intrinsics::copysignf64`.
     CopysignF64,
+    /// `cuda_device::math::atan2f` (LOCAL EXPERIMENT, studio-vaai).
+    ///
+    /// Rust's `f32::atan2` lives in `std` and routes through a `cmath`
+    /// extern, which `cuda-device` (no_std) can't reach. We expose a
+    /// dedicated `cuda_device::math::atan2f` stub that mir-importer
+    /// matches by FQDN and lowers to libdevice `__nv_atan2f`.
+    Atan2F32,
+    /// `cuda_device::math::atan2` (LOCAL EXPERIMENT, studio-vaai).
+    Atan2F64,
 }
 
 impl RustFloatMathIntrinsic {
@@ -154,6 +163,11 @@ impl RustFloatMathIntrinsic {
             "core::intrinsics::copysignf64" | "std::intrinsics::copysignf64" => {
                 Some(Self::CopysignF64)
             }
+            // LOCAL EXPERIMENT (studio-vaai): atan2 lives in
+            // `cuda_device::math` since std::cmath isn't reachable from
+            // no_std device code.
+            "cuda_device::math::atan2f" => Some(Self::Atan2F32),
+            "cuda_device::math::atan2" => Some(Self::Atan2F64),
             _ => None,
         }
     }
@@ -200,6 +214,8 @@ impl RustFloatMathIntrinsic {
             Self::Fabs => rust_intrinsics::CALLEE_FABS,
             Self::CopysignF32 => rust_intrinsics::CALLEE_COPYSIGN_F32,
             Self::CopysignF64 => rust_intrinsics::CALLEE_COPYSIGN_F64,
+            Self::Atan2F32 => rust_intrinsics::CALLEE_ATAN2_F32,
+            Self::Atan2F64 => rust_intrinsics::CALLEE_ATAN2_F64,
         }
     }
 }

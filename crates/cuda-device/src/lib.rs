@@ -21,6 +21,8 @@ pub mod debug;
 pub mod disjoint;
 pub mod fence;
 pub mod grid;
+// LOCAL EXPERIMENT (studio-vaai) — libdevice math wrappers (atan2*).
+pub mod math;
 pub mod shared;
 pub mod tcgen05;
 pub mod thread;

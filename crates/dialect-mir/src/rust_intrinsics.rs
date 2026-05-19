@@ -123,3 +123,12 @@ pub const CALLEE_FABS: &str = placeholder!("fabs");
 pub const CALLEE_COPYSIGN_F32: &str = placeholder!("copysignf32");
 /// Placeholder call used for `core::intrinsics::copysignf64`.
 pub const CALLEE_COPYSIGN_F64: &str = placeholder!("copysignf64");
+/// Placeholder call used for `cuda_device::math::atan2f`.
+///
+/// LOCAL EXPERIMENT (studio-vaai): `atan2` isn't a `core::intrinsics::*`
+/// path in upstream Rust (it's a libm extern in `std`), so `cuda-device`
+/// (no_std) ships its own free-function stub that mir-importer matches
+/// via FQDN and lowers to `__nv_atan2f` on the libdevice side.
+pub const CALLEE_ATAN2_F32: &str = placeholder!("atan2f32");
+/// Placeholder call used for `cuda_device::math::atan2`.
+pub const CALLEE_ATAN2_F64: &str = placeholder!("atan2f64");
