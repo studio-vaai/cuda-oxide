@@ -1,51 +1,34 @@
 // LOCAL EXPERIMENT for studio-vaai cloth-solver-cuda — DO NOT UPSTREAM.
 //
-// Vector escape-hatch intrinsics for cuda-oxide on Blackwell (sm_120).
+// Vector escape-hatch intrinsic for cuda-oxide on Blackwell (sm_120):
+// native single-instruction global vector atomic-add via
+// `red.global.add.v4.f32` (SASS `REDG.E.ADD.F32x4`, sm_9.0+).
 //
-// Two flavors:
+// Plain v4 load/store are NOT here anymore — Gap 1 (StoreOp/LoadOp omitted
+// `align N` in the LLVM IR export, defeating libNVVM's vector fuser) was
+// fixed at the export layer in this same fork. Kernels can now use plain
+// `*mut CuSimd<f32, 4>` / `*const CuSimd<f32, 4>` pointer assignments and
+// get `st.global.v4.f32` / `ld.global.v4.f32` for free.
 //
-// 1. Raw `st.global.v4.f32` / `ld.global.v4.f32` free functions — work
-//    around libNVVM scalarizing `[f32; 4]` stores/loads into 4 × LDG/STG.E.32
-//    instead of 1 × LDG/STG.E.128 at 16-byte-aligned sites.
-//
-// 2. `DeviceAtomicCuSimdF32x4` (atomic-style wrapper type matching the
-//    upstream `cuda_device::atomic::DeviceAtomicF32` API) — lowers to native
-//    `red.global.add.v4.f32`. SASS `REDG.E.ADD.F32x4`, single instruction,
-//    no CAS loop. Available on sm_9.0+ per the CUDA Programming Guide.
-//
-// Block-scope (smem) atomic-add escape hatch removed — see memory
-// `reference_cuda_oxide_codegen_gaps` Gap 2: ptxas on sm_120 emits
-// ATOMS.CAST.SPIN for both `atomicrmw fadd ... syncscope("block")` AND
-// inline-PTX `atom.shared.cta.add.f32`. The CAS-spin pattern IS the native
-// form of f32 shared atomic-add on Blackwell — codegen can't help.
+// Block-scope (smem) vector atomic-add is also not here — ptxas on sm_120
+// rewrites both `atomicrmw fadd ... syncscope("block")` and inline-PTX
+// `atom.shared.cta.add.f32` to the same `ATOMS.CAST.SPIN` CAS-loop because
+// Blackwell has no native f32 shared atomic-add. Codegen can't help.
 
 use crate::atomic::AtomicOrdering;
 use crate::cusimd::CuSimd;
 use core::cell::UnsafeCell;
 
 // =============================================================================
-// Raw FQDN-dispatched intrinsics
+// Raw FQDN-dispatched intrinsic
 //
-// Bodies are empty (NOT `unreachable!()`): cuda-oxide's collector treats
+// Empty body (NOT `unreachable!()`) on purpose: cuda-oxide's collector treats
 // `unreachable!()`-bodied functions as intrinsic placeholders and skips them,
 // but COLLAPSED-DOWN MIR of any *caller* of a diverging intrinsic also
 // becomes ≤2 basic blocks of `panic` calls and the collector skips the caller
-// too. Empty bodies keep callers visible; mir-importer rewrites every call
-// site to `InlineAsmOp` before these bodies would ever execute.
+// too. Empty body keeps callers visible; mir-importer rewrites every call
+// site to `InlineAsmOp` before this body would ever execute.
 // =============================================================================
-
-/// `st.global.v4.f32 [p], {a, b, c, d};` — `p` MUST be 16-byte aligned.
-#[inline(never)]
-pub unsafe fn st_global_v4_f32(p: *mut f32, a: f32, b: f32, c: f32, d: f32) {
-    let _ = (p, a, b, c, d);
-}
-
-/// `ld.global.v4.f32 {a, b, c, d}, [p];` — `p` MUST be 16-byte aligned.
-#[inline(never)]
-pub unsafe fn ld_global_v4_f32(p: *const f32) -> [f32; 4] {
-    let _ = p;
-    [0.0, 0.0, 0.0, 0.0]
-}
 
 /// `red.global.add.v4.f32 [p], {a, b, c, d};` — `p` MUST be 16-byte aligned.
 ///
@@ -60,14 +43,19 @@ pub unsafe fn atomic_add_global_v4_f32(p: *mut f32, a: f32, b: f32, c: f32, d: f
 // =============================================================================
 // DeviceAtomicCuSimdF32x4 — vector global atomic-add
 //
-// Mirrors `cuda_device::atomic::DeviceAtomicF32`s shape (`from_ptr` + method
+// Mirrors `cuda_device::atomic::DeviceAtomicF32`'s shape (`from_ptr` + method
 // calls) but operates on `[f32; 4]` 16-byte-aligned slots and lowers to a
 // single native `REDG.E.ADD.F32x4` SASS instruction.
 //
-// API caveat vs `DeviceAtomicF32::fetch_add`: `fetch_add` here returns `()`
-// rather than the previous `CuSimd<f32, 4>` value. The `red` PTX form (which
-// the lowering uses) does not produce per-element previous values. Use four
-// scalar `DeviceAtomicF32::fetch_add` calls if you need them.
+// `fetch_add` returns `()` rather than the previous `CuSimd<f32, 4>` value:
+// the `red` PTX form discards per-element previous values. Use four scalar
+// `DeviceAtomicF32::fetch_add` calls if you need them.
+//
+// No `load` / `store` methods — those would be misleading (plain `LDG.E.128`
+// / `STG.E.128` are NOT atomic in the C++ memory model; they're just
+// single-transaction). For plain 16-byte coalesced load/store, dereference
+// a `*mut CuSimd<f32, 4>` / `*const CuSimd<f32, 4>` directly — the Gap 1
+// fix in `dialect-llvm/src/export.rs` makes that lower correctly.
 // =============================================================================
 
 /// Device-scope vector atomic over `[f32; 4]` in global memory.

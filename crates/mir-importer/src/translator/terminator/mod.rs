@@ -2513,23 +2513,10 @@ fn try_dispatch_intrinsic(
         }
 
         // =================================================================
-        // LOCAL EXPERIMENT (studio-vaai) — vector escape hatches
+        // LOCAL EXPERIMENT (studio-vaai) — global vector atomic-add hatch
+        // (plain v4 store/load needed no escape after Gap 1 fixed in
+        //  dialect-llvm/src/export.rs)
         // =================================================================
-        "cuda_device::vec::st_global_v4_f32" => Ok(Some(intrinsics::vec::emit_st_global_v4_f32(
-            ctx, body, args, target, block_ptr, prev_op, value_map, block_map, loc,
-        )?)),
-        "cuda_device::vec::ld_global_v4_f32" => Ok(Some(intrinsics::vec::emit_ld_global_v4_f32(
-            ctx,
-            body,
-            args,
-            destination,
-            target,
-            block_ptr,
-            prev_op,
-            value_map,
-            block_map,
-            loc,
-        )?)),
         "cuda_device::vec::atomic_add_global_v4_f32" => Ok(Some(
             intrinsics::vec::emit_atomic_add_global_v4_f32(
                 ctx, body, args, target, block_ptr, prev_op, value_map, block_map, loc,

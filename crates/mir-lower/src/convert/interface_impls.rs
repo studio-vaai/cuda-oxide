@@ -65,8 +65,6 @@ use dialect_nvvm::ops::{
     Tcgen05LoadWaitOp, Tcgen05MmaF16Cg2Op, Tcgen05MmaF16Op, Tcgen05MmaWsBf16Op, Tcgen05MmaWsF16Op,
     Tcgen05MmaWsTf32Op, Tcgen05RelinquishAllocPermitCg2Op, Tcgen05RelinquishAllocPermitOp,
     AtomicAddGlobalV4F32Op,
-    LdGlobalV4F32Op,
-    StGlobalV4F32Op,
     Tcgen05StoreWaitOp, ThreadfenceBlockOp, ThreadfenceOp, ThreadfenceSystemOp, TrapOp,
     VoteSyncAllOp, VoteSyncAnyOp, VoteSyncBallotOp, VprintfOp, WgmmaCommitGroupSyncAlignedOp,
     WgmmaFenceSyncAlignedOp, WgmmaMakeSmemDescOp, WgmmaMmaM64N64K16F32Bf16Op,
@@ -2936,42 +2934,6 @@ impl MirToLlvmConversion for ClcQueryGetFirstCtaidZOp {
             self.get_operation(),
             operands_info,
             "z",
-        )
-    }
-}
-
-// LOCAL EXPERIMENT (studio-vaai) — vector-store escape hatch
-#[op_interface_impl]
-impl MirToLlvmConversion for StGlobalV4F32Op {
-    fn convert(
-        &self,
-        ctx: &mut Context,
-        rewriter: &mut DialectConversionRewriter,
-        operands_info: &OperandsInfo,
-    ) -> Result<()> {
-        super::intrinsics::vec::convert_st_global_v4_f32(
-            ctx,
-            rewriter,
-            self.get_operation(),
-            operands_info,
-        )
-    }
-}
-
-// LOCAL EXPERIMENT (studio-vaai) — vector-load escape hatch
-#[op_interface_impl]
-impl MirToLlvmConversion for LdGlobalV4F32Op {
-    fn convert(
-        &self,
-        ctx: &mut Context,
-        rewriter: &mut DialectConversionRewriter,
-        operands_info: &OperandsInfo,
-    ) -> Result<()> {
-        super::intrinsics::vec::convert_ld_global_v4_f32(
-            ctx,
-            rewriter,
-            self.get_operation(),
-            operands_info,
         )
     }
 }
