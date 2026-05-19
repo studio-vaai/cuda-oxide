@@ -105,6 +105,8 @@ mod stmatrix;
 mod tcgen05;
 mod thread;
 mod tma;
+// LOCAL EXPERIMENT (studio-vaai) — vector-store escape hatch
+mod vec;
 mod warp;
 mod wgmma;
 
@@ -121,6 +123,7 @@ pub use stmatrix::*;
 pub use tcgen05::*;
 pub use thread::*;
 pub use tma::*;
+pub use vec::*;
 pub use warp::*;
 pub use wgmma::*;
 
@@ -141,4 +144,5 @@ pub fn register(ctx: &mut Context) {
     tcgen05::register(ctx);
     stmatrix::register(ctx);
     debug::register(ctx);
+    vec::register(ctx);
 }

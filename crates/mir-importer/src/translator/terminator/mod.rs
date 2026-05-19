@@ -2513,6 +2513,30 @@ fn try_dispatch_intrinsic(
         }
 
         // =================================================================
+        // LOCAL EXPERIMENT (studio-vaai) — vector escape hatches
+        // =================================================================
+        "cuda_device::vec::st_global_v4_f32" => Ok(Some(intrinsics::vec::emit_st_global_v4_f32(
+            ctx, body, args, target, block_ptr, prev_op, value_map, block_map, loc,
+        )?)),
+        "cuda_device::vec::ld_global_v4_f32" => Ok(Some(intrinsics::vec::emit_ld_global_v4_f32(
+            ctx,
+            body,
+            args,
+            destination,
+            target,
+            block_ptr,
+            prev_op,
+            value_map,
+            block_map,
+            loc,
+        )?)),
+        "cuda_device::vec::atomic_add_global_v4_f32" => Ok(Some(
+            intrinsics::vec::emit_atomic_add_global_v4_f32(
+                ctx, body, args, target, block_ptr, prev_op, value_map, block_map, loc,
+            )?,
+        )),
+
+        // =================================================================
         // Tcgen05 (from intrinsics::tcgen05)
         // =================================================================
         "cuda_device::tcgen05::tcgen05_alloc" => Ok(Some(intrinsics::tcgen05::emit_tcgen05_alloc(

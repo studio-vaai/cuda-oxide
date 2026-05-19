@@ -47,5 +47,7 @@ pub mod saturating;
 pub mod sync;
 pub mod tcgen05;
 pub mod tma;
+// LOCAL EXPERIMENT (studio-vaai) — vector-store escape hatch
+pub mod vec;
 pub mod warp;
 pub mod wgmma;
