@@ -374,3 +374,24 @@ impl<T: SimdElement + PartialEq, const N: usize> PartialEq for CuSimd<T, N> {
 }
 
 impl<T: SimdElement + Eq, const N: usize> Eq for CuSimd<T, N> {}
+
+// =============================================================================
+// From / Into for ergonomic conversions
+// =============================================================================
+
+// LOCAL EXPERIMENT (studio-vaai): `From<[T; N]>` so kernel code can write
+// `let v: CuSimd<f32, 4> = [a, b, c, d].into();` and store sites can use
+// `*p = [a, b, c, d].into();` instead of explicit `CuSimd::new([...])`.
+impl<T: SimdElement, const N: usize> From<[T; N]> for CuSimd<T, N> {
+    #[inline(always)]
+    fn from(data: [T; N]) -> Self {
+        Self { data }
+    }
+}
+
+impl<T: SimdElement, const N: usize> From<CuSimd<T, N>> for [T; N] {
+    #[inline(always)]
+    fn from(simd: CuSimd<T, N>) -> Self {
+        simd.data
+    }
+}

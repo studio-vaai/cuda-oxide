@@ -81,6 +81,19 @@ unsafe impl<T: DeviceCopy, const N: usize> DeviceCopy for [T; N] {}
 unsafe impl<T: ?Sized> DeviceCopy for *const T {}
 unsafe impl<T: ?Sized> DeviceCopy for *mut T {}
 
+// LOCAL EXPERIMENT (studio-vaai): `CuSimd<T, N>` from `cuda-device` is
+// `#[repr(C)] struct { data: [T; N] }` — layout-identical to `[T; N]`, which
+// already impls `DeviceCopy`. We forward the impl so kernels can use
+// `CuSimd<f32, 4>` in function signatures and have host-side `Buffer<...>`
+// re-typing (`as_device_buffer_of::<CuSimd<f32, 4>>()`) work the same as
+// the raw-array form. The bound mirrors `[T; N]`'s — `T: DeviceCopy`
+// suffices because CuSimd's element constraint is already `T: SimdElement`
+// (a `Copy + Sized` marker satisfied by every `DeviceCopy` primitive).
+unsafe impl<T: DeviceCopy + cuda_device::cusimd::SimdElement, const N: usize>
+    DeviceCopy for cuda_device::cusimd::CuSimd<T, N>
+{
+}
+
 macro_rules! impl_device_copy_tuple {
     ($($name:ident),+ $(,)?) => {
         unsafe impl<$($name: DeviceCopy),+> DeviceCopy for ($($name,)+) {}
