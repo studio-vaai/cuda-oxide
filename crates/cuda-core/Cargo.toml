@@ -9,6 +9,10 @@ repository.workspace = true
 
 [dependencies]
 cuda-bindings = { path = "../cuda-bindings" }
+# LOCAL EXPERIMENT (studio-vaai): make DeviceCopy impl-able for CuSimd<T, N>.
+# cuda-device is `no_std` and only re-exports types — the dep is host-safe
+# because we never expand its `#[kernel]` / `#[cuda_module]` macros here.
+cuda-device = { path = "../cuda-device" }
 anyhow = { workspace = true }
 half = { workspace = true }
 oxide-artifacts = { workspace = true, features = ["object-read"] }
