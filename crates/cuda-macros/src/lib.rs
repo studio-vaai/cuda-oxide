@@ -2464,14 +2464,6 @@ impl Parse for CudaLaunchInput {
             let _ = input.parse::<Token![,]>();
         }
 
-        if cluster_dim.is_some() && cooperative.is_some() {
-            return Err(syn::Error::new(
-                input.span(),
-                "cuda_launch!: `cluster_dim` and `cooperative` are mutually exclusive — \
-                 cooperative cluster launches are not yet supported by this macro",
-            ));
-        }
-
         Ok(CudaLaunchInput {
             kernel: kernel.ok_or_else(|| syn::Error::new(input.span(), "missing 'kernel'"))?,
             stream: stream.ok_or_else(|| syn::Error::new(input.span(), "missing 'stream'"))?,
@@ -2637,7 +2629,36 @@ pub fn cuda_launch(input: TokenStream) -> TokenStream {
     // All paths use the stream-aware cuda_core helpers. Those helpers bind the
     // stream's owning CUDA context to the calling thread and then delegate to
     // the raw cuLaunchKernel/cuLaunchKernelEx wrappers.
-    let launch_call = if let Some(cdim) = cluster_dim {
+    let launch_call = if let (Some(cdim), Some(coop)) = (cluster_dim, cooperative) {
+        // Cooperative + clustered launch (both attributes on one cuLaunchKernelEx).
+        quote! {
+            {
+                let __cfg = #config;
+                let __cooperative: bool = #coop;
+                if __cooperative {
+                    cuda_core::launch_kernel_cooperative_ex_on_stream(
+                        &__func,
+                        __cfg.grid_dim,
+                        __cfg.block_dim,
+                        __cfg.shared_mem_bytes,
+                        #cdim,
+                        (#stream).as_ref(),
+                        &mut __args,
+                    )
+                } else {
+                    cuda_core::launch_kernel_ex_on_stream(
+                        &__func,
+                        __cfg.grid_dim,
+                        __cfg.block_dim,
+                        __cfg.shared_mem_bytes,
+                        #cdim,
+                        (#stream).as_ref(),
+                        &mut __args,
+                    )
+                }
+            }
+        }
+    } else if let Some(cdim) = cluster_dim {
         quote! {
             {
                 let __cfg = #config;
