@@ -123,3 +123,38 @@ pub(crate) fn convert_dsmem_read_u32(
 
     Ok(())
 }
+
+
+/// Convert `dsmem_atom_add_f32` to combined mapa + atom.shared::cluster.add inline PTX.
+pub(crate) fn convert_dsmem_atom_add_f32(
+    ctx: &mut Context,
+    rewriter: &mut DialectConversionRewriter,
+    op: Ptr<Operation>,
+    _operands_info: &OperandsInfo,
+) -> Result<()> {
+    let operands: Vec<_> = op.deref(ctx).operands().collect();
+    if operands.len() != 3 {
+        return pliron::input_err_noloc!(
+            "dsmem_atom_add_f32 requires 3 operands (ptr, rank, val)"
+        );
+    }
+
+    let llvm_ptr = operands[0];
+    let llvm_rank = operands[1];
+    let llvm_val = operands[2];
+
+    let shared_ptr = cast_to_shared_addrspace(ctx, rewriter, llvm_ptr);
+    let void_ty = llvm_types::VoidType::get(ctx);
+
+    inline_asm_convergent(
+        ctx,
+        rewriter,
+        void_ty.into(),
+        vec![shared_ptr, llvm_rank, llvm_val],
+        "{ .reg .u64 %mapped; .reg .f32 %old; mapa.shared::cluster.u64 %mapped, $0, $1; atom.shared::cluster.relaxed.add.f32 %old, [%mapped], $2; }",
+        "l,r,f,~{memory}",
+    );
+    rewriter.erase_operation(ctx, op);
+
+    Ok(())
+}

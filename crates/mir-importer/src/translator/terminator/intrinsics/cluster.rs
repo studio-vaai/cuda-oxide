@@ -18,7 +18,7 @@ use crate::error::{TranslationErr, TranslationResult};
 use crate::translator::rvalue;
 use crate::translator::values::ValueMap;
 use dialect_nvvm::ops::{
-    ClusterSyncOp, DsmemReadU32Op, MapaSharedClusterOp, ReadPtxSregClusterCtaidXOp,
+    ClusterSyncOp, DsmemReadU32Op, DsmemAtomAddF32Op, MapaSharedClusterOp, ReadPtxSregClusterCtaidXOp,
     ReadPtxSregClusterCtaidYOp, ReadPtxSregClusterCtaidZOp, ReadPtxSregClusterIdxOp,
     ReadPtxSregClusterNctaidXOp, ReadPtxSregClusterNctaidYOp, ReadPtxSregClusterNctaidZOp,
     ReadPtxSregNclusterIdOp,
@@ -630,5 +630,113 @@ pub fn emit_dsmem_read_u32(
         block_map,
         loc,
         "dsmem_read_u32 call without target block",
+    )
+}
+
+
+/// Emit `dsmem_atom_add_f32(ptr, rank, val)`: Atomic-add f32 to another block's shared memory.
+///
+/// Combines mapa.shared::cluster + atom.shared::cluster.relaxed.add.f32.
+/// Returns `()` — old-value result of the atomic is discarded.
+///
+/// Args:
+/// - args[0]: *mut f32 - Local shared memory pointer
+/// - args[1]: u32      - Target block's rank within cluster
+/// - args[2]: f32      - Value to add
+pub fn emit_dsmem_atom_add_f32(
+    ctx: &mut Context,
+    body: &mir::Body,
+    args: &[mir::Operand],
+    destination: &mir::Place,
+    target: &Option<usize>,
+    block_ptr: Ptr<BasicBlock>,
+    prev_op: Option<Ptr<Operation>>,
+    value_map: &mut ValueMap,
+    block_map: &[Ptr<BasicBlock>],
+    loc: Location,
+) -> TranslationResult<Ptr<Operation>> {
+    if args.len() != 3 {
+        return input_err!(
+            loc.clone(),
+            TranslationErr::unsupported(format!(
+                "dsmem_atom_add_f32 expects 3 arguments (ptr, rank, val), got {}",
+                args.len()
+            ))
+        );
+    }
+
+    let (src_ptr, mut last_op) = rvalue::translate_operand(
+        ctx,
+        body,
+        &args[0],
+        value_map,
+        block_ptr,
+        prev_op,
+        loc.clone(),
+    )?;
+
+    let (rank, last_op_after) = rvalue::translate_operand(
+        ctx,
+        body,
+        &args[1],
+        value_map,
+        block_ptr,
+        last_op,
+        loc.clone(),
+    )?;
+    last_op = last_op_after;
+
+    let (val, last_op_after2) = rvalue::translate_operand(
+        ctx,
+        body,
+        &args[2],
+        value_map,
+        block_ptr,
+        last_op,
+        loc.clone(),
+    )?;
+    last_op = last_op_after2;
+
+    let op = Operation::new(
+        ctx,
+        DsmemAtomAddF32Op::get_concrete_op_info(),
+        vec![],                  // No SSA results — old-value discarded
+        vec![src_ptr, rank, val],
+        vec![],
+        0,
+    );
+    op.deref_mut(ctx).set_loc(loc.clone());
+
+    if let Some(prev) = last_op {
+        op.insert_after(ctx, prev);
+    } else {
+        op.insert_at_front(block_ptr, ctx);
+    }
+
+    // Returns unit -- construct a () value and store to destination.
+    let unit_ty = dialect_mir::types::MirTupleType::get(ctx, vec![]);
+    let unit_op = Operation::new(
+        ctx,
+        dialect_mir::ops::MirConstructTupleOp::get_concrete_op_info(),
+        vec![unit_ty.into()],
+        vec![],
+        vec![],
+        0,
+    );
+    unit_op.deref_mut(ctx).set_loc(loc.clone());
+    unit_op.insert_after(ctx, op);
+    let unit_val = unit_op.deref(ctx).get_result(0);
+
+    emit_store_result_and_goto(
+        ctx,
+        destination,
+        unit_val,
+        target,
+        block_ptr,
+        unit_op,
+        value_map,
+        block_map,
+        loc,
+        "dsmem_atom_add_f32 call without target block",
     )
 }

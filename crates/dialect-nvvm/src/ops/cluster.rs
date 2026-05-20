@@ -519,6 +519,36 @@ impl Verify for DsmemReadU32Op {
     }
 }
 
+
+
+/// Cluster-distributed shared-memory atomic add (f32).
+///
+/// Combines `mapa.shared::cluster` and `atom.shared::cluster.add.f32` into a
+/// single op. The old-value result of the atomic is discarded — this op
+/// has no SSA result.
+///
+/// # Operands
+///
+/// 1. `ptr` (pointer): Local shared memory address (32-bit f32 slot)
+/// 2. `rank` (i32): Target block's rank within cluster
+/// 3. `val` (f32): Value to add
+///
+/// # Results
+///
+/// (none — fire-and-forget)
+#[pliron_op(
+    name = "nvvm.dsmem_atom_add_f32",
+    format,
+    verifier = "succ",
+    interfaces = [NOpdsInterface<3>, NResultsInterface<0>],
+)]
+pub struct DsmemAtomAddF32Op;
+
+impl DsmemAtomAddF32Op {
+    pub fn new(op: Ptr<Operation>) -> Self {
+        DsmemAtomAddF32Op { op }
+    }
+}
 /// Register cluster operations with the context.
 pub(super) fn register(ctx: &mut Context) {
     // Block position within cluster
@@ -537,4 +567,5 @@ pub(super) fn register(ctx: &mut Context) {
     // Distributed shared memory
     MapaSharedClusterOp::register(ctx);
     DsmemReadU32Op::register(ctx);
+    DsmemAtomAddF32Op::register(ctx);
 }

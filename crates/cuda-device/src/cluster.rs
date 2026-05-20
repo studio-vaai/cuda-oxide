@@ -367,6 +367,37 @@ pub unsafe fn dsmem_read_u32(local_ptr: *const u32, target_rank: u32) -> u32 {
     unreachable!("dsmem_read_u32 called outside CUDA kernel context")
 }
 
+
+/// Cluster-distributed shared-memory atomic add (f32).
+///
+/// Atomically adds `val` to the f32 stored in another cluster block's
+/// shared memory at the offset corresponding to `local_ptr`. Returns
+/// nothing (the result of the underlying `atom.shared::cluster.add.f32`
+/// is discarded).
+///
+/// # Safety
+///
+/// - Must be called within a cluster launch context.
+/// - `local_ptr` must point to valid shared memory in the local CTA.
+/// - `target_rank` must be a valid rank (0..cluster_size).
+/// - Caller is responsible for any required cluster-level fencing
+///   (`cluster_sync` before reading the result on the owner).
+///
+/// # PTX
+///
+/// Lowers to:
+/// ```ptx
+/// mapa.shared::cluster.u64 %rd_mapped, %rd_local, %r_rank;
+/// atom.shared::cluster.relaxed.add.f32 %f_old, [%rd_mapped], %f_val;
+/// ```
+#[inline(never)]
+pub unsafe fn dsmem_atom_add_f32(local_ptr: *mut f32, target_rank: u32, val: f32) {
+    let _ = local_ptr;
+    let _ = target_rank;
+    let _ = val;
+    unreachable!("dsmem_atom_add_f32 called outside CUDA kernel context")
+}
+
 // =============================================================================
 // Compile-Time Cluster Configuration
 // =============================================================================

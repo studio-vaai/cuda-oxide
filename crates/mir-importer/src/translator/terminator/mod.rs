@@ -2106,6 +2106,20 @@ fn try_dispatch_intrinsic(
                 loc,
             )?))
         }
+        "cuda_device::cluster::dsmem_atom_add_f32" => {
+            Ok(Some(intrinsics::cluster::emit_dsmem_atom_add_f32(
+                ctx,
+                body,
+                args,
+                destination,
+                target,
+                block_ptr,
+                prev_op,
+                value_map,
+                block_map,
+                loc,
+            )?))
+        }
         "cuda_device::cluster::__cluster_config" => {
             // Compile-time cluster configuration marker from #[cluster(x,y,z)] attribute.
             // The cluster dimensions are extracted in body.rs during MIR scanning.
