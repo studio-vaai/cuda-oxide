@@ -876,6 +876,12 @@ impl<'a> ModuleExportState<'a> {
             || name.starts_with("llvm.nvvm.shfl")
             // Warp votes
             || name.starts_with("llvm.nvvm.vote")
+            // Warp match (sm_70+): match.any / match.all
+            || name.starts_with("llvm.nvvm.match")
+            // activemask: must be convergent so LLVM does not hoist it
+            || name == "llvm.nvvm.activemask"
+            // bar.warp.sync (subset-sync; convergent for the same reason as shfl)
+            || name == "llvm.nvvm.bar.warp.sync"
             // Async bulk operations (TMA)
             || name.starts_with("llvm.nvvm.cp.async.bulk")
     }
