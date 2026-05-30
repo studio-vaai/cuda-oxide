@@ -98,6 +98,7 @@
 pub mod atomic;
 mod clc;
 mod cluster;
+mod cp_async;
 mod debug;
 mod grid;
 mod mbarrier;
@@ -116,6 +117,7 @@ use pliron::context::Context;
 pub use atomic::*;
 pub use clc::*;
 pub use cluster::*;
+pub use cp_async::*;
 pub use debug::*;
 pub use grid::*;
 pub use mbarrier::*;
@@ -137,6 +139,7 @@ pub fn register(ctx: &mut Context) {
     thread::register(ctx);
     warp::register(ctx);
     cluster::register(ctx);
+    cp_async::register(ctx);
     grid::register(ctx);
     mbarrier::register(ctx);
     tma::register(ctx);

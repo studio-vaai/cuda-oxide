@@ -42,7 +42,8 @@ use dialect_nvvm::ops::{
     CpAsyncBulkTensorG2sTile3dOp, CpAsyncBulkTensorG2sTile4dOp, CpAsyncBulkTensorG2sTile5dOp,
     CpAsyncBulkTensorS2gTile1dOp, CpAsyncBulkTensorS2gTile2dOp, CpAsyncBulkTensorS2gTile3dOp,
     CpAsyncBulkTensorS2gTile4dOp, CpAsyncBulkTensorS2gTile5dOp, CpAsyncBulkWaitGroupOp,
-    CpAsyncBulkWaitGroupReadOp, CvtF32x2Bf16x2Op, DsmemAtomAddF32Op, DsmemReadU32Op, FenceProxyAsyncSharedCtaOp,
+    CpAsyncBulkWaitGroupReadOp, CpAsyncCaShared16Op, CpAsyncCommitGroupOp, CpAsyncWaitGroupOp,
+    CvtF32x2Bf16x2Op, DsmemAtomAddF32Op, DsmemReadU32Op, FenceProxyAsyncSharedCtaOp,
     MapaSharedClusterOp, MatchAllSyncI32Op, MatchAllSyncI64Op, MatchAnySyncI32Op,
     MatchAnySyncI64Op, MbarrierArriveClusterOp, MbarrierArriveExpectTxSharedOp,
     MbarrierArriveSharedOp, MbarrierInitSharedOp, MbarrierInvalSharedOp, MbarrierTestWaitSharedOp,
@@ -2702,6 +2703,59 @@ impl MirToLlvmConversion for CpAsyncBulkWaitGroupReadOp {
             self.get_operation(),
             operands_info,
             true,
+        )
+    }
+}
+
+// ---- NVVM non-bulk cp.async ops --------------------------------------------
+
+#[op_interface_impl]
+impl MirToLlvmConversion for CpAsyncCaShared16Op {
+    fn convert(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        super::intrinsics::cp_async::convert_copy_ca_16(
+            ctx,
+            rewriter,
+            self.get_operation(),
+            operands_info,
+        )
+    }
+}
+
+#[op_interface_impl]
+impl MirToLlvmConversion for CpAsyncCommitGroupOp {
+    fn convert(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        super::intrinsics::cp_async::convert_commit_group(
+            ctx,
+            rewriter,
+            self.get_operation(),
+            operands_info,
+        )
+    }
+}
+
+#[op_interface_impl]
+impl MirToLlvmConversion for CpAsyncWaitGroupOp {
+    fn convert(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        super::intrinsics::cp_async::convert_wait_group(
+            ctx,
+            rewriter,
+            self.get_operation(),
+            operands_info,
         )
     }
 }
