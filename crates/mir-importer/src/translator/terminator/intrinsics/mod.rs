@@ -39,6 +39,7 @@ pub mod atomic;
 pub mod bitops;
 pub mod clc;
 pub mod cluster;
+pub mod cp_async;
 pub mod debug;
 pub mod float_math;
 pub mod indexing;

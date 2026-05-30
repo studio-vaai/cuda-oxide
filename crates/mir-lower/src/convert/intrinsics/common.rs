@@ -96,6 +96,28 @@ pub fn cast_to_shared_addrspace(
     }
 }
 
+/// Cast a pointer value to address space 1 (global memory) if needed.
+pub fn cast_to_global_addrspace(
+    ctx: &mut Context,
+    rewriter: &mut DialectConversionRewriter,
+    ptr: Value,
+) -> Value {
+    let ptr_ty = ptr.get_type(ctx);
+    let current_addrspace = ptr_ty
+        .deref(ctx)
+        .downcast_ref::<llvm_types::PointerType>()
+        .map(|pt| pt.address_space())
+        .unwrap_or(0);
+
+    if current_addrspace != 1 {
+        let cast_op = llvm::AddrSpaceCastOp::new(ctx, ptr, 1);
+        rewriter.insert_operation(ctx, cast_op.get_operation());
+        cast_op.get_operation().deref(ctx).get_result(0)
+    } else {
+        ptr
+    }
+}
+
 /// Cast a pointer to the cluster shared address space (`addrspace(7)`).
 pub fn cast_to_cluster_shared_addrspace(
     ctx: &mut Context,

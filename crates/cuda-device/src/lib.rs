@@ -16,6 +16,7 @@ pub mod barrier;
 pub mod clc;
 pub mod cluster;
 pub mod cooperative_groups;
+pub mod cp_async;
 pub mod cusimd;
 pub mod debug;
 pub mod disjoint;

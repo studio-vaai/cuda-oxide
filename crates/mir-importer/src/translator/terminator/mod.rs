@@ -2513,6 +2513,25 @@ fn try_dispatch_intrinsic(
         }
 
         // =================================================================
+        // Non-bulk cp.async / LDGSTS (from intrinsics::cp_async)
+        // =================================================================
+        "cuda_device::cp_async::cp_async_ca_shared_global_16" => {
+            Ok(Some(intrinsics::cp_async::emit_cp_async_ca_shared_global_16(
+                ctx, body, args, target, block_ptr, prev_op, value_map, block_map, loc,
+            )?))
+        }
+        "cuda_device::cp_async::cp_async_commit_group" => {
+            Ok(Some(intrinsics::cp_async::emit_cp_async_commit_group(
+                ctx, args, target, block_ptr, prev_op, block_map, loc,
+            )?))
+        }
+        "cuda_device::cp_async::cp_async_wait_group" => {
+            Ok(Some(intrinsics::cp_async::emit_cp_async_wait_group(
+                ctx, body, args, target, block_ptr, prev_op, value_map, block_map, loc,
+            )?))
+        }
+
+        // =================================================================
         // Tcgen05 (from intrinsics::tcgen05)
         // =================================================================
         "cuda_device::tcgen05::tcgen05_alloc" => Ok(Some(intrinsics::tcgen05::emit_tcgen05_alloc(
