@@ -53,16 +53,25 @@ and small-lane cases (`v_f32x2` → `ld.b64`, `v_u16x2` → `ld.b32`) coalesce i
 one register-width transaction. Only the `#[repr(C)]` struct-wrapped contrast
 stays scalar.
 
-## Why a vector type (and not just alignment)
+## Why a vector type (alignment / a wrapper is not enough)
 
-- A *bare* `[f32;4]` store **does** vectorize given a genuine `align 16` — but a
-  `[f32;4]`'s type is only 4-aligned, so claiming 16 is a false promise (it
-  faults unless the allocator happens to over-align). Making it truly 16-aligned
-  requires a `#[repr(align(16))]` wrapper, which re-introduces the struct layer
-  that blocks the vectorizer (`scalar_f32x4` above).
-- A vector type `<N x T>` is the one representation that is *both* genuinely
-  width-aligned (sound) *and* unwrapped (vectorizes). That's why these kernels
-  get sound vector codegen with no alignment hacks.
+For a whole-value load/store (`output[idx] = input[idx]`), the NVPTX
+instruction selector emits `ld/st.global.v4.f32` **only** for a genuine vector
+type. Running every candidate shape through `llc` at `align 16` (identical at
+`-O0` and `-O3`):
+
+| value type (align 16)                       | PTX                |
+|---------------------------------------------|--------------------|
+| `[4 x float]` (bare array)                  | `2× ld.global.u64` |
+| `{ [4 x float] }` (wrapper struct of array) | `2× ld.global.u64` |
+| `{ float, float, float, float }` (4 fields) | `2× ld.global.u64` |
+| `<4 x float>` (`#[repr(simd)]`)             | `ld.global.v4.f32` |
+
+So a `#[repr(align(16))]` wrapper around `[f32;4]` buys you sound alignment but
+**not** vectorization — the aggregate is still selected to scalar 64-bit chunks.
+Only the vector type lowers to `v4`. (Alignment is still necessary — a vector
+load needs `align 16` — but alignment alone, on any array/struct shape, does
+not vectorize a whole-value copy.)
 
 Routing `CuSimd<T,N>`'s `data` field through this same Vector-ABI path (while
 keeping the `tcgen05` construct/extract and lane accessors working) is the
