@@ -91,4 +91,34 @@ Example — `ls_f32x4` (the “float4” case, where one would hope for
 - A read-only (`ld.global.nc` / `__ldg`) path needs invariant-load / readonly
   noalias metadata, which does not exist in the pipeline today — separate task.
 
+## Update — soundness fix + why alignment alone isn't enough for CuSimd
+
+Two follow-up results from working the codegen:
+
+**1. The alignment annotation must be the type's *true* ABI alignment.** An
+earlier change made the exporter stamp `align N` derived from the aggregate's
+*size* (`natural_alignment` returned 16 for `[4 x float]`). That is a false
+promise — `[f32;4]` is only 4-aligned — and `ld/st.global.v4` *fault* on
+misaligned addresses; it merely happened to work when `cudaMalloc` over-aligned
+the buffer. Fixed: arrays now report element alignment (4 for `[f32;4]`),
+vectors keep their genuine width alignment, structs stay max-field. After the
+fix the IR emits `align 4` / `align 8` (truthful) instead of `align 16`, and
+`crates/dialect-llvm/tests/aggregate_alignment_test.rs` locks in the sound
+values.
+
+**2. For `CuSimd<T,N>`, alignment is necessary but NOT sufficient.** `CuSimd` is
+`{ data: [T;N] }`, so its load/store is a *struct-wrapped aggregate*
+`{ [4 x float] }`. Measured directly: even with a (false) `align 16` on that
+access, the NVPTX backend still emits **scalar `ld.b64`/`st.b64`, never a v4** —
+the struct wrapper blocks vectorization on its own. (Contrast: a bare
+`store [4 x float] ..., align 16` to a global pointer *does* vectorize — that's
+the cloth-solver shape.)
+
+**Sound path to `*.global.v4` for CuSimd:** represent the N lanes as an LLVM
+vector `<N x T>` rather than a `{ [N x T] }` struct. An LLVM vector type is
+*intrinsically* width-aligned (so `align 16` is sound, no threading needed) and
+is not struct-wrapped, so the backend vectorizes it natively. The unit test
+`store_vector_f32_4_emits_align_16` already shows `<4 x float>` → `align 16`
+soundly. Routing CuSimd's data field to a vector type is the remaining work.
+
 Reproduce the table any time with `./analyze.sh`.
