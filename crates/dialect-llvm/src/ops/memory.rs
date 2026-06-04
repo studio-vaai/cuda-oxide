@@ -40,10 +40,38 @@ use pliron::{
 };
 
 use crate::{
-    attributes::{GepIndexAttr, GepIndicesAttr},
+    attributes::{AlignmentAttr, GepIndexAttr, GepIndicesAttr},
     op_interfaces::PointerTypeResult,
     types::{ArrayType, PointerType, StructType},
 };
+
+// ============================================================================
+// Memory-op ABI alignment attribute
+// ============================================================================
+
+/// Attribute key for the ABI alignment carried on a memory op (`load` / `store`
+/// / `alloca`). The same key + [`AlignmentAttr`] that `GlobalOp` uses for
+/// global alignment, so all alignment is represented one way: stamped by the
+/// mir-lower alignment pre-pass and emitted as `align N` on export.
+pub fn alignment_attr_key() -> pliron::identifier::Identifier {
+    "llvm_alignment".try_into().unwrap()
+}
+
+/// Stamp the ABI alignment (in bytes) onto a memory op.
+pub fn set_op_alignment(ctx: &mut Context, op: Ptr<Operation>, align: u32) {
+    op.deref_mut(ctx)
+        .attributes
+        .0
+        .insert(alignment_attr_key(), AlignmentAttr(align).into());
+}
+
+/// Read the ABI alignment (in bytes) stamped on a memory op, if any.
+pub fn op_alignment(ctx: &Context, op: Ptr<Operation>) -> Option<u32> {
+    op.deref(ctx)
+        .attributes
+        .get::<AlignmentAttr>(&alignment_attr_key())
+        .map(|a| a.0)
+}
 
 // ============================================================================
 // Stack Allocation
