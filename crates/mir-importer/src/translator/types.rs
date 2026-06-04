@@ -478,6 +478,29 @@ pub fn translate_type(
                         field_types.push(translated_ty);
                     }
 
+                    // `#[repr(simd)]` (Vector-ABI) types lower to a genuine LLVM
+                    // vector `<N x T>` rather than a struct-wrapped array
+                    // `{ [N x T] }`. Only the vector form vectorizes to a sound
+                    // `ld/st.global.v{2,4}`: an LLVM vector's ABI alignment *is*
+                    // its width (so `align 16` is true with no threading), and
+                    // there is no aggregate wrapper to block the backend's
+                    // load/store vectorizer.
+                    if matches!(
+                        rust_ty.layout().map(|l| l.shape().abi),
+                        Ok(rustc_public::abi::ValueAbi::Vector { .. })
+                    ) {
+                        // The single lane field is `[T; N]`; unwrap to `<N x T>`.
+                        if let Some((elem, size)) = field_types.first().and_then(|f| {
+                            let r = f.deref(ctx);
+                            r.downcast_ref::<dialect_mir::types::MirArrayType>()
+                                .map(|a| (a.element_type(), a.size()))
+                        }) {
+                            return Ok(
+                                dialect_llvm::types::VectorType::get(ctx, elem, size).into()
+                            );
+                        }
+                    }
+
                     // Query rustc for complete memory layout info
                     let (mem_to_decl, field_offsets, total_size) =
                         if let Ok(layout) = rust_ty.layout() {

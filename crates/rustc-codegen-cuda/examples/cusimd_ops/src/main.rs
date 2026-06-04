@@ -30,8 +30,22 @@
 //!   - 16-bit elems (u16, i16):      N = 2 (v2/32-bit),  N = 4 (v4/64-bit)
 //!   - large-N f32:                  N = 8, 16, 32 (must split into multiple v4)
 
+#![feature(repr_simd)]
+
 use cuda_device::cusimd::CuSimd;
 use cuda_device::{DisjointSlice, cuda_module, kernel, thread};
+
+// =============================================================================
+// SOUND-VECTORIZATION PROTOTYPE (bare repr(simd) type, no CuSimd/tcgen05)
+// =============================================================================
+//
+// A `#[repr(simd)]` type whose Rust layout is a genuine SIMD vector: 4×f32,
+// 16-byte aligned, *not* a struct-wrapped array. Goal: see whether a whole
+// load/store of this lowers to a real LLVM `<4 x float>` (hence a sound
+// `ld/st.global.v4.f32`), unlike the `{ [4 x float] }` shape CuSimd produces.
+#[repr(simd)]
+#[derive(Clone, Copy)]
+pub struct F32x4([f32; 4]);
 
 // =============================================================================
 // ALIGNMENT EXPERIMENT
@@ -299,6 +313,16 @@ mod kernels {
 
     #[kernel]
     pub fn al_f32x8(input: &[AlF32x8], mut output: DisjointSlice<AlF32x8>) {
+        let idx = thread::index_1d();
+        let i = idx.get();
+        if let Some(o) = output.get_mut(idx) {
+            *o = input[i];
+        }
+    }
+
+    // ===== PROTOTYPE: genuine repr(simd) vector load/store =====
+    #[kernel]
+    pub fn simd_f32x4(input: &[F32x4], mut output: DisjointSlice<F32x4>) {
         let idx = thread::index_1d();
         let i = idx.get();
         if let Some(o) = output.get_mut(idx) {

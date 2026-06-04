@@ -114,11 +114,32 @@ the struct wrapper blocks vectorization on its own. (Contrast: a bare
 `store [4 x float] ..., align 16` to a global pointer *does* vectorize — that's
 the cloth-solver shape.)
 
-**Sound path to `*.global.v4` for CuSimd:** represent the N lanes as an LLVM
-vector `<N x T>` rather than a `{ [N x T] }` struct. An LLVM vector type is
-*intrinsically* width-aligned (so `align 16` is sound, no threading needed) and
-is not struct-wrapped, so the backend vectorizes it natively. The unit test
-`store_vector_f32_4_emits_align_16` already shows `<4 x float>` → `align 16`
-soundly. Routing CuSimd's data field to a vector type is the remaining work.
+**Sound path to a vectorized 128-bit access — proven.** Represent the N lanes
+as an LLVM vector `<N x T>` rather than a `{ [N x T] }` struct. An LLVM vector
+type is *intrinsically* width-aligned (so `align 16` is sound, no threading
+needed) and is not struct-wrapped, so the backend vectorizes it natively.
+
+The `simd_f32x4` kernel demonstrates this: a `#[repr(simd)]` type, which the
+codegen now lowers to a real `<4 x float>` (see the Vector-ABI hook in
+`mir-importer translator/types.rs`). Result:
+
+```
+IR:   load  <4 x float>, ptr, align 16     ; align 16 is TRUE (vector width)
+      store <4 x float>, ptr, align 16
+PTX:  ld.v2.b64 {...}, [...]               ; single 128-bit vectorized load
+      st.v2.b64 [...], {...}
+SASS: LD.E.128 / ST.E.128                  ; one 128-bit global transaction
+```
+
+Contrast the struct-wrapped `ls_f32x4` (CuSimd shape): scalar `ld.b64`×2, no
+vectorization. So the recipe for sound vector codegen is: **genuine vector type
++ true (vector-width) alignment**, not a struct-wrapped array with a stamped-on
+alignment. Routing CuSimd's `data` field through this Vector-ABI path (while
+keeping the `tcgen05` construct/extract + lane accessors working) is the
+remaining work to make `CuSimd` itself vectorize soundly.
+
+(Note: `LD.E.128` is the generic 128-bit form; the read-only `LDG.E.128` /
+`ld.global.nc` path additionally needs invariant-load metadata — a separate
+task.)
 
 Reproduce the table any time with `./analyze.sh`.
