@@ -2294,23 +2294,33 @@ impl<'a> ModuleExportState<'a> {
         }
     }
 
-    /// Compute natural alignment (in bytes) for a type.
+    /// Compute the **conservative ABI alignment** (in bytes) for a type, used as
+    /// the fallback for load/store `align N` when an op carries no explicit
+    /// alignment attribute (see `op_alignment` / the LoadOp/StoreOp exporters).
     ///
-    /// Used by both atomic load/store and plain load/store exporters so the
-    /// emitted LLVM IR carries `align N`. Without this, LLVM's load/store
-    /// vectorizer assumes 1-byte alignment for aggregate accesses and won't
-    /// fuse them into vector instructions (e.g., libNVVM never emits
-    /// `st.global.v4.f32` from a 4 × scalar-store pattern lacking align).
+    /// SOUNDNESS: `align N` on an LLVM load/store is a *promise* to the backend
+    /// that the address is N-byte aligned; NVPTX/ptxas then emits
+    /// `ld/st.global.v{2,4}` which **fault on misaligned addresses**. So this
+    /// must NEVER overstate the alignment the pointer is actually guaranteed.
+    /// It is therefore computed to match the real ABI alignment LLVM assigns to
+    /// each type, never a size-derived guess:
     ///
-    /// Rules:
-    /// * Scalars: width-based (`ceil(bits / 8)` for ints; 2 for f16; 4 for
-    ///   f32; 8 for f64).
-    /// * Arrays `[N x T]` and vectors `<N x T>`: power-of-2 rounded `N *
-    ///   align_of(T)`, capped at 128 bytes. This matches LLVM's preferred
-    ///   alignment for vector-sized aggregates and lets the load/store
-    ///   vectorizer fuse 4 × scalar stores of a 16-byte aligned `[f32; 4]`
-    ///   into a single `st.global.v4.f32`.
-    /// * Structs: max of field alignments, computed recursively.
+    /// * Scalars: width-based (`ceil(bits / 8)` for ints; 2 for f16; 4 for f32;
+    ///   8 for f64).
+    /// * Arrays `[N x T]`: **element alignment** = `align_of(T)`. This is the
+    ///   exact rule LLVM (and Rust) use — `[4 x float]` is 4-byte aligned, NOT
+    ///   16. (An earlier version returned the size-rounded `N * align_of(T)`,
+    ///   which over-promised align 16 for a 4-aligned `[f32; 4]` and produced
+    ///   `ld.global.v4.f32` that faults unless the buffer happened to be
+    ///   16-aligned by the allocator.) To get a genuinely 16-aligned vector
+    ///   access, route the data through a `VectorType` (below) or carry the
+    ///   real alignment on the op.
+    /// * Vectors `<N x T>`: power-of-2 rounded `N * align_of(T)`, capped at 128.
+    ///   This *is* sound: an LLVM vector type's ABI alignment really is its
+    ///   (power-of-2-rounded) width, so `<4 x float>` is genuinely 16-aligned.
+    /// * Structs: max of field alignments, recursively. (Note: this does NOT
+    ///   see a `repr(align(N))` raise, so it may *under*-state — which is safe;
+    ///   the real raised alignment is threaded explicitly via the op attribute.)
     /// * Pointers, void, unknown: conservative default of 8.
     fn natural_alignment(&self, ty: Ptr<TypeObj>) -> u32 {
         let ty_ref = ty.deref(self.ctx);
@@ -2324,15 +2334,10 @@ impl<'a> ModuleExportState<'a> {
         } else if ty_ref.is::<HalfType>() {
             2
         } else if let Some(array_ty) = ty_ref.downcast_ref::<crate::types::ArrayType>() {
-            let elem_align = self.natural_alignment(array_ty.elem_type());
-            let total = elem_align.saturating_mul(array_ty.size() as u32);
-            // Round down to nearest power of 2, clamped to 128 bytes.
-            let mut a: u32 = 1;
-            while a.saturating_mul(2) <= total && a < 128 {
-                a *= 2;
-            }
-            a
+            // ABI alignment of `[N x T]` is `align_of(T)`, never size-derived.
+            self.natural_alignment(array_ty.elem_type())
         } else if let Some(vec_ty) = ty_ref.downcast_ref::<crate::types::VectorType>() {
+            // ABI alignment of an LLVM vector is its power-of-2-rounded width.
             let elem_align = self.natural_alignment(vec_ty.elem_type());
             let total = elem_align.saturating_mul(vec_ty.size() as u32);
             let mut a: u32 = 1;

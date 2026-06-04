@@ -3,17 +3,25 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-//! Regression test for Gap 1: plain (non-atomic) `StoreOp` / `LoadOp` on
-//! aggregate types (`[N x T]`, `<N x T>`, structs) must emit `align N` in
-//! the exported LLVM IR.
+//! Regression test for plain (non-atomic) `StoreOp` / `LoadOp` on aggregate
+//! types: they emit `align N`, and that N must be the type's **true ABI
+//! alignment** — never a size-derived over-estimate.
 //!
-//! Without the alignment annotation, libNVVM and LLVMs load/store
-//! vectorizer fall back to worst-case 1-byte alignment and refuse to
-//! fuse the access into a `st.global.v4.f32` / `ld.global.v4.f32` even
-//! when the underlying buffer is 16-byte aligned. The atomic variants
-//! (AtomicLoadOp/AtomicStoreOp) already emit `align N` — the plain ops
-//! historically did not, which broke vector codegen for `[f32; 4]` /
-//! `CuSimd<f32, 4>` patterns. See `reference_cuda_oxide_codegen_gaps.md`.
+//! `align N` on an LLVM load/store is a promise that the address is N-byte
+//! aligned; NVPTX then emits `ld/st.global.v{2,4}`, which fault on misaligned
+//! addresses. So the alignment the exporter stamps must never exceed what the
+//! type actually guarantees:
+//!
+//! * Array `[N x T]` has ABI alignment `align_of(T)` (Rust & LLVM rule), NOT
+//!   the size-rounded `N * align_of(T)`. `[4 x float]` is 4-aligned, not 16.
+//!   (Stamping 16 here is the bug these tests now guard against: it only
+//!   "works" when the allocator happens to 16-align the buffer.)
+//! * Vector `<N x T>` is genuinely width-aligned, so `<4 x float>` is 16. This
+//!   is the sound way to get a 16-byte vector access.
+//!
+//! To get a 16-aligned aggregate access soundly, route data through a vector
+//! type or a genuinely over-aligned (`repr(align(16))`) type whose real
+//! alignment is threaded onto the op — not a bare `[f32; 4]`.
 
 use dialect_llvm::{
     export::export_module_to_string,
@@ -158,68 +166,76 @@ fn find_op_line<'a>(ir: &'a str, keyword: &str) -> &'a str {
 // Array stores/loads: `[N x T]`
 // ---------------------------------------------------------------------------
 
+// An array's ABI alignment is its ELEMENT alignment, regardless of length.
+// Stamping the size (16 for `[4 x float]`) would be a false promise.
+
 #[test]
-fn store_array_f32_4_emits_align_16() {
+fn store_array_f32_4_emits_align_4() {
     let ir = build_store_module(|ctx| {
         let f32_ty = FP32Type::get(ctx);
         ArrayType::get(ctx, f32_ty.into(), 4).into()
     });
     let store_line = find_op_line(&ir, "store");
     assert!(
-        store_line.contains("align 16"),
-        "store of `[4 x float]` must emit `align 16`, got:\n{store_line}\n\nfull IR:\n{ir}"
+        store_line.contains("align 4"),
+        "store of `[4 x float]` must emit `align 4` (element align), not the \
+         size-derived 16, got:\n{store_line}\n\nfull IR:\n{ir}"
     );
 }
 
 #[test]
-fn load_array_f32_4_emits_align_16() {
+fn load_array_f32_4_emits_align_4() {
     let ir = build_load_module(|ctx| {
         let f32_ty = FP32Type::get(ctx);
         ArrayType::get(ctx, f32_ty.into(), 4).into()
     });
     let load_line = find_op_line(&ir, "load");
     assert!(
-        load_line.contains("align 16"),
-        "load of `[4 x float]` must emit `align 16`, got:\n{load_line}\n\nfull IR:\n{ir}"
+        load_line.contains("align 4"),
+        "load of `[4 x float]` must emit `align 4` (element align), not 16, \
+         got:\n{load_line}\n\nfull IR:\n{ir}"
     );
 }
 
 #[test]
-fn store_array_f32_2_emits_align_8() {
+fn store_array_f32_2_emits_align_4() {
     let ir = build_store_module(|ctx| {
         let f32_ty = FP32Type::get(ctx);
         ArrayType::get(ctx, f32_ty.into(), 2).into()
     });
     let store_line = find_op_line(&ir, "store");
     assert!(
-        store_line.contains("align 8"),
-        "store of `[2 x float]` must emit `align 8`, got:\n{store_line}\n\nfull IR:\n{ir}"
+        store_line.contains("align 4"),
+        "store of `[2 x float]` must emit `align 4` (element align), not 8, \
+         got:\n{store_line}\n\nfull IR:\n{ir}"
     );
 }
 
 #[test]
-fn store_array_f64_2_emits_align_16() {
+fn store_array_f64_2_emits_align_8() {
     let ir = build_store_module(|ctx| {
         let f64_ty = FP64Type::get(ctx);
         ArrayType::get(ctx, f64_ty.into(), 2).into()
     });
     let store_line = find_op_line(&ir, "store");
     assert!(
-        store_line.contains("align 16"),
-        "store of `[2 x double]` must emit `align 16`, got:\n{store_line}\n\nfull IR:\n{ir}"
+        store_line.contains("align 8"),
+        "store of `[2 x double]` must emit `align 8` (element align), not 16, \
+         got:\n{store_line}\n\nfull IR:\n{ir}"
     );
 }
 
 #[test]
-fn store_array_u32_4_emits_align_16() {
+fn store_array_u32_4_emits_align_4() {
     let ir = build_store_module(|ctx| {
         let u32_ty = IntegerType::get(ctx, 32, Signedness::Signless);
         ArrayType::get(ctx, u32_ty.into(), 4).into()
     });
     let store_line = find_op_line(&ir, "store");
     assert!(
-        store_line.contains("align 16"),
-        "store of `[4 x i32]` must emit `align 16`, got:\n{store_line}\n\nfull IR:\n{ir}"
+        store_line.contains("align 4"),
+        "store of `[4 x i32]` must emit `align 4` (element align), not 16, \
+         got:\n{store_line}\n\nfull IR:\n{ir}"
     );
 }
 
