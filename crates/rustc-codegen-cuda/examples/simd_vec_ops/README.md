@@ -44,7 +44,8 @@ cargo oxide build simd_vec_ops      # emits simd_vec_ops.ptx (no GPU needed)
 | `v_u16x8` / `v_i16x8` | `<8 x i16>` | 128 | `ld.v4.b32` / `st.v4.b32` | **v4** |
 | `v_f32x8` | `<8 x f32>` | 256 | `2× ld.v2.b64` | 2 vectors (split) |
 | `v_f64x4` | `<4 x f64>` | 256 | `2× ld.v2.b64` | 2 vectors (split) |
-| `scalar_f32x4` | `{ [4 x f32] }` | 128 | `4× ld.b32` / `4× st.b32` | **scalar** ✗ |
+| `w_f32x4` | `#[repr(C, align(16))] W([f32;4])` | 128 | `ld.v2.b64` / `st.v2.b64` | **v** (aligned-aggregate gate) |
+| `scalar_f32x4` | `#[repr(C)] ([f32;4])` (align 4) | 128 | `4× ld.b32` / `4× st.b32` | **scalar** (gate skipped) |
 
 Every vector kernel collapses the whole vector into 1–2 wide transactions; the
 128-bit ones (`v_f32x4`, `v_u32x4`, `v_u16x8`, …) become true `.v2`/`.v4`
@@ -67,12 +68,25 @@ type. Running every candidate shape through `llc` at `align 16` (identical at
 | `{ float, float, float, float }` (4 fields) | `2× ld.global.u64` |
 | `<4 x float>` (`#[repr(simd)]`)             | `ld.global.v4.f32` |
 
-So a `#[repr(align(16))]` wrapper around `[f32;4]` buys you sound alignment but
-**not** vectorization — the aggregate is still selected to scalar 64-bit chunks.
-Only the vector type lowers to `v4`. (Alignment is still necessary — a vector
-load needs `align 16` — but alignment alone, on any array/struct shape, does
-not vectorize a whole-value copy.)
+So at the LLVM-IR level only `<N x T>` vectorizes; a `{ [N x T] }` aggregate
+does not, at any alignment.
 
-Routing `CuSimd<T,N>`'s `data` field through this same Vector-ABI path (while
-keeping the `tcgen05` construct/extract and lane accessors working) is the
-follow-up to make `CuSimd` itself vectorize.
+### The aligned-aggregate gate
+
+To let a `#[repr(align(16))]` wrapper vectorize *soundly*, the codegen
+(`mir-importer translator/types.rs`) detects a struct whose single field is a
+power-of-two scalar array `[T;N]` **and** whose ABI alignment is at least its
+size, and lowers it to `<N x T>` (instead of `{ [N x T] }`). The gate
+`align >= size` is the soundness condition: a `<N x T>` load needs the pointer
+aligned to its width, and `#[repr(C, align(16))]` guarantees exactly that.
+
+- `w_f32x4` (`#[repr(C, align(16))] W([f32;4])`, align 16 = size) → gate fires →
+  `<4 x float>` → `ld.v2.b64`. Sound: the type really is 16-aligned.
+- `scalar_f32x4` (`#[repr(C)] ([f32;4])`, align 4 < size 16) → gate skipped →
+  stays `{ [4 x float] }` → `4× ld.b32`. Sound: we never claim 16 on align-4
+  data. (This is the `CuSimd<f32,4>` shape — unaffected.)
+
+So a wrapper around `[f32;4]` *can* vectorize, soundly, as long as it carries a
+genuine width alignment. To make `CuSimd<T,N>` itself benefit, give its
+128-bit configs a real ≥width alignment (the const-generic-alignment problem)
+so the same gate fires.

@@ -66,11 +66,20 @@ simd_ty!(I16x8, i16, 8);
 simd_ty!(F32x8, f32, 8);
 simd_ty!(F64x4, f64, 4);
 
-/// Scalar contrast: a plain `#[repr(C)]` array wrapper (the CuSimd shape).
-/// Expected to stay scalar (no vector fusion).
+/// Scalar contrast: a plain `#[repr(C)]` array wrapper (the CuSimd shape,
+/// align 4). Expected to stay scalar — its alignment (4) is below its width
+/// (16), so the aligned-aggregate gate does not fire.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ArrF32x4([f32; 4]);
+
+/// Aligned wrapper around `[f32; 4]` (align 16 = width). The codegen lowers
+/// this to `<4 x float>` (aligned-aggregate gate), so it vectorizes SOUNDLY —
+/// the `align 16` it promises is genuinely guaranteed by the type. This is the
+/// "wrapper that vectorizes" case, in contrast to `ArrF32x4` above.
+#[repr(C, align(16))]
+#[derive(Clone, Copy)]
+pub struct WArrF32x4([f32; 4]);
 
 #[cuda_module]
 mod kernels {
@@ -240,10 +249,21 @@ mod kernels {
         }
     }
 
-    // ===== scalar contrast (repr(C) array wrapper, the CuSimd shape) =====
+    // ===== contrast: repr(C) array wrapper (align 4) stays scalar =====
 
     #[kernel]
     pub fn scalar_f32x4(input: &[ArrF32x4], mut output: DisjointSlice<ArrF32x4>) {
+        let idx = thread::index_1d();
+        let i = idx.get();
+        if let Some(o) = output.get_mut(idx) {
+            *o = input[i];
+        }
+    }
+
+    // ===== aligned wrapper around [f32;4] (align 16) now vectorizes =====
+
+    #[kernel]
+    pub fn w_f32x4(input: &[WArrF32x4], mut output: DisjointSlice<WArrF32x4>) {
         let idx = thread::index_1d();
         let i = idx.get();
         if let Some(o) = output.get_mut(idx) {

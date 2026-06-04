@@ -501,6 +501,52 @@ pub fn translate_type(
                         }
                     }
 
+                    // Aligned scalar-array aggregate: a struct whose single field
+                    // is a power-of-two scalar array `[T; N]` AND whose ABI
+                    // alignment is at least its size (e.g.
+                    // `#[repr(C, align(16))] struct W([f32; 4])`). Lower it to a
+                    // genuine `<N x T>` so a whole-value load/store vectorizes
+                    // (`ld/st.global.v{2,4}`) instead of selecting to scalar
+                    // 64-bit chunks like an aggregate `{ [N x T] }` would.
+                    //
+                    // SOUND because the lowering fires ONLY when the type
+                    // guarantees the alignment a `<N x T>` load requires
+                    // (`align >= size`). A plain `[T; N]` wrapper whose alignment
+                    // is just `align_of(T)` (e.g. `CuSimd`, align 4, size 16)
+                    // fails the gate and stays a struct -- we never promise an
+                    // alignment the data does not have.
+                    if let Ok(layout) = rust_ty.layout() {
+                        let shape = layout.shape();
+                        let size = shape.size.bytes() as u64;
+                        let align = shape.abi_align as u64;
+                        if size > 0 && align >= size && field_types.len() == 1 {
+                            let vec_parts = {
+                                let r = field_types[0].deref(ctx);
+                                r.downcast_ref::<dialect_mir::types::MirArrayType>()
+                                    .and_then(|a| {
+                                        let elem = a.element_type();
+                                        let n = a.size();
+                                        let er = elem.deref(ctx);
+                                        let scalar = er
+                                            .is::<pliron::builtin::types::FP32Type>()
+                                            || er.is::<pliron::builtin::types::FP64Type>()
+                                            || er.is::<pliron::builtin::types::IntegerType>()
+                                            || er.is::<dialect_llvm::types::HalfType>();
+                                        if scalar && n >= 2 && n.is_power_of_two() {
+                                            Some((elem, n))
+                                        } else {
+                                            None
+                                        }
+                                    })
+                            };
+                            if let Some((elem, n)) = vec_parts {
+                                return Ok(
+                                    dialect_llvm::types::VectorType::get(ctx, elem, n).into()
+                                );
+                            }
+                        }
+                    }
+
                     // Query rustc for complete memory layout info
                     let (mem_to_decl, field_offsets, total_size) =
                         if let Ok(layout) = rust_ty.layout() {
