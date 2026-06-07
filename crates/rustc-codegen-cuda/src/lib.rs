@@ -316,6 +316,7 @@ extern crate rustc_public_bridge;
 // The standard LLVM backend - we delegate host codegen to this
 extern crate rustc_codegen_llvm;
 
+mod abi_attrs;
 mod collector;
 mod device_codegen;
 

@@ -15,7 +15,7 @@ use std::fmt::Write;
 use pliron::{
     basic_block::BasicBlock,
     builtin::{
-        attributes::{FPDoubleAttr, FPSingleAttr, IntegerAttr},
+        attributes::{FPDoubleAttr, FPSingleAttr, IntegerAttr, StringAttr},
         op_interfaces::SymbolOpInterface,
         type_interfaces::FunctionTypeInterface,
     },
@@ -252,29 +252,58 @@ impl<'a> ModuleExportState<'a> {
             let mut next_value_id = 0;
 
             let block = entry_block.deref(self.ctx);
-            let args = block.arguments();
-            // Parameters are emitted bare: `<type> %vN` with no LLVM parameter
-            // attributes (no `noalias`, `nocapture`, `dereferenceable`, etc.).
-            // This is deliberate and load-bearing for `DisjointSlice`.
+            let arg_values: Vec<Value> = block.arguments().collect();
+
+            // Parameter attributes (`noalias`, `readonly`, `nonnull`, `noundef`,
+            // `dereferenceable(N)`, `align N`, and the integer `signext`/`zeroext`)
+            // are emitted *only* when present on the func op under
+            // `llvm_arg_attr_<flat_idx>`, where `flat_idx` is the flattened
+            // parameter index. The exporter never synthesizes them; it renders
+            // whatever the backend decided, already gated by applicability in
+            // `mir-lower` (pointer-only tokens on `ptr`, `signext`/`zeroext` on
+            // integers, `noundef` anywhere).
             //
-            // `DisjointSlice::from_raw_parts` is `unsafe fn` whose contract
-            // says callers must not construct two slices over the same range.
-            // Violating that contract creates two `&mut T` to the same byte —
-            // which is simply UB. Today, because we don't tag pointer
-            // parameters with `noalias`, LLVM treats them conservatively and
-            // the violation doesn't *miscompile*; it just runs as written.
-            //
-            // If a future change here adds `noalias` (e.g. for a perf win on
-            // read-only `&[T]` inputs), that property goes away and any code
-            // that double-constructed a `DisjointSlice` starts seeing folded
-            // writes / reordered reads on PTX. Don't add parameter attributes
-            // here without re-auditing the `from_raw_parts` callers.
-            for (i, arg) in args.enumerate() {
+            // Where those decisions come from (and why this is sound for
+            // `DisjointSlice`): for ordinary parameters the fragments are a
+            // faithful pass-through of rustc's `FnAbi`, matching Rust's
+            // reference rules — `&mut T` and (perhaps surprisingly) immutable
+            // shared `&T` to `Freeze` data both get `noalias`; the shared ref
+            // additionally gets `readonly`. `DisjointSlice<T>` is the one type
+            // whose `noalias`/`align` are synthesized from its `unsafe
+            // from_raw_parts` contract rather than `FnAbi` (it wraps a `*mut
+            // T`). That contract forbids two live slices over the same range, so
+            // the `noalias` is justified exactly as for `&mut`; violating the
+            // contract is UB. See `rustc_codegen_cuda::abi_attrs`. Do not add
+            // parameter attributes anywhere other than that backend derivation.
+            let arg_attr_fragments: Vec<Option<String>> = {
+                let op_attrs = &func.get_operation().deref(self.ctx).attributes.0;
+                (0..arg_values.len())
+                    .map(|i| {
+                        pliron::identifier::Identifier::try_from(
+                            format!("llvm_arg_attr_{i}").as_str(),
+                        )
+                        .ok()
+                        .and_then(|key| {
+                            op_attrs
+                                .get(&key)
+                                .and_then(|attr| attr.downcast_ref::<StringAttr>())
+                                .map(|s| String::from((*s).clone()))
+                        })
+                    })
+                    .collect()
+            };
+
+            for (i, arg) in arg_values.into_iter().enumerate() {
                 if i > 0 {
                     write!(output, ", ").unwrap();
                 }
                 let arg_ty = arg.get_type(self.ctx);
                 self.export_type(arg_ty, output)?;
+                if let Some(fragment) = arg_attr_fragments.get(i).and_then(|f| f.as_deref())
+                    && !fragment.is_empty()
+                {
+                    write!(output, " {fragment}").unwrap();
+                }
                 let name = format!("%v{next_value_id}");
                 value_names.insert(arg, name.clone());
                 write!(output, " {name}").unwrap();

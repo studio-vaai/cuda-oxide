@@ -21,6 +21,11 @@
 
 pub mod export;
 
+/// Derivation-neutral LLVM function-parameter attributes (and their textual
+/// rendering). Re-exported at the crate root for the backend/pipeline that
+/// produce and transport them.
+pub use export::{ArgAttrs, ArgExt, LlvmParamClass};
+
 /// LLVM types: re-exported from pliron-llvm, plus GPU address-space helpers.
 pub mod types {
     pub use pliron_llvm::types::*;

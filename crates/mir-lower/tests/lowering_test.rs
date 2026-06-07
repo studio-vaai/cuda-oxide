@@ -13,6 +13,456 @@ use pliron::linked_list::ContainsLinkedList;
 use pliron::op::Op;
 use pliron::operation::Operation;
 
+/// Phase 1 (Route A): the `FnAbi`-derived pointer-parameter attributes the
+/// backend supplies (one typed [`llvm_export::ArgAttrs`] per *source*
+/// parameter, handed to `mir-lower` via the driver map) must be remapped onto
+/// the flattened LLVM parameters, rendered to their textual fragment at the
+/// remap, and emitted into the textual IR by the exporter.
+///
+/// This is a *placement/mechanism* test — it injects the per-source-arg
+/// attributes directly (the real rustc-derived values are validated end-to-end
+/// by the `ptr_attributes` example). It models `fn k(out: &mut [f32], inp:
+/// &[f32], a: f32)`: each slice flattens to `(ptr, len)`, so a source-arg
+/// attribute must land on the data pointer only — never the length or the
+/// scalar.
+///
+/// The attributes are the realistic ones rustc produces: `&mut [f32]` →
+/// `noalias` (no `readonly`); `&[f32]` → `noalias readonly` (rustc marks an
+/// immutable shared ref to `Freeze` data as both). The checked soundness
+/// property is therefore `readonly` placement: it lands on the read-only input
+/// and never on the written `&mut` output.
+#[test]
+fn fnabi_pointer_param_attrs_land_on_flattened_data_pointers() -> Result<(), anyhow::Error> {
+    use dialect_mir::types::MirSliceType;
+    use pliron::basic_block::BasicBlock;
+    use pliron::builtin::attributes::{StringAttr, TypeAttr};
+    use pliron::builtin::types::{FP32Type, FunctionType};
+    use pliron::identifier::Identifier;
+
+    let mut ctx = Context::new();
+    dialect_mir::register(&mut ctx);
+    dialect_nvvm::register(&mut ctx);
+    mir_lower::register(&mut ctx);
+
+    let module = ModuleOp::new(&mut ctx, "attrs_module".try_into().unwrap());
+    let module_ptr = module.get_operation();
+    let module_region = module_ptr.deref(&ctx).get_region(0);
+    let module_block = module_region.deref(&ctx).iter(&ctx).next().unwrap();
+
+    // Kernel signature: (&mut [f32], &[f32], f32).
+    let f32_ty = FP32Type::get(&ctx);
+    let slice_ty = MirSliceType::get(&mut ctx, f32_ty.into());
+    let func_ty = FunctionType::get(
+        &mut ctx,
+        vec![slice_ty.into(), slice_ty.into(), f32_ty.into()],
+        vec![],
+    );
+
+    let func_op = Operation::new(
+        &mut ctx,
+        mir::MirFuncOp::get_concrete_op_info(),
+        vec![],
+        vec![],
+        vec![],
+        1,
+    );
+    let func = mir::MirFuncOp::new(&mut ctx, func_op, TypeAttr::new(func_ty.into()));
+    func.set_symbol_name(&mut ctx, "k".try_into().unwrap());
+
+    // Mark as a kernel so the slice flattening uses the kernel-boundary ABI.
+    let insert_attr = |ctx: &mut Context, key: &str, value: &str| {
+        let key: Identifier = key.try_into().unwrap();
+        func_op
+            .deref_mut(ctx)
+            .attributes
+            .0
+            .insert(key, StringAttr::new(value.to_string()).into());
+    };
+    insert_attr(&mut ctx, "gpu_kernel", "true");
+
+    // Body: one block whose arguments match the (un-flattened) MIR signature,
+    // plus a void return. The lowerer builds the flattened entry block and the
+    // reconstruction prologue around it.
+    {
+        let region = func_op.deref(&ctx).get_region(0);
+        let block = BasicBlock::new(
+            &mut ctx,
+            None,
+            vec![slice_ty.into(), slice_ty.into(), f32_ty.into()],
+        );
+        block.insert_at_back(region, &ctx);
+
+        let ret_op = Operation::new(
+            &mut ctx,
+            mir::MirReturnOp::get_concrete_op_info(),
+            vec![],
+            vec![],
+            vec![],
+            0,
+        );
+        ret_op.insert_at_back(block, &ctx);
+    }
+    func_op.insert_at_back(module_block, &ctx);
+
+    // Typed per-source-arg attributes, exactly as the backend derives from
+    // rustc's FnAbi (keyed by the func's symbol name `k`):
+    //   arg0 `out: &mut [f32]` -> noalias (unique borrow), align 4; NOT readonly
+    //   arg1 `inp: &[f32]`     -> noalias + readonly (shared ref to Freeze), align 4
+    //   arg2 `a: f32`          -> None (no pointer attributes)
+    let mut arg_attrs = mir_lower::context::ArgAttrsMap::new();
+    arg_attrs.insert(
+        "k".to_string(),
+        vec![
+            Some(llvm_export::ArgAttrs {
+                noalias: true,
+                nonnull: true,
+                noundef: true,
+                align: Some(4),
+                ..Default::default()
+            }),
+            Some(llvm_export::ArgAttrs {
+                noalias: true,
+                readonly: true,
+                nonnull: true,
+                noundef: true,
+                align: Some(4),
+                ..Default::default()
+            }),
+            None,
+        ],
+    );
+
+    mir_lower::lower_mir_to_llvm_with_arg_attrs(&mut ctx, module_ptr, arg_attrs)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    let ir = llvm_export::export::export_module_to_string(&ctx, &module)
+        .map_err(|e| anyhow::anyhow!("export failed: {e}"))?;
+
+    // Isolate the kernel's `define` line (the parameter list lives there).
+    let define_line = ir
+        .lines()
+        .find(|line| line.contains("@k(") && line.trim_start().starts_with("define"))
+        .unwrap_or_else(|| panic!("no `define ... @k(` line in IR:\n{ir}"));
+
+    // `out` (flattened param 0): unique `&mut` borrow -> noalias + align 4.
+    assert!(
+        define_line.contains("ptr noalias nonnull noundef align 4 %v0"),
+        "expected `out` data pointer (%v0) to carry `noalias ... align 4`; got:\n{define_line}"
+    );
+    // `inp` (flattened param 2): shared ref to Freeze data -> noalias + readonly
+    // + align 4.
+    assert!(
+        define_line.contains("ptr noalias readonly nonnull noundef align 4 %v2"),
+        "expected `inp` data pointer (%v2) to carry `noalias readonly ... align 4`; got:\n{define_line}"
+    );
+
+    // Soundness property: `readonly` lands on the read-only `inp` only, never on
+    // the written `&mut out` (marking the write channel readonly would
+    // miscompile). After flattening, the `out` data pointer is %v0 and the `inp`
+    // data pointer is %v2.
+    assert_eq!(
+        ir.matches("readonly").count(),
+        1,
+        "`readonly` must appear exactly once (on the shared `&[f32]` input only); IR:\n{ir}"
+    );
+    assert!(
+        !define_line.contains("ptr noalias readonly nonnull noundef align 4 %v0"),
+        "the unique `&mut out` (%v0) must NOT be `readonly`:\n{define_line}"
+    );
+
+    // Slice lengths and the scalar are passed through bare (no pointer attrs).
+    // After flattening the params are: ptr, i64, ptr, i64, float.
+    assert!(
+        define_line.contains("i64 %v1") && define_line.contains("i64 %v3"),
+        "slice length params must be present and separate from the data pointers:\n{define_line}"
+    );
+    assert!(
+        define_line.contains("float %v4"),
+        "scalar `a: f32` must be the last param with no pointer attributes:\n{define_line}"
+    );
+    // The scalar must not pick up any of the pointer attributes.
+    assert!(
+        !define_line.contains("float noalias")
+            && !define_line.contains("float readonly")
+            && !define_line.contains("float align"),
+        "scalar param must carry no pointer attributes:\n{define_line}"
+    );
+
+    Ok(())
+}
+
+/// `DisjointSlice<T>` carries no `FnAbi` attributes (it wraps a raw `*mut T`),
+/// so the backend synthesizes `noalias`/`align`/`nonnull`/`noundef` from its
+/// `from_raw_parts` contract. Those fragments must flow through the same
+/// flattening/emission path as ordinary slices and land on the output's data
+/// pointer.
+///
+/// Models the canonical copy kernel `fn copy(input: &[f32], output:
+/// DisjointSlice<f32>)`: the shared input gets `noalias readonly` (rustc marks
+/// an immutable shared ref to `Freeze` data as both), while the exclusive
+/// `DisjointSlice` output gets `noalias` + `align` but **not** `readonly` (it is
+/// written through). The alignment is what lets whole-element stores vectorize.
+#[test]
+fn disjoint_slice_output_gets_noalias_and_align() -> Result<(), anyhow::Error> {
+    use dialect_mir::types::{MirDisjointSliceType, MirSliceType};
+    use pliron::basic_block::BasicBlock;
+    use pliron::builtin::attributes::{StringAttr, TypeAttr};
+    use pliron::builtin::types::{FP32Type, FunctionType};
+    use pliron::identifier::Identifier;
+
+    let mut ctx = Context::new();
+    dialect_mir::register(&mut ctx);
+    dialect_nvvm::register(&mut ctx);
+    mir_lower::register(&mut ctx);
+
+    let module = ModuleOp::new(&mut ctx, "disjoint_module".try_into().unwrap());
+    let module_ptr = module.get_operation();
+    let module_region = module_ptr.deref(&ctx).get_region(0);
+    let module_block = module_region.deref(&ctx).iter(&ctx).next().unwrap();
+
+    // Kernel signature: (&[f32], DisjointSlice<f32>).
+    let f32_ty = FP32Type::get(&ctx);
+    let in_slice = MirSliceType::get(&mut ctx, f32_ty.into());
+    let out_slice = MirDisjointSliceType::get(&mut ctx, f32_ty.into());
+    let func_ty = FunctionType::get(&mut ctx, vec![in_slice.into(), out_slice.into()], vec![]);
+
+    let func_op = Operation::new(
+        &mut ctx,
+        mir::MirFuncOp::get_concrete_op_info(),
+        vec![],
+        vec![],
+        vec![],
+        1,
+    );
+    let func = mir::MirFuncOp::new(&mut ctx, func_op, TypeAttr::new(func_ty.into()));
+    func.set_symbol_name(&mut ctx, "copy".try_into().unwrap());
+
+    let insert_attr = |ctx: &mut Context, key: &str, value: &str| {
+        let key: Identifier = key.try_into().unwrap();
+        func_op
+            .deref_mut(ctx)
+            .attributes
+            .0
+            .insert(key, StringAttr::new(value.to_string()).into());
+    };
+    insert_attr(&mut ctx, "gpu_kernel", "true");
+
+    {
+        let region = func_op.deref(&ctx).get_region(0);
+        let block = BasicBlock::new(&mut ctx, None, vec![in_slice.into(), out_slice.into()]);
+        block.insert_at_back(region, &ctx);
+        let ret_op = Operation::new(
+            &mut ctx,
+            mir::MirReturnOp::get_concrete_op_info(),
+            vec![],
+            vec![],
+            vec![],
+            0,
+        );
+        ret_op.insert_at_back(block, &ctx);
+    }
+    func_op.insert_at_back(module_block, &ctx);
+
+    // Typed per-source-arg attributes, exactly as the backend derives (keyed by
+    // the func's symbol name `copy`):
+    //   arg0 `input: &[f32]`              -> noalias + readonly (shared ref to Freeze), align 4
+    //   arg1 `output: DisjointSlice<f32>` -> noalias (synthesized contract), align 4; NOT readonly
+    let mut arg_attrs = mir_lower::context::ArgAttrsMap::new();
+    arg_attrs.insert(
+        "copy".to_string(),
+        vec![
+            Some(llvm_export::ArgAttrs {
+                noalias: true,
+                readonly: true,
+                nonnull: true,
+                noundef: true,
+                align: Some(4),
+                ..Default::default()
+            }),
+            Some(llvm_export::ArgAttrs {
+                noalias: true,
+                nonnull: true,
+                noundef: true,
+                align: Some(4),
+                ..Default::default()
+            }),
+        ],
+    );
+
+    mir_lower::lower_mir_to_llvm_with_arg_attrs(&mut ctx, module_ptr, arg_attrs)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    let ir = llvm_export::export::export_module_to_string(&ctx, &module)
+        .map_err(|e| anyhow::anyhow!("export failed: {e}"))?;
+    let define_line = ir
+        .lines()
+        .find(|line| line.contains("@copy(") && line.trim_start().starts_with("define"))
+        .unwrap_or_else(|| panic!("no `define ... @copy(` line in IR:\n{ir}"));
+
+    // Shared input (flattened param 0): noalias + readonly + align.
+    assert!(
+        define_line.contains("ptr noalias readonly nonnull noundef align 4 %v0"),
+        "expected `input` data pointer (%v0) to carry `noalias readonly ... align 4`:\n{define_line}"
+    );
+    // DisjointSlice output (flattened param 2): noalias + align, but NOT readonly
+    // (it is the write channel).
+    assert!(
+        define_line.contains("ptr noalias nonnull noundef align 4 %v2"),
+        "expected `DisjointSlice` output data pointer (%v2) to carry `noalias ... align 4`:\n{define_line}"
+    );
+    // Soundness: `readonly` lands on the read-only input only, never on the
+    // written DisjointSlice output.
+    assert_eq!(
+        ir.matches("readonly").count(),
+        1,
+        "`readonly` must appear exactly once (on the shared input only):\n{ir}"
+    );
+
+    Ok(())
+}
+
+/// Per-attribute applicability gate: each LLVM parameter attribute is emitted
+/// only on a lowered parameter class it is valid on. Pointer-only tokens
+/// (`noalias`/`readonly`/`nonnull`/`dereferenceable`/`align`) must never land on
+/// an integer; `signext`/`zeroext` must never land on a pointer; `noundef`
+/// lands on any value.
+///
+/// Models `fn gate(buf: &mut [f32], n: u32)`. We inject deliberately
+/// *over-broad* `ArgAttrs` (flags set that don't apply to the param) and assert
+/// the rendered IR keeps only the applicable tokens per param: the slice data
+/// pointer (`%v0`) keeps the pointer family but drops the spurious `signext`;
+/// the `i32` (`%v2`) keeps `zeroext noundef` and drops the pointer family.
+#[test]
+fn per_attribute_gate_filters_attrs_by_param_class() -> Result<(), anyhow::Error> {
+    use dialect_mir::types::MirSliceType;
+    use llvm_export::{ArgAttrs, ArgExt};
+    use pliron::basic_block::BasicBlock;
+    use pliron::builtin::attributes::{StringAttr, TypeAttr};
+    use pliron::builtin::types::{FP32Type, FunctionType, IntegerType, Signedness};
+    use pliron::identifier::Identifier;
+
+    let mut ctx = Context::new();
+    dialect_mir::register(&mut ctx);
+    dialect_nvvm::register(&mut ctx);
+    mir_lower::register(&mut ctx);
+
+    let module = ModuleOp::new(&mut ctx, "gate_module".try_into().unwrap());
+    let module_ptr = module.get_operation();
+    let module_region = module_ptr.deref(&ctx).get_region(0);
+    let module_block = module_region.deref(&ctx).iter(&ctx).next().unwrap();
+
+    // Signature: (&mut [f32], u32). The slice flattens to (ptr, i64); the u32
+    // stays a single i32 param. Flattened params: %v0 ptr, %v1 i64, %v2 i32.
+    let f32_ty = FP32Type::get(&ctx);
+    let slice_ty = MirSliceType::get(&mut ctx, f32_ty.into());
+    let u32_ty = IntegerType::get(&mut ctx, 32, Signedness::Signless);
+    let func_ty = FunctionType::get(&mut ctx, vec![slice_ty.into(), u32_ty.into()], vec![]);
+
+    let func_op = Operation::new(
+        &mut ctx,
+        mir::MirFuncOp::get_concrete_op_info(),
+        vec![],
+        vec![],
+        vec![],
+        1,
+    );
+    let func = mir::MirFuncOp::new(&mut ctx, func_op, TypeAttr::new(func_ty.into()));
+    func.set_symbol_name(&mut ctx, "gate".try_into().unwrap());
+
+    // Kernel boundary, so the slice flattens to (ptr, len).
+    let kernel_key: Identifier = "gpu_kernel".try_into().unwrap();
+    func_op
+        .deref_mut(&mut ctx)
+        .attributes
+        .0
+        .insert(kernel_key, StringAttr::new("true".to_string()).into());
+
+    {
+        let region = func_op.deref(&ctx).get_region(0);
+        let block = BasicBlock::new(&mut ctx, None, vec![slice_ty.into(), u32_ty.into()]);
+        block.insert_at_back(region, &ctx);
+        let ret_op = Operation::new(
+            &mut ctx,
+            mir::MirReturnOp::get_concrete_op_info(),
+            vec![],
+            vec![],
+            vec![],
+            0,
+        );
+        ret_op.insert_at_back(block, &ctx);
+    }
+    func_op.insert_at_back(module_block, &ctx);
+
+    // Deliberately over-broad attributes to exercise the gate:
+    //   arg0 (slice data ptr, pointer class): full pointer family + a spurious
+    //        `signext` that must be dropped (ext is integer-only).
+    //   arg1 (u32, integer class): pointer family (must all drop) + `zeroext` +
+    //        `noundef` (the only two that survive on an integer).
+    let mut arg_attrs = mir_lower::context::ArgAttrsMap::new();
+    arg_attrs.insert(
+        "gate".to_string(),
+        vec![
+            Some(ArgAttrs {
+                noalias: true,
+                nonnull: true,
+                noundef: true,
+                align: Some(4),
+                ext: ArgExt::Sign, // spurious on a pointer -> dropped
+                ..Default::default()
+            }),
+            Some(ArgAttrs {
+                noalias: true,            // spurious on an integer -> dropped
+                readonly: true,           // ditto
+                nonnull: true,            // ditto
+                noundef: true,            // kept (any value)
+                dereferenceable: Some(8), // spurious on an integer -> dropped
+                align: Some(2),           // ditto
+                ext: ArgExt::Zero,        // kept (integer)
+            }),
+        ],
+    );
+
+    mir_lower::lower_mir_to_llvm_with_arg_attrs(&mut ctx, module_ptr, arg_attrs)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    let ir = llvm_export::export::export_module_to_string(&ctx, &module)
+        .map_err(|e| anyhow::anyhow!("export failed: {e}"))?;
+    let define_line = ir
+        .lines()
+        .find(|line| line.contains("@gate(") && line.trim_start().starts_with("define"))
+        .unwrap_or_else(|| panic!("no `define ... @gate(` line in IR:\n{ir}"));
+
+    // Pointer param (slice data pointer, %v0): full pointer family, NO signext.
+    assert!(
+        define_line.contains("ptr noalias nonnull noundef align 4 %v0"),
+        "expected slice data pointer (%v0) to carry the pointer family:\n{define_line}"
+    );
+    // Integer param (%v2): only `zeroext noundef` survives; the pointer family is
+    // gated out. Exact match -> any leaked pointer token would break it.
+    assert!(
+        define_line.contains("i32 zeroext noundef %v2"),
+        "expected i32 (%v2) to carry exactly `zeroext noundef`:\n{define_line}"
+    );
+    // `signext` was set on the pointer arg; it is integer-only and must not appear.
+    assert!(
+        !define_line.contains("signext"),
+        "`signext` is integer-only and must never land on a pointer:\n{define_line}"
+    );
+    // The pointer family must not leak onto the integer: `noalias` appears once
+    // (on the pointer), and `readonly` never (it was only on the gated integer).
+    assert_eq!(
+        define_line.matches("noalias").count(),
+        1,
+        "`noalias` must appear once (on the pointer only):\n{define_line}"
+    );
+    assert!(
+        !define_line.contains("readonly"),
+        "`readonly` was only on the integer slot and must be gated out:\n{define_line}"
+    );
+
+    Ok(())
+}
+
 #[test]
 fn test_intrinsic_insertion() -> Result<(), anyhow::Error> {
     let mut ctx = Context::new();

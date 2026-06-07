@@ -35,3 +35,14 @@ pub type DeviceGlobalsMap = HashMap<String, pliron::identifier::Identifier>;
 /// `DynamicSharedArray<T, ALIGN>` call, ensuring the global is created
 /// with the correct alignment from the start.
 pub type DynamicSmemAlignmentMap = HashMap<String, (pliron::identifier::Identifier, u64)>;
+
+/// Per-function `FnAbi`-derived parameter attributes, keyed by the func's
+/// symbol name.
+///
+/// Each value is one entry per *source* parameter, in `fn_sig().inputs()`
+/// order (`None` = no attributes). The backend derives these and the
+/// pipeline hands them in; [`crate::lowering`]'s `convert_func` remaps them
+/// onto the flattened LLVM parameters and renders them via
+/// [`llvm_export::ArgAttrs::to_fragment`]. A missing key (or an empty
+/// vec) means "no attribute information" and is a no-op.
+pub type ArgAttrsMap = HashMap<String, Vec<Option<llvm_export::ArgAttrs>>>;
