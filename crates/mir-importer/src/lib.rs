@@ -83,6 +83,10 @@ pub mod pipeline;
 pub mod translator;
 
 pub use error::{TranslationErr, TranslationResult};
+/// Re-exported from [`llvm_export`], where the types and their textual
+/// rendering live. Kept at this path so the backend (`rustc-codegen-cuda`) and
+/// other callers can refer to `mir_importer::{ArgAttrs, ArgExt}`.
+pub use llvm_export::{ArgAttrs, ArgExt};
 pub use pipeline::{
     CollectedFunction, CompilationArtifactKind, CompilationResult, DeviceExternAttrs,
     DeviceExternDecl, PipelineConfig, PipelineError, run_pipeline,

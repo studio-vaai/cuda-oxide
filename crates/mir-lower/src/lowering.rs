@@ -27,7 +27,7 @@
 //!   llvm.br ^mir_entry(%slice, %field0, %field1, ...)
 //! ```
 
-use crate::context::{DynamicSmemAlignmentMap, SharedGlobalsMap};
+use crate::context::{ArgAttrsMap, DynamicSmemAlignmentMap, SharedGlobalsMap};
 use crate::convert::types::{
     StructLayoutInfo, build_struct_slot_map, convert_function_type, convert_type, is_kernel_func,
     is_zero_sized_type,
@@ -71,6 +71,7 @@ pub fn convert_func(
     _operands_info: &OperandsInfo,
     _shared_globals: &mut SharedGlobalsMap,
     dynamic_smem_alignments: &mut DynamicSmemAlignmentMap,
+    arg_attrs: &ArgAttrsMap,
 ) -> Result<()> {
     let mir_func = MirFuncOp::wrap(ctx, op).expect("expected MirFuncOp");
     let name = mir_func.get_symbol_name(ctx);
@@ -128,6 +129,27 @@ pub fn convert_func(
 
     if is_kernel {
         propagate_kernel_attrs(ctx, op, &llvm_func, &kernel_key);
+    }
+
+    // Stamp the FnAbi-derived parameter attributes (looked up by this func's
+    // symbol name) onto the flattened LLVM parameters. No-op when the backend
+    // supplied none for this func (e.g. closures, non-backend callers).
+    if let Some(src_attrs) = arg_attrs.get(&func_name_str) {
+        let (mir_arg_types, llvm_param_types) = {
+            use pliron::builtin::type_interfaces::FunctionTypeInterface;
+            (
+                func_type.deref(ctx).arg_types(),
+                llvm_func_type.deref(ctx).arg_types(),
+            )
+        };
+        attach_arg_attrs(
+            ctx,
+            &llvm_func,
+            &mir_arg_types,
+            &llvm_param_types,
+            is_kernel,
+            src_attrs,
+        );
     }
 
     let llvm_entry = llvm_func.get_or_create_entry_block(ctx);
@@ -228,6 +250,115 @@ fn propagate_kernel_attrs(
             .0
             .insert(key, attr);
     }
+}
+
+// ============================================================================
+// Function-Parameter Attributes
+// ============================================================================
+
+/// Remap the FnAbi-derived parameter attributes the backend supplied (one
+/// [`llvm_export::ArgAttrs`] per *source* parameter, in `fn_sig().inputs()`
+/// order) onto the flattened LLVM parameters (stamped under
+/// `llvm_arg_attr_<flat_idx>`, read by the textual/NVVM exporters).
+///
+/// The remapping walks the MIR argument types with the same
+/// [`classify_argument_type`] used by [`build_entry_prologue`], so the flattened
+/// index accounting (fat pointers expand to `ptr, len`; aggregates to fields;
+/// scalars stay 1:1) is shared with the actual parameter layout rather than
+/// duplicated:
+///
+/// - **Slice** (`&[T]` / `DisjointSlice<T>`): the attributes belong to the data
+///   pointer (`flat_idx`); the length (`flat_idx + 1`) carries none.
+/// - **None** (thin pointer or scalar): attributes go on the single parameter.
+/// - **Struct** flattened into fields: no per-field attributes.
+///
+/// Each source attribute is rendered to its textual fragment here, at the point
+/// it is placed — keeping the LLVM attribute vocabulary in the exporter crate
+/// ([`llvm_export::ArgAttrs::to_fragment`]). Placement runs through a
+/// *per-attribute* applicability gate keyed on the lowered parameter's
+/// [`llvm_export::LlvmParamClass`]: pointer-only tokens
+/// (`noalias`/`readonly`/`nonnull`/`dereferenceable`/`align`) land only on `ptr`
+/// params, `signext`/`zeroext` only on integers, and `noundef` on any value. So
+/// a `noundef` rustc attached to a scalar is kept, while a pointer token that
+/// would be illegal there is dropped.
+fn attach_arg_attrs(
+    ctx: &mut Context,
+    llvm_func: &llvm::FuncOp,
+    mir_arg_types: &[Ptr<TypeObj>],
+    llvm_param_types: &[Ptr<TypeObj>],
+    is_kernel: bool,
+    src_attrs: &[Option<llvm_export::ArgAttrs>],
+) {
+    let mut flat_idx = 0usize;
+    for (src_idx, &mir_ty) in mir_arg_types.iter().enumerate() {
+        let kind = classify_argument_type(ctx, mir_ty, is_kernel);
+        let attrs = src_attrs.get(src_idx).and_then(|slot| slot.as_ref());
+
+        match kind {
+            ReconstructKind::Slice => {
+                // Attributes describe the data pointer; the length carries none.
+                stamp_arg_attr(ctx, llvm_func, llvm_param_types, flat_idx, attrs);
+                flat_idx += 2;
+            }
+            ReconstructKind::Struct(num_fields) => {
+                flat_idx += num_fields;
+            }
+            ReconstructKind::None => {
+                stamp_arg_attr(ctx, llvm_func, llvm_param_types, flat_idx, attrs);
+                flat_idx += 1;
+            }
+        }
+    }
+}
+
+/// Classify a flattened LLVM parameter type for the per-attribute applicability
+/// gate (see [`llvm_export::ArgAttrs::to_fragment`]).
+fn llvm_param_class(ctx: &Context, ty: Ptr<TypeObj>) -> llvm_export::LlvmParamClass {
+    use llvm_export::LlvmParamClass;
+    let ty_ref = ty.deref(ctx);
+    if ty_ref.is::<llvm_export::types::PointerType>() {
+        LlvmParamClass::Pointer
+    } else if ty_ref.is::<pliron::builtin::types::IntegerType>() {
+        LlvmParamClass::Integer
+    } else {
+        LlvmParamClass::Other
+    }
+}
+
+/// Render `attrs` for the class of lowered LLVM parameter `flat_idx` and stamp
+/// the resulting fragment as `llvm_arg_attr_<flat_idx>`. The per-attribute gate
+/// lives in [`llvm_export::ArgAttrs::to_fragment`]. No-op when there are no
+/// attributes, the index is out of range, or nothing applies to that class.
+fn stamp_arg_attr(
+    ctx: &mut Context,
+    llvm_func: &llvm::FuncOp,
+    llvm_param_types: &[Ptr<TypeObj>],
+    flat_idx: usize,
+    attrs: Option<&llvm_export::ArgAttrs>,
+) {
+    let Some(attrs) = attrs else { return };
+    let Some(&param_ty) = llvm_param_types.get(flat_idx) else {
+        return;
+    };
+    let class = llvm_param_class(ctx, param_ty);
+    let Some(fragment) = attrs.to_fragment(class) else {
+        return;
+    };
+
+    let Ok(key) =
+        pliron::identifier::Identifier::try_from(format!("llvm_arg_attr_{flat_idx}").as_str())
+    else {
+        return;
+    };
+    llvm_func
+        .get_operation()
+        .deref_mut(ctx)
+        .attributes
+        .0
+        .insert(
+            key,
+            pliron::builtin::attributes::StringAttr::new(fragment).into(),
+        );
 }
 
 // ============================================================================

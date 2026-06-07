@@ -144,7 +144,7 @@ use pliron::{
     r#type::{TypeObj, type_impls},
 };
 
-use context::{DeviceGlobalsMap, DynamicSmemAlignmentMap, SharedGlobalsMap};
+use context::{ArgAttrsMap, DeviceGlobalsMap, DynamicSmemAlignmentMap, SharedGlobalsMap};
 use conversion_interface::MirToLlvmConversion as MirToLlvmConversionInterface;
 use convert::types::convert_type;
 use type_conversion_interface::MirConvertibleType;
@@ -168,6 +168,9 @@ pub struct MirToLlvmConversionDriver {
     pub device_globals: DeviceGlobalsMap,
     /// Per-kernel dynamic shared memory alignment tracking.
     pub dynamic_smem_alignments: DynamicSmemAlignmentMap,
+    /// Backend-derived parameter attributes, keyed by func symbol name.
+    /// Empty unless lowering was invoked via [`lower_mir_to_llvm_with_arg_attrs`].
+    pub arg_attrs: ArgAttrsMap,
 }
 
 fn is_mir_or_nvvm_op(ctx: &Context, op: Ptr<Operation>) -> bool {
@@ -215,6 +218,7 @@ impl DialectConversion for MirToLlvmConversionDriver {
                 operands_info,
                 &mut self.shared_globals,
                 &mut self.dynamic_smem_alignments,
+                &self.arg_attrs,
             );
         }
         if opid == dialect_mir::ops::MirSharedAllocOp::get_opid_static() {
@@ -274,10 +278,27 @@ impl DialectConversion for MirToLlvmConversionDriver {
 ///
 /// `Ok(())` if all operations were successfully converted.
 pub fn lower_mir_to_llvm(ctx: &mut Context, module_op: Ptr<Operation>) -> Result<()> {
+    lower_mir_to_llvm_with_arg_attrs(ctx, module_op, ArgAttrsMap::new())
+}
+
+/// Like [`lower_mir_to_llvm`], but with backend-derived parameter attributes
+/// to stamp onto the flattened LLVM parameters.
+///
+/// `arg_attrs` is keyed by func symbol name (see [`ArgAttrsMap`]).
+/// `convert_func` remaps each func's source-indexed attributes onto the
+/// flattened parameter list and renders them via
+/// [`llvm_export::ArgAttrs::to_fragment`]. The plain
+/// [`lower_mir_to_llvm`] is exactly this with an empty map.
+pub fn lower_mir_to_llvm_with_arg_attrs(
+    ctx: &mut Context,
+    module_op: Ptr<Operation>,
+    arg_attrs: ArgAttrsMap,
+) -> Result<()> {
     let mut conversion = MirToLlvmConversionDriver {
         shared_globals: HashMap::new(),
         device_globals: HashMap::new(),
         dynamic_smem_alignments: HashMap::new(),
+        arg_attrs,
     };
     // pliron's DialectConversion now reports an IRStatus (Changed/Unchanged);
     // lowering only cares about success, so discard it.

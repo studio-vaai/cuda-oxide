@@ -33,6 +33,7 @@
 //!
 //! Override with `CUDA_OXIDE_TARGET=<target>` environment variable.
 
+use llvm_export::ArgAttrs;
 use pliron::common_traits::Verify;
 use rustc_public::mir::mono::Instance;
 
@@ -49,6 +50,21 @@ pub struct CollectedFunction {
     pub is_kernel: bool,
     /// The name to export in PTX. For kernels, this is the user-visible name.
     pub export_name: String,
+    /// Faithful LLVM parameter attributes for each formal parameter, in source
+    /// order (one entry per `fn_sig().inputs()` element), as derived from
+    /// rustc's `FnAbi` by the backend (Route A). `None` = no attributes for that
+    /// parameter (e.g. raw pointers, aggregates). Carries the pointer family
+    /// plus `noundef` and the integer `signext`/`zeroext`; applicability is
+    /// enforced per-attribute in `mir-lower`.
+    ///
+    /// These are *transported only* through this struct: the backend computes
+    /// them (it owns the `TyCtxt`/`Instance`), and the pipeline hands them to
+    /// `mir-lower` (keyed by the func's symbol name) so it can remap them onto
+    /// the flattened LLVM parameters and render them at signature lowering. An
+    /// empty `Vec` means "no attribute information" (e.g. closures, or a
+    /// non-backend caller) and is treated as a no-op. The type and its textual
+    /// rendering live in [`llvm_export`] (the crate that owns `.ll` emission).
+    pub arg_attrs: Vec<Option<ArgAttrs>>,
 }
 
 /// An external device function declaration (for FFI with external LTOIR).
@@ -236,6 +252,11 @@ pub fn run_pipeline(
 
     let mut legaliser = Legaliser::default();
 
+    // Per-function parameter attributes, keyed by the func's symbol name,
+    // handed to `mir-lower` after translation (see `lower_to_llvm`).
+    let mut arg_attrs: std::collections::HashMap<String, Vec<Option<ArgAttrs>>> =
+        std::collections::HashMap::new();
+
     // Step 3: Translate all functions
     for func in functions {
         if config.verbose {
@@ -267,6 +288,20 @@ pub fn run_pipeline(
             // Use .disp(&ctx) for rich error formatting with location and backtrace
             PipelineError::Translation(format!("{}: {}", func.export_name, e.disp(&ctx)))
         })?;
+
+        // Record the backend-derived (FnAbi) per-parameter attributes, keyed by
+        // the func's *symbol* name (the legalised name `mir-lower`
+        // looks them up by). `mir-lower` remaps them onto the flattened LLVM
+        // parameters and renders them at signature lowering. See
+        // `mir_lower::lowering::attach_arg_attrs`. We key by the op's symbol
+        // (not `export_name`) so the lookup survives identifier legalisation.
+        if !func.arg_attrs.is_empty() {
+            let symbol = dialect_mir::ops::MirFuncOp::wrap(&ctx, func_op_ptr)
+                .expect("translate_body produced a MirFuncOp")
+                .get_symbol_name(&ctx)
+                .to_string();
+            arg_attrs.insert(symbol, func.arg_attrs.clone());
+        }
 
         // Dump the per-function IR BEFORE verification so users can see
         // what the translator produced even when verification fails. If we
@@ -332,7 +367,7 @@ pub fn run_pipeline(
     if config.verbose {
         eprintln!("\n=== Lowering dialect-mir → LLVM dialect ===");
     }
-    lower_to_llvm(&mut ctx, module_op_ptr)?;
+    lower_to_llvm(&mut ctx, module_op_ptr, arg_attrs)?;
 
     // Step 5.5: Add device extern declarations to the LLVM dialect module.
     // These are needed before verification so calls to extern functions are valid.
@@ -529,10 +564,14 @@ fn append_to_module(ctx: &Context, module_op_ptr: Ptr<Operation>, func_op_ptr: P
 /// `dialect-mir`/`dialect-nvvm` op to its LLVM dialect equivalent. The LLVM
 /// dialect auto-registers when the `Context` is created, so no explicit
 /// registration is needed here.
-fn lower_to_llvm(ctx: &mut Context, module_op_ptr: Ptr<Operation>) -> Result<(), PipelineError> {
+fn lower_to_llvm(
+    ctx: &mut Context,
+    module_op_ptr: Ptr<Operation>,
+    arg_attrs: std::collections::HashMap<String, Vec<Option<ArgAttrs>>>,
+) -> Result<(), PipelineError> {
     mir_lower::register(ctx);
 
-    mir_lower::lower_mir_to_llvm(ctx, module_op_ptr)
+    mir_lower::lower_mir_to_llvm_with_arg_attrs(ctx, module_op_ptr, arg_attrs)
         .map_err(|e| PipelineError::Lowering(e.to_string()))
 }
 

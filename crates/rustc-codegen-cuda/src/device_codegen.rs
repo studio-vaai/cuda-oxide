@@ -335,6 +335,18 @@ pub fn generate_device_code<'tcx>(
         .map(|f| (f.export_name.clone(), f.is_kernel))
         .collect();
 
+    // Phase 1, Route A: derive faithful LLVM parameter attributes from each
+    // function's `FnAbi` *here*, while we still hold the internal
+    // `TyCtxt`/`Instance` the ABI query needs. The results are
+    // derivation-neutral (`mir_importer::ArgAttrs`, no rustc types), so we
+    // can move them into the stable_mir closure below and hand them to the
+    // pipeline, which passes them to `mir-lower` (keyed by func symbol name) to
+    // remap onto the flattened LLVM parameters and emit. See `crate::abi_attrs`.
+    let arg_attrs_per_func: Vec<Vec<Option<mir_importer::ArgAttrs>>> = functions
+        .iter()
+        .map(|f| crate::abi_attrs::derive_arg_attrs(tcx, f.instance))
+        .collect();
+
     // Convert device externs to mir-importer format
     // We extract signature info from rustc here since we have access to TyCtxt
     let stable_device_externs: Vec<mir_importer::DeviceExternDecl> = device_externs
@@ -433,7 +445,8 @@ pub fn generate_device_code<'tcx>(
         let stable_functions: Vec<mir_importer::CollectedFunction> = functions
             .iter()
             .zip(export_names.iter())
-            .map(|(func, (export_name, is_kernel))| {
+            .zip(arg_attrs_per_func.iter())
+            .map(|((func, (export_name, is_kernel)), arg_attrs)| {
                 // Use rustc_internal::stable() to convert the Instance.
                 // This is the key bridge between rustc_middle and rustc_public types.
                 let stable_instance = rustc_internal::stable(func.instance);
@@ -442,6 +455,8 @@ pub fn generate_device_code<'tcx>(
                     instance: stable_instance,
                     is_kernel: *is_kernel,
                     export_name: export_name.clone(),
+                    // FnAbi-derived parameter attributes (in source order).
+                    arg_attrs: arg_attrs.clone(),
                 }
             })
             .collect();

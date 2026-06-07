@@ -36,6 +36,7 @@
 //! - `literals`: constant/literal formatting
 //! - `metadata`: nvvm annotations and version, llvm.used
 
+mod arg_attrs;
 mod config;
 mod externs;
 mod function;
@@ -47,6 +48,7 @@ mod ops;
 mod state;
 mod types;
 
+pub use arg_attrs::{ArgAttrs, ArgExt, LlvmParamClass};
 pub use config::{ExportBackendConfig, NvvmExportConfig, PtxExportConfig};
 pub use externs::{AsDeviceExtern, DeviceExternAttrs, DeviceExternDecl};
 
