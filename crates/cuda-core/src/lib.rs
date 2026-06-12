@@ -566,3 +566,118 @@ pub unsafe fn launch_kernel_ex_cooperative_on_stream(
         )
     }
 }
+
+/// Low-level wrapper around `cuLaunchKernelEx` with the
+/// `CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION` flag set.
+///
+/// A *programmatic* (Programmatic Dependent Launch) launch marks this kernel
+/// as a dependent of the kernel launched immediately before it on the same
+/// stream. The dependent kernel becomes eligible to launch as soon as every
+/// block of the preceding (primary) kernel has called
+/// `cuda_device::pdl::griddepcontrol_launch_dependents()` or exited —
+/// overlapping the dependent's prologue with the primary's tail.
+///
+/// Concurrency is opportunistic, and launching early makes no
+/// memory-visibility promise: the dependent kernel must call
+/// `cuda_device::pdl::griddepcontrol_wait()` before reading anything the
+/// primary wrote.
+///
+/// This helper performs **no context binding**. Prefer
+/// [`launch_kernel_programmatic_on_stream`] in normal host-side code so the
+/// correct stream context is made current automatically.
+///
+/// # Safety
+///
+/// Same preconditions as [`launch_kernel`], plus:
+/// - The device must have compute capability 9.0 or higher.
+/// - The kernel must not read results of the preceding kernel before a
+///   `griddepcontrol_wait()` call.
+///
+/// # Errors
+///
+/// Returns the CUDA driver error produced by `cuLaunchKernelEx` if launch
+/// submission fails.
+#[inline]
+pub unsafe fn launch_kernel_programmatic(
+    func: cuda_bindings::CUfunction,
+    grid_dim: (u32, u32, u32),
+    block_dim: (u32, u32, u32),
+    shared_mem_bytes: u32,
+    stream: cuda_bindings::CUstream,
+    kernel_params: &mut [*mut std::ffi::c_void],
+) -> Result<(), DriverError> {
+    // CUlaunchAttribute_st is opaque (see cuda-bindings/build.rs) for CUDA 13.2+
+    // compatibility. C layout: { id: u32 @ 0, pad: [u8;4] @ 4, value: union @ 8 }.
+    // For the PROGRAMMATIC_STREAM_SERIALIZATION attribute the value union holds a
+    // single `int programmaticStreamSerializationAllowed` at offset 0 — set to 1
+    // to enable.
+    let mut pdl_attr: cuda_bindings::CUlaunchAttribute_st = unsafe { std::mem::zeroed() };
+    unsafe {
+        let base = &mut pdl_attr as *mut _ as *mut u8;
+        (base as *mut u32).write(
+            cuda_bindings::CUlaunchAttributeID_enum_CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION,
+        );
+        let val_ptr = base.add(8) as *mut i32;
+        val_ptr.write(1);
+    }
+
+    let config = cuda_bindings::CUlaunchConfig_st {
+        gridDimX: grid_dim.0,
+        gridDimY: grid_dim.1,
+        gridDimZ: grid_dim.2,
+        blockDimX: block_dim.0,
+        blockDimY: block_dim.1,
+        blockDimZ: block_dim.2,
+        sharedMemBytes: shared_mem_bytes,
+        hStream: stream,
+        attrs: &mut pdl_attr,
+        numAttrs: 1,
+    };
+
+    unsafe {
+        cuda_bindings::cuLaunchKernelEx(
+            &config,
+            func,
+            kernel_params.as_mut_ptr(),
+            std::ptr::null_mut(),
+        )
+    }
+    .result()
+}
+
+/// Launches a programmatic-dependent (PDL) CUDA kernel on a specific stream,
+/// binding the stream's owning context first.
+///
+/// This is the Programmatic Dependent Launch counterpart to
+/// [`launch_kernel_on_stream`]. It binds `stream.context()` to the calling
+/// thread, then forwards to the raw [`launch_kernel_programmatic`] helper.
+///
+/// # Safety
+///
+/// Same preconditions as [`launch_kernel_programmatic`].
+///
+/// # Errors
+///
+/// Returns an error if binding `stream.context()` fails or if the underlying
+/// `cuLaunchKernelEx` call rejects the launch.
+#[inline]
+pub unsafe fn launch_kernel_programmatic_on_stream(
+    func: &CudaFunction,
+    grid_dim: (u32, u32, u32),
+    block_dim: (u32, u32, u32),
+    shared_mem_bytes: u32,
+    stream: &CudaStream,
+    kernel_params: &mut [*mut std::ffi::c_void],
+) -> Result<(), DriverError> {
+    stream.context().bind_to_thread()?;
+    unsafe {
+        launch_kernel_programmatic(
+            func.cu_function(),
+            grid_dim,
+            block_dim,
+            shared_mem_bytes,
+            stream.cu_stream(),
+            kernel_params,
+        )
+    }
+}

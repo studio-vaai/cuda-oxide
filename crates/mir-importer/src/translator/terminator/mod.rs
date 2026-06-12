@@ -2660,6 +2660,17 @@ fn try_dispatch_intrinsic(
                 ctx, target, block_ptr, prev_op, block_map, loc,
             )?))
         }
+        "cuda_device::griddepcontrol_launch_dependents"
+        | "cuda_device::pdl::griddepcontrol_launch_dependents" => Ok(Some(
+            intrinsics::sync::emit_griddepcontrol_launch_dependents(
+                ctx, target, block_ptr, prev_op, block_map, loc,
+            )?,
+        )),
+        "cuda_device::griddepcontrol_wait" | "cuda_device::pdl::griddepcontrol_wait" => {
+            Ok(Some(intrinsics::sync::emit_griddepcontrol_wait(
+                ctx, target, block_ptr, prev_op, block_map, loc,
+            )?))
+        }
         "cuda_device::barrier::mbarrier_init" => Ok(Some(intrinsics::sync::emit_mbarrier_init(
             ctx, body, args, target, block_ptr, prev_op, value_map, block_map, loc,
         )?)),

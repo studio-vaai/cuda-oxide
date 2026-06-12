@@ -1,0 +1,24 @@
+[package]
+name = "pdl"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+# Mark as standalone crate (not part of parent workspace)
+[workspace]
+
+# This example demonstrates Programmatic Dependent Launch (PDL):
+# griddepcontrol_launch_dependents / griddepcontrol_wait device intrinsics
+# plus the `programmatic: true` launch attribute. Requires sm_90+.
+# Build with:
+#   cargo oxide run pdl
+
+[dependencies]
+# Device-side intrinsics (PDL, thread indexing, globaltimer, etc.)
+cuda-device = { path = "../../../cuda-device" }
+
+# Host-side utilities (CudaKernel trait, cuda_launch!, etc.)
+cuda-host = { path = "../../../cuda-host" }
+
+# Host-side CUDA runtime
+cuda-core = { path = "../../../cuda-core" }

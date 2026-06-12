@@ -66,7 +66,58 @@ impl GridSyncOp {
     }
 }
 
+// =============================================================================
+// Programmatic Dependent Launch (PDL)
+// =============================================================================
+
+/// Signal that programmatic dependent grids may launch.
+///
+/// Corresponds to PTX `griddepcontrol.launch_dependents` (CUDA C++
+/// `cudaTriggerProgrammaticLaunchCompletion()`). Once every block of the
+/// executing grid has issued this instruction or exited, grids launched on
+/// the same stream with `CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION`
+/// become eligible to launch. Carries no memory-ordering semantics. Requires
+/// sm_90+.
+#[pliron_op(
+    name = "nvvm.griddepcontrol_launch_dependents",
+    format,
+    verifier = "succ",
+    interfaces = [NOpdsInterface<0>, NResultsInterface<0>],
+)]
+pub struct GriddepcontrolLaunchDependentsOp;
+
+impl GriddepcontrolLaunchDependentsOp {
+    /// Wrap an existing operation pointer.
+    pub fn new(op: Ptr<Operation>) -> Self {
+        GriddepcontrolLaunchDependentsOp { op }
+    }
+}
+
+/// Block until all upstream grids complete and flush their memory writes.
+///
+/// Corresponds to PTX `griddepcontrol.wait` (CUDA C++
+/// `cudaGridDependencySynchronize()`). After this returns, the upstream
+/// (primary) grid's global-memory writes are visible to the calling thread.
+/// A no-op when the kernel has no programmatic upstream dependency. Requires
+/// sm_90+.
+#[pliron_op(
+    name = "nvvm.griddepcontrol_wait",
+    format,
+    verifier = "succ",
+    interfaces = [NOpdsInterface<0>, NResultsInterface<0>],
+)]
+pub struct GriddepcontrolWaitOp;
+
+impl GriddepcontrolWaitOp {
+    /// Wrap an existing operation pointer.
+    pub fn new(op: Ptr<Operation>) -> Self {
+        GriddepcontrolWaitOp { op }
+    }
+}
+
 /// Register all grid-scoped operations.
 pub fn register(ctx: &mut Context) {
     GridSyncOp::register(ctx);
+    GriddepcontrolLaunchDependentsOp::register(ctx);
+    GriddepcontrolWaitOp::register(ctx);
 }

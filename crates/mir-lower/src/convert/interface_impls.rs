@@ -53,8 +53,9 @@ use dialect_nvvm::ops::{
     Dp2aU32Op, Dp4aS32Op, Dp4aU32Op, DsmemReadU32Op, ElectSyncOp,
     FenceMbarrierInitReleaseClusterOp, FenceProxyAsyncGenericAcquireSharedClusterClusterOp,
     FenceProxyAsyncGenericReleaseSharedCtaClusterOp, FenceProxyAsyncSharedCtaOp, FmaBf16x2Op,
-    FmaReluBf16x2Op, InlinePtxOp, LdmatrixX1Op, LdmatrixX1TransOp, LdmatrixX2Op, LdmatrixX2TransOp,
-    LdmatrixX4Op, LdmatrixX4TransOp, MapaSharedClusterOp, MatchAllSyncI32Op, MatchAllSyncI64Op,
+    FmaReluBf16x2Op, GriddepcontrolLaunchDependentsOp, GriddepcontrolWaitOp, InlinePtxOp,
+    LdmatrixX1Op, LdmatrixX1TransOp, LdmatrixX2Op, LdmatrixX2TransOp, LdmatrixX4Op,
+    LdmatrixX4TransOp, MapaSharedClusterOp, MatchAllSyncI32Op, MatchAllSyncI64Op,
     MatchAnySyncI32Op, MatchAnySyncI64Op, MaxBf16x2Op, MbarrierArriveClusterOp,
     MbarrierArriveExpectTxClusterOp, MbarrierArriveExpectTxSharedOp, MbarrierArriveSharedOp,
     MbarrierInitSharedOp, MbarrierInvalSharedOp, MbarrierTestWaitSharedOp,
@@ -1508,6 +1509,40 @@ impl MirToLlvmConversion for ThreadfenceSystemOp {
         operands_info: &OperandsInfo,
     ) -> Result<()> {
         super::intrinsics::basic::convert_threadfence_system(
+            ctx,
+            rewriter,
+            self.get_operation(),
+            operands_info,
+        )
+    }
+}
+
+#[op_interface_impl]
+impl MirToLlvmConversion for GriddepcontrolLaunchDependentsOp {
+    fn convert(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        super::intrinsics::basic::convert_griddepcontrol_launch_dependents(
+            ctx,
+            rewriter,
+            self.get_operation(),
+            operands_info,
+        )
+    }
+}
+
+#[op_interface_impl]
+impl MirToLlvmConversion for GriddepcontrolWaitOp {
+    fn convert(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        super::intrinsics::basic::convert_griddepcontrol_wait(
             ctx,
             rewriter,
             self.get_operation(),

@@ -133,3 +133,33 @@ pub(crate) fn convert_threadfence_system(
 ) -> Result<()> {
     convert_membar(ctx, rewriter, op, "membar.sys;")
 }
+
+/// Convert the PDL trigger to inline PTX `griddepcontrol.launch_dependents`.
+///
+/// The trigger itself has no memory-ordering semantics, but it is emitted
+/// through the same memory-clobbered convergent inline-asm path as the
+/// fences so the compiler cannot speculate it into divergent control flow
+/// or reorder it against surrounding side effects.
+pub(crate) fn convert_griddepcontrol_launch_dependents(
+    ctx: &mut Context,
+    rewriter: &mut DialectConversionRewriter,
+    op: Ptr<Operation>,
+    _operands_info: &OperandsInfo,
+) -> Result<()> {
+    convert_membar(ctx, rewriter, op, "griddepcontrol.launch_dependents;")
+}
+
+/// Convert the PDL wait to inline PTX `griddepcontrol.wait`.
+///
+/// `griddepcontrol.wait` has acquire-like semantics — after it returns, the
+/// upstream grid's global-memory writes are visible — so the `~{memory}`
+/// clobber on the shared inline-asm path is required: loads must not be
+/// hoisted above it.
+pub(crate) fn convert_griddepcontrol_wait(
+    ctx: &mut Context,
+    rewriter: &mut DialectConversionRewriter,
+    op: Ptr<Operation>,
+    _operands_info: &OperandsInfo,
+) -> Result<()> {
+    convert_membar(ctx, rewriter, op, "griddepcontrol.wait;")
+}

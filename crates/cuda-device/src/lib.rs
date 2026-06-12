@@ -27,6 +27,7 @@ pub mod disjoint;
 pub mod dotprod;
 pub mod fence;
 pub mod grid;
+pub mod pdl;
 pub mod ptx;
 pub mod shared;
 pub mod tcgen05;
@@ -62,6 +63,7 @@ pub use cusimd::{CuSimd, Float2, Float4, TmemRegs4, TmemRegs32};
 pub use disjoint::__LaunchContractDisjointSlice;
 pub use disjoint::DisjointSlice;
 pub use fence::*;
+pub use pdl::*;
 pub use shared::{DynamicSharedArray, SharedArray};
 pub use tcgen05::{
     TensorMemoryHandle, TmemAddress, TmemDeallocated, TmemF32x4, TmemF32x32, TmemGuard, TmemReady,

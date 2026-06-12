@@ -18,8 +18,9 @@ use crate::translator::values::ValueMap;
 use dialect_nvvm::ops::{
     FenceMbarrierInitReleaseClusterOp, FenceProxyAsyncGenericAcquireSharedClusterClusterOp,
     FenceProxyAsyncGenericReleaseSharedCtaClusterOp, FenceProxyAsyncSharedCtaOp,
-    MbarrierArriveClusterOp, MbarrierArriveExpectTxClusterOp, MbarrierArriveExpectTxSharedOp,
-    MbarrierArriveSharedOp, MbarrierInitSharedOp, MbarrierInvalSharedOp, MbarrierTestWaitSharedOp,
+    GriddepcontrolLaunchDependentsOp, GriddepcontrolWaitOp, MbarrierArriveClusterOp,
+    MbarrierArriveExpectTxClusterOp, MbarrierArriveExpectTxSharedOp, MbarrierArriveSharedOp,
+    MbarrierInitSharedOp, MbarrierInvalSharedOp, MbarrierTestWaitSharedOp,
     MbarrierTryWaitParityClusterOp, MbarrierTryWaitParitySharedOp, MbarrierTryWaitSharedOp,
     NanosleepOp, ThreadfenceBlockOp, ThreadfenceOp, ThreadfenceSystemOp,
 };
@@ -180,6 +181,68 @@ pub fn emit_threadfence(
             )
         },
         "threadfence",
+    )
+}
+
+/// Emits `griddepcontrol_launch_dependents()`: PDL trigger — allow
+/// programmatic dependent grids to launch.
+pub fn emit_griddepcontrol_launch_dependents(
+    ctx: &mut Context,
+    target: &Option<usize>,
+    block_ptr: Ptr<BasicBlock>,
+    prev_op: Option<Ptr<Operation>>,
+    block_map: &[Ptr<BasicBlock>],
+    loc: Location,
+) -> TranslationResult<Ptr<Operation>> {
+    emit_zero_arg_void_sync_op(
+        ctx,
+        target,
+        block_ptr,
+        prev_op,
+        block_map,
+        loc,
+        |ctx| {
+            Operation::new(
+                ctx,
+                GriddepcontrolLaunchDependentsOp::get_concrete_op_info(),
+                vec![],
+                vec![],
+                vec![],
+                0,
+            )
+        },
+        "griddepcontrol_launch_dependents",
+    )
+}
+
+/// Emits `griddepcontrol_wait()`: PDL wait — block until upstream grids
+/// complete and flush their global-memory writes.
+pub fn emit_griddepcontrol_wait(
+    ctx: &mut Context,
+    target: &Option<usize>,
+    block_ptr: Ptr<BasicBlock>,
+    prev_op: Option<Ptr<Operation>>,
+    block_map: &[Ptr<BasicBlock>],
+    loc: Location,
+) -> TranslationResult<Ptr<Operation>> {
+    emit_zero_arg_void_sync_op(
+        ctx,
+        target,
+        block_ptr,
+        prev_op,
+        block_map,
+        loc,
+        |ctx| {
+            Operation::new(
+                ctx,
+                GriddepcontrolWaitOp::get_concrete_op_info(),
+                vec![],
+                vec![],
+                vec![],
+                0,
+            )
+        },
+        "griddepcontrol_wait",
     )
 }
 
