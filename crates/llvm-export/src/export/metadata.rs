@@ -84,6 +84,21 @@ pub(super) fn emit_nvvm_annotations(
         .collect();
 
     for (name, max_threads, min_blocks) in launch_bounds_kernels {
+        // Launch-bounds kernels are excluded from the basic `!"kernel"` marker
+        // loop above (they live in `special_kernel_names`). The cluster path
+        // re-adds `!"kernel"` inline with its dims; this path must do the same,
+        // or the function ends up with maxntid/minctasm annotations but *no*
+        // kernel marker. libNVVM then treats it as a plain device function
+        // rather than an entry point, emits a malformed function descriptor
+        // (cuobjdump shows REG:0), and the driver rejects every launch of it
+        // with CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES (701).
+        {
+            let md_id = state.alloc_metadata_id();
+            write!(output, "!{md_id} = !{{").unwrap();
+            emit_function_reference(output, state, &name)?;
+            writeln!(output, ", !\"kernel\", i32 1}}").unwrap();
+            metadata_refs.push(format!("!{}", md_id));
+        }
         for (key, value) in [("maxntidx", max_threads), ("maxntidy", 1), ("maxntidz", 1)] {
             let md_id = state.alloc_metadata_id();
             write!(output, "!{md_id} = !{{").unwrap();
@@ -200,16 +215,17 @@ mod tests {
             concat!(
                 "!0 = !{ptr @plain, !\"kernel\", i32 1}\n",
                 "!1 = !{ptr @clustered, !\"kernel\", i32 1, !\"cluster_dim_x\", i32 2, !\"cluster_dim_y\", i32 3, !\"cluster_dim_z\", i32 4}\n",
-                "!2 = !{ptr @bounded, !\"maxntidx\", i32 256}\n",
-                "!3 = !{ptr @bounded, !\"maxntidy\", i32 1}\n",
-                "!4 = !{ptr @bounded, !\"maxntidz\", i32 1}\n",
-                "!5 = !{ptr @bounded, !\"minctasm\", i32 2}\n",
-                "!nvvm.annotations = !{!0, !1, !2, !3, !4, !5}\n",
-                "!nvvmir.version = !{!6}\n",
-                "!6 = !{i32 2, i32 0, i32 3, i32 2}\n",
+                "!2 = !{ptr @bounded, !\"kernel\", i32 1}\n",
+                "!3 = !{ptr @bounded, !\"maxntidx\", i32 256}\n",
+                "!4 = !{ptr @bounded, !\"maxntidy\", i32 1}\n",
+                "!5 = !{ptr @bounded, !\"maxntidz\", i32 1}\n",
+                "!6 = !{ptr @bounded, !\"minctasm\", i32 2}\n",
+                "!nvvm.annotations = !{!0, !1, !2, !3, !4, !5, !6}\n",
+                "!nvvmir.version = !{!7}\n",
+                "!7 = !{i32 2, i32 0, i32 3, i32 2}\n",
             )
         );
-        assert_eq!(state.next_metadata_id(), 7);
+        assert_eq!(state.next_metadata_id(), 8);
     }
 
     #[test]

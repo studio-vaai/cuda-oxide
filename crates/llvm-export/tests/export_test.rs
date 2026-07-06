@@ -1558,12 +1558,20 @@ fn nvvm_metadata_version_uses_next_allocated_metadata_id() {
     let ir = export_module_to_string_with_config(&ctx, &module, &NvvmExportConfig::default())
         .expect("NVVM export succeeds");
 
+    // The kernel marker (!0) precedes the four launch-bounds nodes
+    // (maxntid{x,y,z} + minctasm). Without it libNVVM treats the function as
+    // a plain device function, not an entry point, and the driver rejects
+    // every launch with CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES (701).
     assert!(
-        ir.contains("!nvvm.annotations = !{!0, !1, !2, !3}"),
-        "launch-bounds annotations should occupy !0..!3:\n{ir}"
+        ir.contains("!nvvm.annotations = !{!0, !1, !2, !3, !4}"),
+        "kernel marker + launch-bounds annotations should occupy !0..!4:\n{ir}"
     );
     assert!(
-        ir.contains("!nvvmir.version = !{!4}\n!4 = !{i32 2, i32 0, i32 3, i32 2}"),
+        ir.contains("!0 = !{ptr @bounded_kernel, !\"kernel\", i32 1}"),
+        "launch-bounds kernel must still carry the !\"kernel\" entry-point marker:\n{ir}"
+    );
+    assert!(
+        ir.contains("!nvvmir.version = !{!5}\n!5 = !{i32 2, i32 0, i32 3, i32 2}"),
         "version metadata should use the next allocated ID:\n{ir}"
     );
 }
