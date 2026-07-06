@@ -55,8 +55,9 @@ use dialect_nvvm::ops::atomic::{
 use llvm_export::attributes::{LlvmAtomicOrdering, LlvmAtomicRmwKind, LlvmSyncScope};
 use llvm_export::ops as llvm;
 use llvm_export::ops::{AsmKind, InlineAsmOpExt};
+use llvm_export::types as llvm_types;
 
-use pliron::builtin::types::{IntegerType, Signedness};
+use pliron::builtin::types::{FP32Type, FP64Type, IntegerType, Signedness};
 use pliron::context::{Context, Ptr};
 use pliron::irbuild::dialect_conversion::{DialectConversionRewriter, OperandsInfo};
 use pliron::irbuild::inserter::Inserter;
@@ -111,11 +112,84 @@ fn map_rmw_kind(kind: &NvvmRmwKind) -> LlvmAtomicRmwKind {
 fn emit_fence(
     ctx: &mut Context,
     rewriter: &mut DialectConversionRewriter,
-    ordering: LlvmAtomicOrdering,
+    _ordering: LlvmAtomicOrdering,
     syncscope: LlvmSyncScope,
 ) {
-    let fence = llvm::FenceOp::new(ctx, ordering, syncscope.to_pliron());
-    rewriter.insert_operation(ctx, fence.get_operation());
+    // libNVVM rejects LLVM `fence`; emit the equivalent inline PTX `membar`
+    // (a full barrier — at least as strong as any acquire/release/seq_cst
+    // fence the RMW ordering split needs). Scope maps device→gl, block→cta.
+    let membar = match syncscope {
+        LlvmSyncScope::Block => "membar.cta;",
+        LlvmSyncScope::System => "membar.sys;",
+        _ => "membar.gl;",
+    };
+    let void_ty = llvm_types::VoidType::get(ctx);
+    let asm = llvm::InlineAsmOp::build(
+        ctx,
+        void_ty.into(),
+        vec![],
+        membar,
+        "~{memory}",
+        AsmKind::SideEffect,
+    );
+    rewriter.insert_operation(ctx, asm.get_operation());
+}
+
+// ── Inline-PTX atomic load/store lowering ────────────────────────────────
+// libNVVM rejects LLVM `load atomic` / `store atomic` ("Atomic loads/stores
+// are not supported"). Emit the equivalent single PTX instruction
+// (`ld/st.<sem>.<scope>.<type>`) as inline asm, which libNVVM passes through.
+// Cloth kernels only use `Relaxed` today; the strong forms are mapped for
+// robustness (a `Release` load / `Acquire` store can't exist).
+
+/// PTX ordering qualifier for an atomic **load**.
+fn ptx_load_sem(o: &NvvmOrdering) -> &'static str {
+    match o {
+        NvvmOrdering::Relaxed => "relaxed",
+        _ => "acquire",
+    }
+}
+
+/// PTX ordering qualifier for an atomic **store**.
+fn ptx_store_sem(o: &NvvmOrdering) -> &'static str {
+    match o {
+        NvvmOrdering::Relaxed => "relaxed",
+        _ => "release",
+    }
+}
+
+/// PTX scope qualifier.
+fn ptx_scope(s: &NvvmScope) -> &'static str {
+    match s {
+        NvvmScope::Device => "gpu",
+        NvvmScope::Block => "cta",
+        NvvmScope::System => "sys",
+    }
+}
+
+/// PTX access type + inline-asm register-constraint letter for `ty`.
+fn ptx_type_reg(
+    ctx: &Context,
+    ty: pliron::r#type::TypeHandle,
+) -> Result<(&'static str, &'static str)> {
+    let tref = ty.deref(ctx);
+    if let Some(int) = tref.downcast_ref::<IntegerType>() {
+        return match int.width() {
+            16 => Ok(("b16", "h")),
+            32 => Ok(("b32", "r")),
+            64 => Ok(("b64", "l")),
+            w => Err(pliron::input_error_noloc!("unsupported atomic int width {}", w)),
+        };
+    }
+    if tref.is::<FP32Type>() {
+        return Ok(("f32", "f"));
+    }
+    if tref.is::<FP64Type>() {
+        return Ok(("f64", "d"));
+    }
+    Err(pliron::input_error_noloc!(
+        "unsupported atomic value type for inline-asm lowering"
+    ))
 }
 
 // =============================================================================
@@ -129,18 +203,30 @@ pub(crate) fn convert_atomic_load(
     _operands_info: &OperandsInfo,
 ) -> Result<()> {
     let nvvm_op = NvvmAtomicLoadOp::new(op);
-    let ordering = map_ordering(&nvvm_op.ordering(ctx));
-    let syncscope = map_scope(&nvvm_op.scope(ctx));
+    let sem = ptx_load_sem(&nvvm_op.ordering(ctx));
+    let scope = ptx_scope(&nvvm_op.scope(ctx));
 
     let operands: Vec<_> = op.deref(ctx).operands().collect();
     let ptr = operands[0];
     let mir_result_ty = op.deref(ctx).get_result(0).get_type(ctx);
     let result_ty =
         convert_type(ctx, mir_result_ty).map_err(|e| pliron::input_error_noloc!("{}", e))?;
+    let (pty, reg) = ptx_type_reg(ctx, result_ty)?;
 
-    let llvm_load = llvm::AtomicLoadOp::new(ctx, ptr, result_ty, ordering, syncscope.to_pliron());
-    rewriter.insert_operation(ctx, llvm_load.get_operation());
-    rewriter.replace_operation(ctx, op, llvm_load.get_operation());
+    // `~{memory}` + SideEffect keep the read from being hoisted, merged, or
+    // reordered across other memory ops (conservative for a relaxed atomic).
+    let template = format!("ld.{sem}.{scope}.{pty} $0, [$1];");
+    let constraints = format!("={reg},l,~{{memory}}");
+    let asm = llvm::InlineAsmOp::build(
+        ctx,
+        result_ty,
+        vec![ptr],
+        &template,
+        &constraints,
+        AsmKind::SideEffect,
+    );
+    rewriter.insert_operation(ctx, asm.get_operation());
+    rewriter.replace_operation(ctx, op, asm.get_operation());
 
     Ok(())
 }
@@ -156,15 +242,26 @@ pub(crate) fn convert_atomic_store(
     _operands_info: &OperandsInfo,
 ) -> Result<()> {
     let nvvm_op = NvvmAtomicStoreOp::new(op);
-    let ordering = map_ordering(&nvvm_op.ordering(ctx));
-    let syncscope = map_scope(&nvvm_op.scope(ctx));
+    let sem = ptx_store_sem(&nvvm_op.ordering(ctx));
+    let scope = ptx_scope(&nvvm_op.scope(ctx));
 
     let operands: Vec<_> = op.deref(ctx).operands().collect();
     let val = operands[0];
     let ptr = operands[1];
+    let (pty, reg) = ptx_type_reg(ctx, val.get_type(ctx))?;
 
-    let llvm_store = llvm::AtomicStoreOp::new(ctx, val, ptr, ordering, syncscope.to_pliron());
-    rewriter.insert_operation(ctx, llvm_store.get_operation());
+    let template = format!("st.{sem}.{scope}.{pty} [$0], $1;");
+    let constraints = format!("l,{reg},~{{memory}}");
+    let void_ty = llvm_types::VoidType::get(ctx);
+    let asm = llvm::InlineAsmOp::build(
+        ctx,
+        void_ty.into(),
+        vec![ptr, val],
+        &template,
+        &constraints,
+        AsmKind::SideEffect,
+    );
+    rewriter.insert_operation(ctx, asm.get_operation());
     rewriter.erase_operation(ctx, op);
 
     Ok(())
