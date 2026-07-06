@@ -790,12 +790,18 @@ fn device_debug_kind_with_override(
         }
     }
 
+    // Default to NO device debug info. cuda-oxide emits DWARF for LineTables/Full,
+    // and ptxas refuses `-O3` on any module that carries debug info ("Optimized
+    // debugging not supported") — so honoring the profile's `debuginfo` here would
+    // silently disable the nvJitLink `-lto -O3` optimization and cost ~5x wall time
+    // on the cloth kernels. Device debug is opt-in: set `CUDA_OXIDE_DEBUG=line|full`
+    // (which turns `-O3` back off) when you actually need SASS<->source mapping.
     match rustc_debug {
-        DebugInfo::None => llvm_export::export::DebugKind::Off,
-        DebugInfo::LineDirectivesOnly
+        DebugInfo::None
+        | DebugInfo::LineDirectivesOnly
         | DebugInfo::LineTablesOnly
         | DebugInfo::Limited
-        | DebugInfo::Full => llvm_export::export::DebugKind::LineTables,
+        | DebugInfo::Full => llvm_export::export::DebugKind::Off,
     }
 }
 
@@ -837,19 +843,15 @@ mod tests {
     }
 
     #[test]
-    fn device_debug_kind_follows_rustc_debuginfo() {
-        assert_eq!(
-            device_debug_kind_with_override(DebugInfo::None, None),
-            llvm_export::export::DebugKind::Off
-        );
-        assert_eq!(
-            device_debug_kind_with_override(DebugInfo::LineTablesOnly, None),
-            llvm_export::export::DebugKind::LineTables
-        );
-        assert_eq!(
-            device_debug_kind_with_override(DebugInfo::Full, None),
-            llvm_export::export::DebugKind::LineTables
-        );
+    fn device_debug_kind_defaults_to_off_regardless_of_rustc_debuginfo() {
+        // Device debug is off by default at every rustc level, so nvJitLink
+        // `-lto -O3` stays enabled unless debug is explicitly opted into.
+        for level in [DebugInfo::None, DebugInfo::LineTablesOnly, DebugInfo::Full] {
+            assert_eq!(
+                device_debug_kind_with_override(level, None),
+                llvm_export::export::DebugKind::Off
+            );
+        }
     }
 
     #[test]
