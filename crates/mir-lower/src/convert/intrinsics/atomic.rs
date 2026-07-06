@@ -55,6 +55,9 @@ use dialect_nvvm::ops::atomic::{
 use llvm_export::attributes::{LlvmAtomicOrdering, LlvmAtomicRmwKind, LlvmSyncScope};
 use llvm_export::ops as llvm;
 use llvm_export::ops::{AsmKind, InlineAsmOpExt};
+use llvm_export::types as llvm_types;
+
+use crate::convert::intrinsics::common::inline_asm_sideeffect;
 
 use pliron::builtin::types::{IntegerType, Signedness};
 use pliron::context::{Context, Ptr};
@@ -88,6 +91,30 @@ fn map_ordering(ord: &NvvmOrdering) -> LlvmAtomicOrdering {
     }
 }
 
+// PTX scope/semantic suffixes for the inline-asm atomic load/store/fence
+// legalization below (libNVVM rejects LLVM `load/store atomic` + `fence`).
+fn ptx_scope(scope: &NvvmScope) -> &'static str {
+    match scope {
+        NvvmScope::Device => "gpu",
+        NvvmScope::Block => "cta",
+        NvvmScope::System => "sys",
+    }
+}
+
+fn ptx_load_sem(ord: &NvvmOrdering) -> &'static str {
+    match ord {
+        NvvmOrdering::Relaxed | NvvmOrdering::Release => "relaxed",
+        NvvmOrdering::Acquire | NvvmOrdering::AcqRel | NvvmOrdering::SeqCst => "acquire",
+    }
+}
+
+fn ptx_store_sem(ord: &NvvmOrdering) -> &'static str {
+    match ord {
+        NvvmOrdering::Relaxed | NvvmOrdering::Acquire => "relaxed",
+        NvvmOrdering::Release | NvvmOrdering::AcqRel | NvvmOrdering::SeqCst => "release",
+    }
+}
+
 fn map_rmw_kind(kind: &NvvmRmwKind) -> LlvmAtomicRmwKind {
     match kind {
         NvvmRmwKind::Add => LlvmAtomicRmwKind::Add,
@@ -114,8 +141,20 @@ fn emit_fence(
     ordering: LlvmAtomicOrdering,
     syncscope: LlvmSyncScope,
 ) {
-    let fence = llvm::FenceOp::new(ctx, ordering, syncscope.to_pliron());
-    rewriter.insert_operation(ctx, fence.get_operation());
+    // Inline PTX fence — CUDA-13 libNVVM (consumer Blackwell / sm_121) rejects
+    // the LLVM `fence` instruction, so emit `fence.<sem>.<scope>;` directly.
+    let sem = match ordering {
+        LlvmAtomicOrdering::SeqCst => "sc",
+        _ => "acq_rel",
+    };
+    let scope = match syncscope {
+        LlvmSyncScope::Block => "cta",
+        LlvmSyncScope::System => "sys",
+        _ => "gpu",
+    };
+    let asm = format!("fence.{sem}.{scope};");
+    let void_ty = llvm_types::VoidType::get(ctx);
+    inline_asm_sideeffect(ctx, rewriter, void_ty.into(), vec![], &asm, "");
 }
 
 // =============================================================================
@@ -129,8 +168,8 @@ pub(crate) fn convert_atomic_load(
     _operands_info: &OperandsInfo,
 ) -> Result<()> {
     let nvvm_op = NvvmAtomicLoadOp::new(op);
-    let ordering = map_ordering(&nvvm_op.ordering(ctx));
-    let syncscope = map_scope(&nvvm_op.scope(ctx));
+    let sem = ptx_load_sem(&nvvm_op.ordering(ctx));
+    let scope = ptx_scope(&nvvm_op.scope(ctx));
 
     let operands: Vec<_> = op.deref(ctx).operands().collect();
     let ptr = operands[0];
@@ -138,9 +177,11 @@ pub(crate) fn convert_atomic_load(
     let result_ty =
         convert_type(ctx, mir_result_ty).map_err(|e| pliron::input_error_noloc!("{}", e))?;
 
-    let llvm_load = llvm::AtomicLoadOp::new(ctx, ptr, result_ty, ordering, syncscope.to_pliron());
-    rewriter.insert_operation(ctx, llvm_load.get_operation());
-    rewriter.replace_operation(ctx, op, llvm_load.get_operation());
+    // Inline PTX load — libNVVM rejects LLVM `load atomic`. 32-bit only (all
+    // cloth-solver-cuda atomics are u32/f32-bits; wider widths would need b64).
+    let asm = format!("ld.{sem}.{scope}.b32 $0, [$1];");
+    let asm_op = inline_asm_sideeffect(ctx, rewriter, result_ty, vec![ptr], &asm, "=r,l");
+    rewriter.replace_operation(ctx, op, asm_op);
 
     Ok(())
 }
@@ -156,15 +197,17 @@ pub(crate) fn convert_atomic_store(
     _operands_info: &OperandsInfo,
 ) -> Result<()> {
     let nvvm_op = NvvmAtomicStoreOp::new(op);
-    let ordering = map_ordering(&nvvm_op.ordering(ctx));
-    let syncscope = map_scope(&nvvm_op.scope(ctx));
+    let sem = ptx_store_sem(&nvvm_op.ordering(ctx));
+    let scope = ptx_scope(&nvvm_op.scope(ctx));
 
     let operands: Vec<_> = op.deref(ctx).operands().collect();
     let val = operands[0];
     let ptr = operands[1];
 
-    let llvm_store = llvm::AtomicStoreOp::new(ctx, val, ptr, ordering, syncscope.to_pliron());
-    rewriter.insert_operation(ctx, llvm_store.get_operation());
+    // Inline PTX store — libNVVM rejects LLVM `store atomic`. 32-bit only.
+    let asm = format!("st.{sem}.{scope}.b32 [$0], $1;");
+    let void_ty = llvm_types::VoidType::get(ctx);
+    inline_asm_sideeffect(ctx, rewriter, void_ty.into(), vec![ptr, val], &asm, "l,r");
     rewriter.erase_operation(ctx, op);
 
     Ok(())
