@@ -418,10 +418,20 @@ fn link_ltoir_to_cubin_with_tool_options(
     allow_fma_contraction: bool,
 ) -> Result<Vec<u8>, LtoirError> {
     let arch_opt = format!("-arch={}", arch.sm());
-    let options = nvjitlink_lto_options(&arch_opt, false, allow_fma_contraction);
-    let mut linker = Linker::new(nvj, &options)?;
-    linker.add(InputType::Ltoir, ltoir, module_name)?;
-    Ok(linker.finish()?)
+    let link = |optimize: bool| -> Result<Vec<u8>, LtoirError> {
+        let options = nvjitlink_lto_options(&arch_opt, false, allow_fma_contraction, optimize);
+        let mut linker = Linker::new(nvj, &options)?;
+        linker.add(InputType::Ltoir, ltoir, module_name)?;
+        Ok(linker.finish()?)
+    };
+    // Optimize by default — nvJitLink `-lto` without a level runs unoptimized,
+    // which is ~6x slower on the cloth kernels. ptxas cannot optimize a module
+    // that carries debug info, so on that one specific failure fall back to an
+    // unoptimized link rather than error out.
+    match link(true) {
+        Err(e) if format!("{e}").contains("Optimized debugging not supported") => link(false),
+        other => other,
+    }
 }
 
 fn link_ltoir_to_ptx_parsed_with_options(
@@ -442,16 +452,35 @@ fn link_ltoir_to_ptx_with_tool_options(
     allow_fma_contraction: bool,
 ) -> Result<Vec<u8>, LtoirError> {
     let arch_opt = format!("-arch={}", arch.sm());
-    let options = nvjitlink_lto_options(&arch_opt, true, allow_fma_contraction);
+    // PTX-emit path (pre-Blackwell fallback): leave unoptimized to preserve the
+    // prior behavior; the cubin path above is the hot one.
+    let options = nvjitlink_lto_options(&arch_opt, true, allow_fma_contraction, false);
     let mut linker = Linker::new(nvj, &options)?;
     linker.add(InputType::Ltoir, ltoir, module_name)?;
     Ok(linker.finish_ptx()?)
 }
 
-fn nvjitlink_lto_options(arch_opt: &str, emit_ptx: bool, allow_fma_contraction: bool) -> Vec<&str> {
+fn nvjitlink_lto_options(
+    arch_opt: &str,
+    emit_ptx: bool,
+    allow_fma_contraction: bool,
+    optimize: bool,
+) -> Vec<&str> {
     let mut options = vec![arch_opt, "-lto"];
     if emit_ptx {
         options.push("-ptx");
+    }
+    // nvJitLink's `-lto` link defers ALL optimization to this step, but without
+    // an explicit level it runs effectively unoptimized (no copy propagation,
+    // no dead-code elimination, no real register allocation) — which leaves the
+    // cloth kernels ~2x the instructions, ~10x the MOVs, and ~2x the registers
+    // they need, and costs ~6x wall time on posed_wall_bench. `-O3` fixes that.
+    // ptxas rejects `-O3` when the module carries debug info ("Optimized
+    // debugging not supported"), so the caller only sets `optimize` for modules
+    // built without debug info (and falls back to an unoptimized link if a debug
+    // module slips through).
+    if optimize {
+        options.push("-O3");
     }
     options.push(if allow_fma_contraction {
         "-fma=1"
@@ -1350,12 +1379,17 @@ mod tests {
             ["-arch=compute_86", "-gen-lto", "-fma=0"]
         );
         assert_eq!(
-            nvjitlink_lto_options("-arch=sm_86", false, false),
+            nvjitlink_lto_options("-arch=sm_86", false, false, false),
             ["-arch=sm_86", "-lto", "-fma=0"]
         );
         assert_eq!(
-            nvjitlink_lto_options("-arch=sm_86", true, true),
+            nvjitlink_lto_options("-arch=sm_86", true, true, false),
             ["-arch=sm_86", "-lto", "-ptx", "-fma=1"]
+        );
+        // `optimize` adds `-O3` after any `-ptx`, before the FMA policy.
+        assert_eq!(
+            nvjitlink_lto_options("-arch=sm_86", false, true, true),
+            ["-arch=sm_86", "-lto", "-O3", "-fma=1"]
         );
     }
 
