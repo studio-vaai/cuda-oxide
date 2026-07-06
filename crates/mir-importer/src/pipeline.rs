@@ -44,15 +44,54 @@ use cuda_oxide_codegen::__private::{
 pub use cuda_oxide_codegen::__private::{DeviceExternAttrs, DeviceExternDecl, PipelineError};
 use llvm_export::export::DebugKind;
 pub use llvm_export::export::DeviceExternType;
-use pliron::context::Context;
-use pliron::identifier::Legaliser;
+use llvm_export::{ARG_ATTRS_KEY, ArgAttrs, LlvmParamAttrsAttr};
+use pliron::attribute::AttrObj;
+use pliron::builtin::attributes::VecAttr;
+use pliron::context::{Context, Ptr};
+use pliron::identifier::{Identifier, Legaliser};
 use pliron::op::Op;
+use pliron::operation::Operation;
 use pliron::printable::Printable;
 use rustc_public::mir::mono::Instance;
 use std::path::Path;
 
 fn stderr_pipeline_trace(message: &str) {
     eprintln!("{message}");
+}
+
+/// Turn the backend's source-parameter [`ArgAttrs`] into first-class
+/// [`LlvmParamAttrsAttr`] carriers and stamp a
+/// [`VecAttr`](pliron::builtin::attributes::VecAttr) of them onto the translated
+/// func op under [`ARG_ATTRS_KEY`], one entry per source parameter.
+///
+/// `mir-lower` reads this vector, remaps it onto the flattened LLVM parameters,
+/// and re-stamps it on the LLVM func op for the exporter — no side-channel map,
+/// no pre-rendered strings. No-op when the frontend supplied no attributes, so a
+/// non-backend caller (or a function rustc gives nothing) stays bare.
+fn stamp_source_arg_attrs(
+    ctx: &mut Context,
+    func_op: Ptr<Operation>,
+    arg_attrs: &[Option<ArgAttrs>],
+) {
+    if arg_attrs.iter().all(Option::is_none) {
+        return;
+    }
+    let Ok(key) = Identifier::try_from(ARG_ATTRS_KEY) else {
+        return;
+    };
+    let elems: Vec<AttrObj> = arg_attrs
+        .iter()
+        .map(|slot| {
+            slot.as_ref()
+                .map(LlvmParamAttrsAttr::from)
+                .unwrap_or_default()
+                .into()
+        })
+        .collect();
+    func_op
+        .deref_mut(ctx)
+        .attributes
+        .set(key, VecAttr::new(elems));
 }
 
 /// A function collected for GPU compilation.
@@ -83,6 +122,21 @@ pub struct CollectedFunction {
     /// This preserves Rust's inline intent for device helpers and avoids
     /// making helper boundaries depend entirely on later optimizer heuristics.
     pub is_inline_always: bool,
+    /// FnAbi-derived LLVM parameter attributes, one entry per *source*
+    /// parameter in `fn_sig().inputs()` order (`None` = no attributes for that
+    /// parameter, e.g. raw pointers or aggregates). The stable_mir API does not
+    /// expose ABI attributes, so `rustc-codegen-cuda` derives these faithfully
+    /// from rustc's `FnAbi` (see `rustc_codegen_cuda::abi_attrs`) and threads
+    /// them through here.
+    ///
+    /// The backend produces only the derivation-neutral [`ArgAttrs`]; this
+    /// struct carries no IR. `run_pipeline` turns each into the first-class
+    /// [`LlvmParamAttrsAttr`](llvm_export::LlvmParamAttrsAttr) carrier and
+    /// stamps a [`VecAttr`](pliron::builtin::attributes::VecAttr) of them onto
+    /// the translated func op, from where it rides through lowering to the
+    /// exporter. An empty `Vec` means "no attribute information" (e.g. the
+    /// experimental frontend) and is a no-op.
+    pub arg_attrs: Vec<Option<ArgAttrs>>,
 }
 
 /// Device artifact format produced by a successful pipeline run.
@@ -265,6 +319,12 @@ pub fn run_pipeline(
             // Use .disp(&ctx) for rich error formatting with location and backtrace
             PipelineError::Translation(format!("{}: {}", func.export_name, e.disp(&ctx)))
         })?;
+
+        // Stamp the backend's FnAbi-derived parameter attributes onto the func
+        // op as a first-class carrier, so they ride through lowering to the
+        // exporter with no side-channel map. No-op when the frontend supplied
+        // none (e.g. the experimental rustc-public path).
+        stamp_source_arg_attrs(&mut ctx, func_op_ptr, &func.arg_attrs);
 
         // Dump the per-function IR BEFORE verification so users can see
         // what the translator produced even when verification fails. If we

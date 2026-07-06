@@ -15,22 +15,24 @@ use std::fmt::Write;
 use pliron::{
     basic_block::BasicBlock,
     builtin::{
-        attributes::{FPDoubleAttr, FPSingleAttr, IntegerAttr},
+        attributes::{FPDoubleAttr, FPSingleAttr, IntegerAttr, VecAttr},
         op_interfaces::{BranchOpInterface, SymbolOpInterface},
         type_interfaces::FunctionTypeInterface,
         types::IntegerType,
     },
-    context::Ptr,
+    context::{Context, Ptr},
+    identifier::Identifier,
     linked_list::ContainsLinkedList,
     location::Located,
     op::Op,
     operation::Operation,
     printable::Printable,
-    r#type::Typed,
+    r#type::{TypeHandle, Typed},
     value::Value,
 };
 
 use crate::{
+    ARG_ATTRS_KEY, LlvmParamAttrsAttr, LlvmParamClass,
     attributes::FPHalfAttr,
     ops::{self, FuncOp, GlobalOpExt},
     types::{FuncType, PointerType},
@@ -43,6 +45,42 @@ use super::{
         KernelClusterConfig, KernelInfo, KernelLaunchBounds, ModuleExportState, PredecessorMap,
     },
 };
+
+/// Read the flattened per-parameter LLVM attribute carriers `mir-lower` stamped
+/// onto `func` under [`ARG_ATTRS_KEY`], one [`LlvmParamAttrsAttr`] per LLVM
+/// parameter in signature order. Returns an empty vector when the func carries
+/// no attribute information (the common case), so callers emit bare parameters.
+fn read_flat_param_attrs(ctx: &Context, func: &FuncOp) -> Vec<LlvmParamAttrsAttr> {
+    let Ok(key) = Identifier::try_from(ARG_ATTRS_KEY) else {
+        return Vec::new();
+    };
+    let op = func.get_operation().deref(ctx);
+    let Some(vec_attr) = op.attributes.get::<VecAttr>(&key) else {
+        return Vec::new();
+    };
+    vec_attr
+        .0
+        .iter()
+        .map(|elem| {
+            elem.downcast_ref::<LlvmParamAttrsAttr>()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
+/// Classify a flattened LLVM parameter type for the per-attribute applicability
+/// gate in [`LlvmParamAttrsAttr::to_fragment`].
+fn llvm_param_class(ctx: &Context, ty: TypeHandle) -> LlvmParamClass {
+    let ty_ref = ty.deref(ctx);
+    if ty_ref.is::<PointerType>() {
+        LlvmParamClass::Pointer
+    } else if ty_ref.is::<IntegerType>() {
+        LlvmParamClass::Integer
+    } else {
+        LlvmParamClass::Other
+    }
+}
 
 impl<'a> ModuleExportState<'a> {
     /// Export a global variable (typically shared memory for GPU kernels).
@@ -322,30 +360,41 @@ impl<'a> ModuleExportState<'a> {
             let mut value_names = FxHashMap::default();
             let mut next_value_id = 0;
 
-            let block = entry_block.deref(self.ctx);
-            let args = block.arguments();
-            // Parameters are emitted bare: `<type> %vN` with no LLVM parameter
-            // attributes (no `noalias`, `nocapture`, `dereferenceable`, etc.).
-            // This is deliberate and load-bearing for `DisjointSlice`.
+            let arg_values: Vec<Value> = {
+                let block = entry_block.deref(self.ctx);
+                block.arguments().collect()
+            };
+
+            // Per-parameter LLVM attributes (`noalias`, `readonly`, `nonnull`,
+            // `noundef`, `dereferenceable(N)`, `align N`, and integer
+            // `signext`/`zeroext`) are emitted only when the func op carries the
+            // flattened `LlvmParamAttrsAttr` vector under `ARG_ATTRS_KEY`. The
+            // exporter never synthesizes them; it renders whatever the backend
+            // decided (`rustc_codegen_cuda::abi_attrs`, a faithful pass-through
+            // of rustc's `FnAbi`) after `mir-lower` remapped it onto these
+            // flattened parameters. `to_fragment` gates each token by the
+            // lowered parameter's class, so pointer-only tokens never land on a
+            // scalar and vice versa.
             //
-            // `DisjointSlice::from_raw_parts` is `unsafe fn` whose contract
-            // says callers must not construct two slices over the same range.
-            // Violating that contract creates two `&mut T` to the same byte —
-            // which is simply UB. Today, because we don't tag pointer
-            // parameters with `noalias`, LLVM treats them conservatively and
-            // the violation doesn't *miscompile*; it just runs as written.
-            //
-            // If a future change here adds `noalias` (e.g. for a perf win on
-            // read-only `&[T]` inputs), that property goes away and any code
-            // that double-constructed a `DisjointSlice` starts seeing folded
-            // writes / reordered reads on PTX. Don't add parameter attributes
-            // here without re-auditing the `from_raw_parts` callers.
-            for (i, arg) in args.enumerate() {
+            // Soundness for `DisjointSlice`: it wraps a `*mut T`, so rustc's
+            // `FnAbi` gives it nothing; its `noalias`/`align` are synthesized in
+            // the backend from its `unsafe from_raw_parts` contract (no two live
+            // slices over the same range — the same guarantee that justifies
+            // `noalias` on `&mut`). Violating that contract is UB. Do not add
+            // parameter attributes anywhere other than that backend derivation.
+            let flat_param_attrs = read_flat_param_attrs(self.ctx, func);
+
+            for (i, arg) in arg_values.into_iter().enumerate() {
                 if i > 0 {
                     write!(output, ", ").unwrap();
                 }
                 let arg_ty = arg.get_type(self.ctx);
                 self.export_type(arg_ty, output)?;
+                if let Some(carrier) = flat_param_attrs.get(i)
+                    && let Some(fragment) = carrier.to_fragment(llvm_param_class(self.ctx, arg_ty))
+                {
+                    write!(output, " {fragment}").unwrap();
+                }
                 let name = format!("%v{next_value_id}");
                 value_names.insert(arg, name.clone());
                 write!(output, " {name}").unwrap();

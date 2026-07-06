@@ -83,6 +83,11 @@ pub mod pipeline;
 pub mod translator;
 
 pub use error::{TranslationErr, TranslationResult};
+/// Re-exported from [`llvm_export`], where the parameter-attribute types and
+/// their rendering live. Kept at this path so the backend (`rustc-codegen-cuda`)
+/// can populate [`CollectedFunction::arg_attrs`] as `mir_importer::ArgAttrs`
+/// without depending on `llvm-export` directly.
+pub use llvm_export::{ArgAttrs, ArgExt};
 pub use pipeline::{
     CollectedFunction, CompilationArtifactKind, CompilationResult, DeviceExternAttrs,
     DeviceExternDecl, DeviceExternType, PipelineConfig, PipelineError, run_pipeline,

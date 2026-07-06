@@ -21,6 +21,12 @@
 
 pub mod export;
 
+/// LLVM function-parameter attributes: policy struct, first-class pliron
+/// carrier, and textual rendering. See [`arg_attrs`] for the three-stage model.
+pub mod arg_attrs;
+
+pub use arg_attrs::{ARG_ATTRS_KEY, ArgAttrs, ArgExt, LlvmParamAttrsAttr, LlvmParamClass};
+
 /// LLVM types: re-exported from pliron-llvm, plus GPU address-space helpers.
 pub mod types {
     pub use pliron_llvm::types::*;

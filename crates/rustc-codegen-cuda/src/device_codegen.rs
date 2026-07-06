@@ -632,6 +632,17 @@ pub fn generate_device_code<'tcx>(
         })
         .collect();
 
+    // Derive faithful LLVM parameter attributes from each function's `FnAbi`
+    // *here*, while we still hold the internal `TyCtxt`/`Instance` the ABI query
+    // needs (stable_mir does not expose ABI attributes). The results are
+    // derivation-neutral (`mir_importer::ArgAttrs`, no rustc types), so they
+    // move into the stable_mir closure below and ride onto the func op as a
+    // first-class carrier through the pipeline. See `crate::abi_attrs`.
+    let arg_attrs_per_func: Vec<Vec<Option<mir_importer::ArgAttrs>>> = functions
+        .iter()
+        .map(|func| crate::abi_attrs::derive_arg_attrs(tcx, func.instance))
+        .collect();
+
     let result = rustc_internal::run(tcx, || {
         // Convert internal Instance<'tcx> to stable_mir Instance
         let stable_functions: Vec<mir_importer::CollectedFunction> = functions
@@ -639,8 +650,12 @@ pub fn generate_device_code<'tcx>(
             .zip(export_names.iter())
             .zip(debug_scope_maps.iter())
             .zip(inline_always_flags.iter())
+            .zip(arg_attrs_per_func.iter())
             .map(
-                |(((func, (export_name, is_kernel)), debug_source_scopes), is_inline_always)| {
+                |(
+                    (((func, (export_name, is_kernel)), debug_source_scopes), is_inline_always),
+                    arg_attrs,
+                )| {
                     // Use rustc_internal::stable() to convert the Instance.
                     // This is the key bridge between rustc_middle and rustc_public types.
                     let stable_instance = rustc_internal::stable(func.instance);
@@ -651,6 +666,8 @@ pub fn generate_device_code<'tcx>(
                         export_name: export_name.clone(),
                         debug_source_scopes: Some(debug_source_scopes.clone()),
                         is_inline_always: *is_inline_always,
+                        // FnAbi-derived parameter attributes (in source order).
+                        arg_attrs: arg_attrs.clone(),
                     }
                 },
             )

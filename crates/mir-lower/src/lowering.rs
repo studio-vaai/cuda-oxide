@@ -38,10 +38,14 @@ use dialect_mir::types::{
     MirDisjointSliceType, MirPtrType, MirSliceType, MirStructType, MirUnionType,
 };
 use llvm_export::ops as llvm;
+use llvm_export::{ARG_ATTRS_KEY, LlvmParamAttrsAttr};
 use pliron::{
+    attribute::AttrObj,
     basic_block::BasicBlock,
+    builtin::attributes::VecAttr,
     builtin::op_interfaces::SymbolOpInterface,
     context::{Context, Ptr},
+    identifier::Identifier,
     irbuild::{
         dialect_conversion::{DialectConversionRewriter, OperandsInfo},
         inserter::{BlockInsertionPoint, Inserter, OpInsertionPoint},
@@ -314,6 +318,19 @@ pub fn convert_func(
         let reconstructed_args = build_entry_prologue(ctx, &mir_arg_types, llvm_entry, is_kernel)
             .map_err(anyhow_to_pliron)?;
 
+        // Remap the frontend's FnAbi-derived parameter attributes onto the
+        // flattened LLVM parameters (same shape build_entry_prologue just
+        // reconstructed) and stamp them on the LLVM func for the exporter.
+        let llvm_param_count = llvm_entry.deref(ctx).arguments().count();
+        attach_arg_attrs(
+            ctx,
+            op,
+            &llvm_func,
+            &mir_arg_types,
+            llvm_param_count,
+            is_kernel,
+        );
+
         rewriter.inline_region(ctx, mir_region, BlockInsertionPoint::AfterBlock(llvm_entry));
 
         // Insert BrOp through the rewriter so the framework sees it as a
@@ -328,6 +345,96 @@ pub fn convert_func(
     rewriter.insert_operation(ctx, llvm_func.get_operation());
     rewriter.replace_operation(ctx, op, llvm_func.get_operation());
     Ok(())
+}
+
+// ============================================================================
+// Function-Parameter Attributes
+// ============================================================================
+
+/// Read the source-parameter-indexed [`LlvmParamAttrsAttr`] carriers the
+/// frontend stamped onto the `dialect-mir` func `op` (one per `fn_sig().inputs()`
+/// element), if any. `mir-importer` attaches them under [`ARG_ATTRS_KEY`]; a
+/// missing key means "no attribute information" (e.g. a non-backend frontend).
+fn read_source_arg_attrs(ctx: &Context, op: Ptr<Operation>) -> Option<Vec<LlvmParamAttrsAttr>> {
+    let key = Identifier::try_from(ARG_ATTRS_KEY).ok()?;
+    let op_ref = op.deref(ctx);
+    let vec_attr = op_ref.attributes.get::<VecAttr>(&key)?;
+    Some(
+        vec_attr
+            .0
+            .iter()
+            .map(|elem| {
+                elem.downcast_ref::<LlvmParamAttrsAttr>()
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect(),
+    )
+}
+
+/// Remap the frontend's source-parameter attributes onto the flattened LLVM
+/// parameters and stamp them onto `llvm_func` under [`ARG_ATTRS_KEY`] for the
+/// exporter to render.
+///
+/// The walk reuses [`classify_argument_type`] — the same accounting
+/// [`build_entry_prologue`] uses — so the flattened-index bookkeeping is shared
+/// with the actual parameter layout rather than duplicated:
+///
+/// - **Slice** (`&[T]` / `DisjointSlice<T>`): the attributes belong to the data
+///   pointer (`flat_idx`); the length (`flat_idx + 1`) carries none.
+/// - **Struct** flattened into `n` fields, and **ZST** (dropped): no per-field
+///   attributes.
+/// - **None** (thin pointer or scalar): the attributes go on the single
+///   parameter.
+///
+/// The result is one carrier per flattened LLVM parameter, index-aligned with
+/// the LLVM signature (empty carriers fill the gaps). Applicability gating and
+/// rendering stay in the exporter, keeping the LLVM attribute vocabulary in
+/// [`llvm_export`]. No-op when the func carries no source attributes or when
+/// every flattened parameter comes out empty.
+fn attach_arg_attrs(
+    ctx: &mut Context,
+    op: Ptr<Operation>,
+    llvm_func: &llvm::FuncOp,
+    mir_arg_types: &[TypeHandle],
+    llvm_param_count: usize,
+    is_kernel: bool,
+) {
+    let Some(src_attrs) = read_source_arg_attrs(ctx, op) else {
+        return;
+    };
+
+    let mut flat = vec![LlvmParamAttrsAttr::default(); llvm_param_count];
+    let mut flat_idx = 0usize;
+    for (src_idx, &mir_ty) in mir_arg_types.iter().enumerate() {
+        let kind = classify_argument_type(ctx, mir_ty, is_kernel);
+        let (places_attrs, width) = match kind {
+            ReconstructKind::Slice => (true, 2),
+            ReconstructKind::Struct(n) => (false, n),
+            ReconstructKind::Zst => (false, 0),
+            ReconstructKind::None => (true, 1),
+        };
+        if places_attrs
+            && let (Some(carrier), Some(slot)) = (src_attrs.get(src_idx), flat.get_mut(flat_idx))
+        {
+            *slot = carrier.clone();
+        }
+        flat_idx += width;
+    }
+
+    if flat.iter().all(LlvmParamAttrsAttr::is_empty) {
+        return;
+    }
+
+    let Ok(key) = Identifier::try_from(ARG_ATTRS_KEY) else {
+        return;
+    };
+    let elems: Vec<AttrObj> = flat.into_iter().map(Into::into).collect();
+    llvm_func
+        .get_operation()
+        .deref_mut(ctx)
+        .attributes
+        .set(key, VecAttr::new(elems));
 }
 
 // ============================================================================
