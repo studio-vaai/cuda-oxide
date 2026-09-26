@@ -162,8 +162,3 @@ pub use cuda_macros::cuda_launch_async;
 pub use tiling::{
     TILE_SIZE, k_major_index, mn_major_index, print_layout_indices, to_k_major_f16, to_mn_major_f16,
 };
-
-/// Source signatures generated alongside typed launch marshalling.
-pub use launch::{
-    CudaKernelArgument, CudaKernelArgumentKind, CudaKernelScalarKind, CudaKernelSignature,
-};
