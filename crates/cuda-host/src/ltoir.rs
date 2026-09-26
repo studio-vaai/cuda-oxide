@@ -47,9 +47,10 @@
 //!
 //! # Native cubin cache
 //!
-//! File-backed NVVM IR and LTOIR use a persistent cache only when they can run
-//! as a native cubin on the current GPU. Ordinary PTX and the pre-Blackwell to
-//! Blackwell PTX bridge keep their normal paths.
+//! File-backed PTX, NVVM IR and LTOIR use a persistent native cubin cache.
+//! PTX is finalized with nvJitLink so the automatic split-compilation policy
+//! also applies to ordinary PTX builds. The pre-Blackwell to Blackwell NVVM
+//! bridge retains its forward-compatible driver PTX path.
 //!
 //! An entry is keyed by the exact input bytes, normalized target, module names,
 //! ordered compiler/linker options (including FMA and debug policy), libdevice
@@ -618,6 +619,52 @@ fn cached_nvvm_ir_to_cubin_with_compile_options(
     Ok(result)
 }
 
+// Preserve explicit architecture/family features from PTX. Otherwise optimize
+// virtual PTX for the actual execution GPU, just as the Driver loader does.
+// nvJitLink and the Driver remain responsible for validating target compatibility.
+fn ptx_execution_target(ptx: &[u8], execution: &CudaArch) -> CudaArch {
+    if let Ok(text) = std::str::from_utf8(ptx) {
+        for line in text.lines() {
+            let mut words = line.split_whitespace();
+            if words.next() == Some(".target") {
+                if let Some(target) = words.next()
+                    && let Ok(target) = target.trim_end_matches(',').parse::<CudaArch>()
+                    && target.suffix().is_some()
+                {
+                    return target;
+                }
+                break;
+            }
+        }
+    }
+    execution.clone()
+}
+
+fn cached_ptx_to_cubin(
+    source_dir: &Path,
+    ptx: &[u8],
+    module_name: &str,
+    arch: &CudaArch,
+    compile_options: ArtifactCompileOptions,
+) -> Result<CacheResult, LtoirError> {
+    let linker = LtoLinker::discover()?;
+    let options = finalization_options(arch, compile_options);
+    let input = NamedInput::new(module_name, ptx);
+    let key = linker.ptx_artifact_digest(input, &options)?;
+    let build = || -> Result<BuiltArtifacts, LtoirError> {
+        Ok(BuiltArtifacts::new(
+            linker.link_ptx_to_cubin(input, &options)?,
+            None,
+        ))
+    };
+    let result = match key {
+        Some(key) => cache_or_build(source_dir, &key, build)?,
+        None => uncached_result(build()?),
+    };
+    report_cache_result(&result);
+    Ok(result)
+}
+
 #[cfg(test)]
 fn cached_ltoir_to_cubin(
     source_dir: &Path,
@@ -849,10 +896,19 @@ pub fn load_kernel_module(
     })?;
 
     match selected {
-        FileArtifact::Ptx => Ok(ctx.load_module_from_file(
-            ptx.to_str()
-                .expect("kernel artifact path is not valid UTF-8"),
-        )?),
+        FileArtifact::Ptx => {
+            let bytes = read_artifact(&ptx)?;
+            let execution = execution_arch_for_context(ctx)?;
+            let arch = ptx_execution_target(&bytes, &execution);
+            let image = cached_ptx_to_cubin(
+                ptx.parent().unwrap_or_else(|| Path::new(".")),
+                &bytes,
+                &ptx.display().to_string(),
+                &arch,
+                read_compile_options(&ptx)?,
+            )?;
+            Ok(ctx.load_module_from_image(&image.cubin)?)
+        }
         FileArtifact::NvvmIr => {
             let emitted = target_arch_for_artifact(&ll)?;
             let execution = execution_arch_for_context(ctx)?;
@@ -1366,6 +1422,51 @@ mod tests {
             "sm_86"
         );
 
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn ptx_finalization_preserves_target_features_and_uses_execution_gpu() {
+        let execution: CudaArch = "sm_120".parse().unwrap();
+        assert_eq!(
+            ptx_execution_target(b".version 8.0\n.target sm_80\n", &execution),
+            execution
+        );
+        assert_eq!(
+            ptx_execution_target(b".target sm_90a, texmode_independent\n", &execution).sm(),
+            "sm_90a"
+        );
+        assert_eq!(
+            ptx_execution_target(b".target sm_120f\n", &execution).sm(),
+            "sm_120f"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires discoverable CUDA Toolkit nvJitLink"]
+    fn live_ptx_finalization_reuses_content_addressed_cubin() {
+        let dir = temp_dir("parallel_ptx");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ptx = b".version 8.0\n.target sm_80\n.address_size 64\n.visible .entry cached_ptx() { ret; }\n";
+        let arch = "sm_80".parse().unwrap();
+        let first = cached_ptx_to_cubin(
+            &dir,
+            ptx,
+            "cached.ptx",
+            &arch,
+            ArtifactCompileOptions::new(),
+        )
+        .unwrap();
+        let second = cached_ptx_to_cubin(
+            &dir,
+            ptx,
+            "cached.ptx",
+            &arch,
+            ArtifactCompileOptions::new(),
+        )
+        .unwrap();
+        assert_eq!(first.cubin, second.cubin);
+        assert!(second.cache_hit);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
