@@ -48,8 +48,8 @@
 //! # Native cubin cache
 //!
 //! File-backed PTX, NVVM IR and LTOIR use a persistent native cubin cache.
-//! PTX is finalized with nvJitLink so the automatic split-compilation policy
-//! also applies to ordinary PTX builds. The pre-Blackwell to Blackwell NVVM
+//! PTX uses whole-program ptxas assembly with automatic split compilation.
+//! NVVM IR and LTOIR use nvJitLink with the same automatic parallelism policy. The pre-Blackwell to Blackwell NVVM
 //! bridge retains its forward-compatible driver PTX path.
 //!
 //! An entry is keyed by the exact input bytes, normalized target, module names,
@@ -78,7 +78,7 @@
 use crate::ltoir_cache::{BuiltArtifacts, CacheResult, cache_or_build};
 use cuda_artifact_finalizer::{
     CudaArch, CudaArchParseError, FinalizationOptions, Finalizer, FinalizerError, FinalizerOutput,
-    LtoLinker, NamedInput, NvJitLinkError, NvvmError,
+    LtoLinker, NamedInput, NvJitLinkError, NvvmError, PtxAssembler,
 };
 #[cfg(test)]
 use cuda_artifact_finalizer::{
@@ -647,13 +647,13 @@ fn cached_ptx_to_cubin(
     arch: &CudaArch,
     compile_options: ArtifactCompileOptions,
 ) -> Result<CacheResult, LtoirError> {
-    let linker = LtoLinker::discover()?;
+    let assembler = PtxAssembler::discover()?;
     let options = finalization_options(arch, compile_options);
     let input = NamedInput::new(module_name, ptx);
-    let key = linker.ptx_artifact_digest(input, &options)?;
+    let key = assembler.artifact_digest(input, &options)?;
     let build = || -> Result<BuiltArtifacts, LtoirError> {
         Ok(BuiltArtifacts::new(
-            linker.link_ptx_to_cubin(input, &options)?,
+            assembler.assemble_ptx(input, &options)?,
             None,
         ))
     };
@@ -1443,7 +1443,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires discoverable CUDA Toolkit nvJitLink"]
+    #[ignore = "requires discoverable CUDA Toolkit ptxas"]
     fn live_ptx_finalization_reuses_content_addressed_cubin() {
         let dir = temp_dir("parallel_ptx");
         std::fs::create_dir_all(&dir).unwrap();

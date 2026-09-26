@@ -132,6 +132,7 @@ impl FinalizationOptions {
     pub(crate) fn ptxas_options(&self) -> Vec<String> {
         let mut options = vec![
             format!("--gpu-name={}", self.target.sm()),
+            "--split-compile=0".to_string(),
             format!("--fmad={}", self.allow_fma_contraction),
         ];
         match self.debug {
@@ -293,16 +294,29 @@ mod tests {
         );
 
         let base = FinalizationOptions::new("sm_90a".parse().unwrap()).with_fma_contraction(false);
-        assert_eq!(base.ptxas_options(), ["--gpu-name=sm_90a", "--fmad=false"]);
+        assert_eq!(
+            base.ptxas_options(),
+            ["--gpu-name=sm_90a", "--split-compile=0", "--fmad=false"]
+        );
         assert_eq!(
             base.clone()
                 .with_debug_policy(DebugPolicy::LineTables)
                 .ptxas_options(),
-            ["--gpu-name=sm_90a", "--fmad=false", "--generate-line-info"]
+            [
+                "--gpu-name=sm_90a",
+                "--split-compile=0",
+                "--fmad=false",
+                "--generate-line-info"
+            ]
         );
         assert_eq!(
             base.with_debug_policy(DebugPolicy::Full).ptxas_options(),
-            ["--gpu-name=sm_90a", "--fmad=false", "--device-debug"]
+            [
+                "--gpu-name=sm_90a",
+                "--split-compile=0",
+                "--fmad=false",
+                "--device-debug"
+            ]
         );
     }
 
