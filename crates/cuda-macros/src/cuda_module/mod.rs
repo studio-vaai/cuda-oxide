@@ -24,9 +24,9 @@ use crate::cuda_module::contract::{
 };
 use crate::cuda_module::launchers::{
     cuda_kernel_marker_name, cuda_module_function_field, generate_cuda_module_async_launch_method,
-    generate_cuda_module_launch_contract_impl, generate_cuda_module_launch_method,
-    generate_cuda_module_owned_async_launch_method, generate_cuda_module_prepare_launch_methods,
-    has_codegen_generics,
+    generate_cuda_module_kernel_signature, generate_cuda_module_launch_contract_impl,
+    generate_cuda_module_launch_method, generate_cuda_module_owned_async_launch_method,
+    generate_cuda_module_prepare_launch_methods, has_codegen_generics,
 };
 use crate::cuda_module::model::{
     CudaModuleKernel, add_cuda_module_disjoint_abi_bounds,
@@ -190,6 +190,9 @@ pub(crate) fn expand_cuda_module_inner(
     let prepare_launch_methods = direct_kernels
         .iter()
         .filter_map(generate_cuda_module_prepare_launch_methods);
+    let kernel_signatures = direct_kernels
+        .iter()
+        .filter_map(generate_cuda_module_kernel_signature);
     let launch_methods = direct_kernels
         .iter()
         .map(generate_cuda_module_launch_method);
@@ -370,6 +373,7 @@ pub(crate) fn expand_cuda_module_inner(
     let host_items = if emit_host {
         quote! {
             #(#launch_contract_impls)*
+        #(#kernel_signatures)*
 
             #[derive(Clone, Debug)]
             #[allow(non_snake_case)]
@@ -671,6 +675,9 @@ fn generate_nested_cuda_module_support(
             #field: module.load_function(<#marker as ::cuda_host::CudaKernel>::PTX_NAME)?,
         }
     });
+    let kernel_signatures = kernels
+        .iter()
+        .filter_map(generate_cuda_module_kernel_signature);
     let launch_methods = kernels.iter().map(generate_cuda_module_launch_method);
     let async_launch_methods = if cfg!(feature = "async") {
         let borrowed = kernels.iter().map(generate_cuda_module_async_launch_method);
@@ -692,6 +699,7 @@ fn generate_nested_cuda_module_support(
 
     quote! {
         #(#launch_contract_impls)*
+        #(#kernel_signatures)*
 
         #[derive(Clone, Debug)]
         #[allow(non_snake_case)]

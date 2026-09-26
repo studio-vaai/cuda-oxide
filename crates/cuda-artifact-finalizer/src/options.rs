@@ -143,6 +143,8 @@ impl FinalizationOptions {
     }
 
     fn append_nvjitlink_codegen_options(&self, options: &mut Vec<String>) {
+        // Let nvJitLink choose the available CPU parallelism for this artifact.
+        options.push("-split-compile=0".to_string());
         options.push(self.fma_option().to_string());
         match self.debug {
             DebugPolicy::None => {}
@@ -251,19 +253,26 @@ mod tests {
         );
         assert_eq!(
             base.nvjitlink_ltoir_options(FinalizerOutput::Cubin),
-            ["-arch=sm_90a", "-lto", "-fma=0"]
+            ["-arch=sm_90a", "-lto", "-split-compile=0", "-fma=0"]
         );
         assert_eq!(
             base.clone()
                 .with_debug_policy(DebugPolicy::LineTables)
                 .nvjitlink_ltoir_options(FinalizerOutput::Ptx),
-            ["-arch=sm_90a", "-lto", "-ptx", "-fma=0", "-lineinfo"]
+            [
+                "-arch=sm_90a",
+                "-lto",
+                "-ptx",
+                "-split-compile=0",
+                "-fma=0",
+                "-lineinfo"
+            ]
         );
         assert_eq!(
             base.clone()
                 .with_debug_policy(DebugPolicy::LineTables)
                 .nvjitlink_ptx_options(),
-            ["-arch=sm_90a", "-fma=0", "-lineinfo"]
+            ["-arch=sm_90a", "-split-compile=0", "-fma=0", "-lineinfo"]
         );
         assert_eq!(
             base.clone()
@@ -280,7 +289,7 @@ mod tests {
         assert_eq!(
             base.with_debug_policy(DebugPolicy::Full)
                 .nvjitlink_ltoir_options(FinalizerOutput::Cubin),
-            ["-arch=sm_90a", "-lto", "-fma=0", "-g"]
+            ["-arch=sm_90a", "-lto", "-split-compile=0", "-fma=0", "-g"]
         );
 
         let base = FinalizationOptions::new("sm_90a".parse().unwrap()).with_fma_contraction(false);
