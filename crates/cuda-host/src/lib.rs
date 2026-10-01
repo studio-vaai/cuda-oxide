@@ -108,7 +108,9 @@ pub use launch::{
     writable_device_buffer_arg,
 };
 #[doc(hidden)]
-pub use launch::{KernelArgumentList, KernelArgumentStorage, kernel_argument_pointers};
+pub use launch::{
+    KernelArgumentGroup, KernelArgumentList, KernelArgumentStorage, kernel_argument_pointers,
+};
 #[doc(hidden)]
 pub use type_id::__intern_generic_kernel_name;
 pub use type_id::{type_id_u128, type_id_u128_of_val};

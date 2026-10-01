@@ -889,82 +889,39 @@ fn cuda_module_owned_resources_ty(
 
 fn cuda_module_arguments(kernel: &CudaModuleKernel) -> TokenStream2 {
     let args = internal_ident("__cuda_oxide_args");
-    if kernel.params.len() > 32 {
-        // Preserve support for arbitrarily large signatures without forcing
-        // every host crate to compile more tuple implementations.
-        let fields = kernel
-            .params
-            .iter()
-            .enumerate()
-            .map(|(index, param)| cuda_module_arg_marshalling(index, param));
-        return quote! {
-            let mut #args: ::std::vec::Vec<*mut ::std::ffi::c_void> = ::std::vec::Vec::new();
-            #(#fields)*
-        };
-    }
     let storage = internal_ident("__cuda_oxide_argument_storage");
-    let fields = kernel.params.iter().map(|param| {
-        let name = &param.name;
-        match param.marshal {
-            CudaModuleParamMarshal::Scalar => quote!(::cuda_host::Scalar(#name)),
-            CudaModuleParamMarshal::ReadOnlyDeviceBuffer { .. } => {
-                quote!(::cuda_host::read_only_device_buffer_arg(#name))
+    let mut fields: Vec<_> = kernel
+        .params
+        .iter()
+        .map(|param| {
+            let name = &param.name;
+            match param.marshal {
+                CudaModuleParamMarshal::Scalar => quote!(::cuda_host::Scalar(#name)),
+                CudaModuleParamMarshal::ReadOnlyDeviceBuffer { .. } => {
+                    quote!(::cuda_host::read_only_device_buffer_arg(#name))
+                }
+                CudaModuleParamMarshal::WritableDeviceBuffer { .. } => {
+                    quote!(::cuda_host::writable_device_buffer_arg(#name))
+                }
+                CudaModuleParamMarshal::RowWidthDeviceBuffer { .. } => {
+                    quote!(::cuda_host::row_width_device_buffer_arg(#name))
+                }
             }
-            CudaModuleParamMarshal::WritableDeviceBuffer { .. } => {
-                quote!(::cuda_host::writable_device_buffer_arg(#name))
-            }
-            CudaModuleParamMarshal::RowWidthDeviceBuffer { .. } => {
-                quote!(::cuda_host::row_width_device_buffer_arg(#name))
-            }
-        }
-    });
+        })
+        .collect();
+    // Group large signatures rather than emitting an unbounded family of tuple
+    // impls or falling back to repeated per-field pointer bookkeeping.
+    while fields.len() > 32 {
+        fields = fields
+            .chunks(32)
+            .map(|chunk| {
+                quote! { ::cuda_host::KernelArgumentGroup((#(#chunk,)*)) }
+            })
+            .collect();
+    }
     quote! {
         let mut #storage = (#(#fields,)*);
         let mut #args = ::cuda_host::kernel_argument_pointers(&mut #storage);
-    }
-}
-
-fn cuda_module_arg_marshalling(index: usize, param: &CudaModuleParam) -> TokenStream2 {
-    let name = &param.name;
-    let args = internal_ident("__cuda_oxide_args");
-    let value_name = internal_ident(&format!("__cuda_oxide_arg_{index}"));
-    match param.marshal {
-        CudaModuleParamMarshal::Scalar => {
-            quote! {
-                let mut #value_name = #name;
-                ::cuda_host::push_kernel_scalar(&mut #args, &mut #value_name);
-            }
-        }
-        CudaModuleParamMarshal::ReadOnlyDeviceBuffer { .. } => {
-            quote! {
-                let mut #value_name =
-                    ::cuda_host::read_only_device_buffer_arg(#name);
-                ::cuda_host::push_kernel_device_slice_pair(
-                    &mut #args,
-                    &mut #value_name,
-                );
-            }
-        }
-        CudaModuleParamMarshal::WritableDeviceBuffer { .. } => {
-            quote! {
-                let mut #value_name =
-                    ::cuda_host::writable_device_buffer_arg(#name);
-                ::cuda_host::push_kernel_device_slice_pair(
-                    &mut #args,
-                    &mut #value_name,
-                );
-            }
-        }
-        CudaModuleParamMarshal::RowWidthDeviceBuffer { .. } => {
-            quote! {
-                let mut #value_name =
-                    ::cuda_host::row_width_device_buffer_arg(#name);
-                ::cuda_host::push_kernel_row_width_device_slice_triple(
-                    &mut #args,
-                    &mut #value_name,
-                );
-            }
-        }
     }
 }
 
