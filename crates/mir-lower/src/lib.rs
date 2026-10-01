@@ -360,6 +360,17 @@ pub fn lower_mir_to_llvm(ctx: &mut Context, module_op: Ptr<Operation>) -> Result
     lower_mir_to_llvm_with_options(ctx, module_op, LoweringOptions::default())
 }
 
+/// Apply a conservative alignment floor resolved across separately compiled
+/// units. This preserves launch contracts when an extern-shared access lives
+/// in a helper whose callers are absent from this unit's local call graph.
+pub fn set_module_dynamic_shared_alignment(
+    ctx: &mut Context,
+    module_op: Ptr<Operation>,
+    alignment: u64,
+) {
+    lowering::set_module_dynamic_shared_alignment(ctx, module_op, alignment);
+}
+
 /// Runs the `dialect-mir` → LLVM dialect lowering pass with explicit options.
 ///
 /// Use this entry point when the caller needs compilation-wide floating-point

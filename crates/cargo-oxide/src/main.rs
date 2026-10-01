@@ -30,7 +30,7 @@
 //! cargo oxide update                  # refresh cached backend (external)
 //! ```
 
-use clap::{CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
+use clap::{error::ErrorKind, CommandFactory, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 mod artifact_identity;
@@ -56,6 +56,13 @@ struct Cli {
     /// provenance. The final binary then does not need libNVVM or nvJitLink.
     #[arg(long, global = true)]
     materialize_cubin: bool,
+    /// Cache NVVM IR and LTOIR per cuda_module and link native cubins during build.
+    #[arg(long, global = true)]
+    incremental_modules: bool,
+    /// Update native kernels while retaining the previous host library/binary.
+    /// Requires --lib, file loading, debug=0, and an unchanged host MIR/ABI.
+    #[arg(long, global = true)]
+    kernels_only: Option<String>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -641,6 +648,46 @@ fn main() {
     // 1. Cargo subcommand: `cargo oxide run vecadd` → argv = ["cargo-oxide", "oxide", "run", "vecadd"]
     // 2. Cargo alias:      `cargo oxide run vecadd` → argv = ["target/.../cargo-oxide", "run", "vecadd"]
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|arg| {
+        std::path::Path::new(arg)
+            .file_name()
+            .is_some_and(|name| name == "rustc" || name == "rustc.exe")
+            || (std::env::var_os("CUDA_OXIDE_INTERNAL_RUSTC_WRAPPER").is_some()
+                && std::path::Path::new(arg).is_file())
+    }) {
+        let mut compiler_args = args[2..].to_vec();
+        let selected = std::env::var("CUDA_OXIDE_KERNELS_ONLY").ok();
+        let crate_name = compiler_args
+            .windows(2)
+            .find(|pair| pair[0] == "--crate-name")
+            .map(|pair| &pair[1]);
+        if selected
+            .as_ref()
+            .is_some_and(|name| crate_name == Some(name))
+        {
+            for index in 0..compiler_args.len() {
+                if compiler_args[index] == "--crate-type" {
+                    compiler_args[index + 1] = "staticlib".into();
+                }
+                if compiler_args[index].starts_with("--emit=") {
+                    compiler_args[index] = "--emit=dep-info,obj".into();
+                }
+            }
+        }
+        let mut compiler =
+            if let Some(wrapper) = std::env::var_os("CUDA_OXIDE_UPSTREAM_RUSTC_WRAPPER") {
+                let mut command = std::process::Command::new(wrapper);
+                command.arg(&args[1]);
+                command
+            } else {
+                std::process::Command::new(&args[1])
+            };
+        let status = compiler
+            .args(compiler_args)
+            .status()
+            .expect("could not execute rustc");
+        std::process::exit(status.code().unwrap_or(1));
+    }
     let effective_args = if args.get(1).map(|s| s.as_str()) == Some("oxide") {
         let mut filtered = vec![args[0].clone()];
         filtered.extend(args[2..].iter().cloned());
@@ -655,6 +702,56 @@ fn main() {
         Cli::command()
             .error(ErrorKind::ArgumentConflict, error)
             .exit();
+    }
+    // No worker threads have started: publish this CLI choice before resolving
+    // the compiler context. Existing environment fingerprinting tracks it.
+    if cli.incremental_modules || cli.kernels_only.is_some() {
+        unsafe {
+            std::env::set_var("CUDA_OXIDE_INCREMENTAL_MODULES", "1");
+        }
+        unsafe {
+            std::env::set_var("CUDA_OXIDE_EMIT_NVVM_IR", "1");
+        }
+    }
+    if let Some(name) = &cli.kernels_only {
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            || name.as_bytes()[0].is_ascii_digit()
+        {
+            Cli::command()
+                .error(
+                    ErrorKind::InvalidValue,
+                    "--kernels-only expects a Cargo crate name",
+                )
+                .exit();
+        }
+        if !matches!(&cli.command, Commands::Build { cargo_args, .. } if cargo_args.iter().any(|arg| arg == "--lib") && cargo_args.iter().any(|arg| arg == "--release"))
+        {
+            Cli::command().error(ErrorKind::ArgumentConflict,"--kernels-only requires `build -- --release --lib` after a full native library build").exit();
+        }
+        unsafe {
+            std::env::set_var("CUDA_OXIDE_KERNELS_ONLY", name.replace('-', "_"));
+            std::env::set_var("CUDA_OXIDE_MODULE_FILES_ONLY", "1");
+            std::env::set_var("CUDA_OXIDE_REUSE_HOST_FOR_KERNEL_EDITS", "1");
+            std::env::set_var("CUDA_OXIDE_INTERNAL_RUSTC_WRAPPER", "1");
+            if let Some(wrapper) = std::env::var_os("RUSTC_WRAPPER") {
+                if std::path::Path::new(&wrapper)
+                    != std::env::current_exe().expect("missing cargo-oxide executable")
+                {
+                    std::env::set_var("CUDA_OXIDE_UPSTREAM_RUSTC_WRAPPER", wrapper);
+                } else {
+                    std::env::remove_var("CUDA_OXIDE_UPSTREAM_RUSTC_WRAPPER");
+                }
+            } else {
+                std::env::remove_var("CUDA_OXIDE_UPSTREAM_RUSTC_WRAPPER");
+            }
+            std::env::set_var(
+                "RUSTC_WRAPPER",
+                std::env::current_exe().expect("missing cargo-oxide executable"),
+            );
+        }
     }
     let materialize_cubin = cli.materialize_cubin;
 
