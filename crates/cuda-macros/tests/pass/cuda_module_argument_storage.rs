@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Exercise both sides of the shared argument-list arity boundary.
+// Exercise both sides of the shared argument-list grouping boundary.
 use cuda_macros::{cuda_module, kernel};
 
 #[cuda_module]

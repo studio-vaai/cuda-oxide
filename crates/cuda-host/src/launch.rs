@@ -367,6 +367,18 @@ pub trait KernelArgumentList {
     const SLOTS: usize;
     fn append(&mut self, args: &mut Vec<*mut c_void>);
 }
+/// Nest a bounded argument list inside another without changing driver order.
+#[doc(hidden)]
+pub struct KernelArgumentGroup<A>(pub A);
+
+impl<A: KernelArgumentList> KernelArgumentStorage for KernelArgumentGroup<A> {
+    const SLOTS: usize = A::SLOTS;
+    #[inline]
+    fn append(&mut self, args: &mut Vec<*mut c_void>) {
+        self.0.append(args);
+    }
+}
+
 impl KernelArgumentList for () {
     const SLOTS: usize = 0;
     fn append(&mut self, _args: &mut Vec<*mut c_void>) {}
@@ -1008,23 +1020,21 @@ mod tests {
     #[test]
     fn packed_slice_arguments_preserve_storage_order_and_field_widths() {
         let mut storage = (
-            (0xfeed_beefu64, 1024u64),
-            Scalar(()),
-            Scalar(17u32),
-            (0xcafe_babeu64, 2048u64, 64u32),
+            KernelArgumentGroup(((0xfeed_beefu64, 1024u64), Scalar(()))),
+            KernelArgumentGroup((Scalar(17u32), (0xcafe_babeu64, 2048u64, 64u32))),
         );
         let args = kernel_argument_pointers(&mut storage);
         assert_eq!(args.len(), 6);
         assert!(kernel_argument_pointers(&mut ()).is_empty());
         // Slots reference the original live fields, not temporary copies.
-        storage.0.1 = 4096;
-        storage.3.2 = 128;
-        assert_eq!(args[0], std::ptr::from_mut(&mut storage.0.0).cast());
-        assert_eq!(args[1], std::ptr::from_mut(&mut storage.0.1).cast());
-        assert_eq!(args[2], std::ptr::from_mut(&mut storage.2.0).cast());
-        assert_eq!(args[3], std::ptr::from_mut(&mut storage.3.0).cast());
-        assert_eq!(args[4], std::ptr::from_mut(&mut storage.3.1).cast());
-        assert_eq!(args[5], std::ptr::from_mut(&mut storage.3.2).cast());
+        storage.0.0.0.1 = 4096;
+        storage.1.0.1.2 = 128;
+        assert_eq!(args[0], std::ptr::from_mut(&mut storage.0.0.0.0).cast());
+        assert_eq!(args[1], std::ptr::from_mut(&mut storage.0.0.0.1).cast());
+        assert_eq!(args[2], std::ptr::from_mut(&mut storage.1.0.0.0).cast());
+        assert_eq!(args[3], std::ptr::from_mut(&mut storage.1.0.1.0).cast());
+        assert_eq!(args[4], std::ptr::from_mut(&mut storage.1.0.1.1).cast());
+        assert_eq!(args[5], std::ptr::from_mut(&mut storage.1.0.1.2).cast());
         assert_eq!(unsafe { *args[1].cast::<u64>() }, 4096);
         assert_eq!(unsafe { *args[2].cast::<u32>() }, 17);
         assert_eq!(unsafe { *args[5].cast::<u32>() }, 128);
