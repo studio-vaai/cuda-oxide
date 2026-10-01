@@ -25,6 +25,7 @@ use pliron::op::Op;
 use pliron::operation::Operation;
 use pliron::result::Result;
 use pliron::r#type::{TypeHandle, Typed};
+use sha2::{Digest, Sha256};
 
 /// Convert `mir.global_alloc` to an LLVM global in CUDA global memory.
 ///
@@ -245,7 +246,13 @@ fn create_device_global(
         } else {
             let counter = *next_device_global_index;
             *next_device_global_index += 1;
-            format!("__device_global_{counter}").try_into().unwrap()
+            if crate::context::shared_global_namespace(ctx).is_some() {
+                format!("__device_global_{:x}", Sha256::digest(spec.key.as_bytes()))
+                    .try_into()
+                    .unwrap()
+            } else {
+                format!("__device_global_{counter}").try_into().unwrap()
+            }
         };
 
     let global_op = if alignment > 0 {
@@ -253,6 +260,12 @@ fn create_device_global(
     } else {
         llvm::GlobalOp::new(ctx, name.clone(), llvm_global_type)
     };
+    if crate::context::shared_global_namespace(ctx).is_some() && spec.immutable {
+        global_op.set_attr_llvm_global_linkage(
+            ctx,
+            llvm_export::attributes::LinkageAttr::WeakODRLinkage,
+        );
+    }
     global_op.set_address_space(ctx, spec.addr_space);
     global_op.set_source_global_key(ctx, spec.key);
     if matches!(

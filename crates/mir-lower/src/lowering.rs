@@ -196,6 +196,29 @@ fn set_dynamic_shared_alignment_attr(ctx: &mut Context, op: Ptr<Operation>, alig
         .set(key, IntegerAttr::new(u64_ty, value));
 }
 
+pub(crate) fn set_module_dynamic_shared_alignment(
+    ctx: &mut Context,
+    module_op: Ptr<Operation>,
+    alignment: u64,
+) {
+    if alignment == 0 {
+        return;
+    }
+    let functions: Vec<_> = module_op
+        .deref(ctx)
+        .regions()
+        .flat_map(|region| region.deref(ctx).iter(ctx))
+        .flat_map(|block| block.deref(ctx).iter(ctx))
+        .filter(|&op| MirFuncOp::wrap(ctx, op).is_some())
+        .collect();
+    for function in functions {
+        let alignment = dynamic_shared_alignment_attr(ctx, function)
+            .unwrap_or(0)
+            .max(alignment);
+        set_dynamic_shared_alignment_attr(ctx, function, alignment);
+    }
+}
+
 // ============================================================================
 // Function Conversion
 // ============================================================================
@@ -277,12 +300,11 @@ pub fn convert_func(
 
     propagate_alwaysinline_attr(ctx, op, &llvm_func);
 
-    let llvm_entry = llvm_func.get_or_create_entry_block(ctx);
-
     let mir_region = op.deref(ctx).get_region(0);
     let mir_entry = mir_region.deref(ctx).get_head();
 
     if let Some(mir_entry) = mir_entry {
+        let llvm_entry = llvm_func.get_or_create_entry_block(ctx);
         // Pre-scan MIR blocks for max dynamic shared memory alignment.
         // Must happen BEFORE inline_region empties the MIR region.
         let mir_blocks: Vec<_> = mir_region.deref(ctx).iter(ctx).collect();

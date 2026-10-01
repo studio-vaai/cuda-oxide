@@ -116,6 +116,14 @@ pub(super) fn build_encoded_rustflags_with_existing(
     if profile == CodegenProfilePolicy::ReleaseLikeWithDebugInfo {
         flags.push("-Cdebuginfo=2".to_string());
     }
+    if matches!(
+        profile,
+        CodegenProfilePolicy::ReleaseLike | CodegenProfilePolicy::ReleaseLikeWithDebugInfo
+    ) {
+        // At MIR opt level 2 rustc disables inlining when Cargo enables host
+        // incrementality. Preserve the existing release device pipeline.
+        flags.push("-Zinline-mir=yes".to_string());
+    }
     flags.join(&ENCODED_RUSTFLAGS_SEPARATOR.to_string())
 }
 
@@ -229,6 +237,14 @@ fn apply_codegen_rustflags(
     device_cfgs: &[String],
 ) {
     let mut encoded = build_encoded_rustflags(ctx, profile, device_cfgs);
+    if profile == CodegenProfilePolicy::CargoSelected
+        && std::env::var_os("CUDA_OXIDE_INCREMENTAL_MODULES").is_some()
+    {
+        // `test -- --release` keeps Cargo's profile, but needs the same MIR
+        // inlining when host incrementality is enabled by the native workflow.
+        encoded.push(ENCODED_RUSTFLAGS_SEPARATOR);
+        encoded.push_str("-Zinline-mir=yes");
+    }
     let inherited_debug = std::env::var("CUDA_OXIDE_DEBUG").ok();
     append_full_debug_rustflags(&mut encoded, cmd, inherited_debug.as_deref());
 

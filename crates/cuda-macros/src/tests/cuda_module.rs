@@ -229,7 +229,7 @@ fn cfg_gated_generic_uses_the_same_gate_for_marker_and_loader() {
         "loader selection must inherit the generic kernel's cfg:\n{expanded}"
     );
     assert!(
-            expanded.contains("if__cuda_oxide_has_enabled_generic_kernel{let_=name;::cuda_host::load_all_ptx_bundles_merged(ctx)?}else{::cuda_host::load_embedded_module(ctx,name)?}"),
+            expanded.contains("if__cuda_oxide_has_enabled_generic_kernel{let_=name;::cuda_host::load_all_ptx_bundles_merged(ctx)?}else{ifname==env!(\"CARGO_PKG_NAME\"){::cuda_host::load_embedded_cuda_module(ctx,name,module_path!())?}else{::cuda_host::load_embedded_module(ctx,name)?}}"),
             "loader must fall back to the embedded artifact when no generic kernel is enabled:\n{expanded}"
         );
 }

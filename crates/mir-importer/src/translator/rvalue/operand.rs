@@ -203,13 +203,13 @@ pub fn translate_operand(
                 );
                 shared_alloc.set_attr_size(ctx, size_attr);
 
-                // Full debug resolves an injective static key.  Off and line
-                // tables deliberately retain the historical allocation key and
-                // avoid the extra stable-MIR identity work entirely.
-                let source_identity = value_map
-                    .debug_variables()
-                    .then(|| shared_static_source_identity(constant))
-                    .flatten();
+                // Separate compilation and full debug need an injective Rust
+                // static identity, independent of temporary allocation handles.
+                // Monolithic builds retain the historical allocation key.
+                let source_identity = (value_map.debug_variables()
+                    || mir_lower::context::shared_global_namespace(ctx).is_some())
+                .then(|| shared_static_source_identity(constant))
+                .flatten();
                 let alloc_key = if let Some(identity) = &source_identity {
                     identity.key.clone()
                 } else {
@@ -303,10 +303,10 @@ pub fn translate_operand(
                 );
                 shared_alloc.set_attr_size(ctx, size_attr);
 
-                let source_identity = value_map
-                    .debug_variables()
-                    .then(|| shared_static_source_identity(constant))
-                    .flatten();
+                let source_identity = (value_map.debug_variables()
+                    || mir_lower::context::shared_global_namespace(ctx).is_some())
+                .then(|| shared_static_source_identity(constant))
+                .flatten();
                 let alloc_key = if let Some(identity) = &source_identity {
                     identity.key.clone()
                 } else {
