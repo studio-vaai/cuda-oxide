@@ -52,3 +52,12 @@ fn cuda_launch_requires_unsafe() {
         t.pass("tests/pass/uncontracted_launch_in_unsafe.rs");
     }
 }
+
+/// Shared argument storage handles empty/ZST lists and the maximum tuple arity,
+/// while larger signatures continue to use per-argument storage.
+#[test]
+#[cfg(not(feature = "async"))]
+fn cuda_module_argument_storage() {
+    let t = trybuild::TestCases::new();
+    t.pass("tests/pass/cuda_module_argument_storage.rs");
+}
