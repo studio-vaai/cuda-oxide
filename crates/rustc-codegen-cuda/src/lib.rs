@@ -316,6 +316,7 @@ extern crate rustc_metadata;
 extern crate rustc_middle;
 extern crate rustc_session;
 extern crate rustc_span;
+extern crate rustc_structures;
 extern crate rustc_target;
 
 // rustc_public (stable MIR) and its bridge - for calling mir-importer
@@ -328,6 +329,8 @@ extern crate rustc_codegen_llvm;
 mod collector;
 mod device_codegen;
 mod generated_intrinsics;
+mod host_cache;
+mod incremental;
 mod materialize;
 
 use rustc_codegen_ssa::traits::CodegenBackend;
@@ -361,10 +364,13 @@ pub struct CudaCodegenBackend {
     config: CudaCodegenConfig,
     /// The underlying LLVM backend for host code generation
     llvm_backend: Box<dyn CodegenBackend>,
+    pending_contract: std::sync::Mutex<Option<host_cache::Request>>,
 }
 
 struct CudaOngoingCodegen {
-    host: Box<dyn Any>,
+    host: Option<Box<dyn Any>>,
+    reused_host: Option<CompiledModules>,
+    host_cache: Option<host_cache::Request>,
     artifact_objects: Vec<PathBuf>,
 }
 
@@ -462,6 +468,17 @@ impl CodegenBackend for CudaCodegenBackend {
     }
 
     fn init(&self, sess: &Session) {
+        if host_cache::kernels_only(sess.opts.crate_name.as_deref().unwrap_or("")) {
+            if sess.opts.crate_types != [rustc_structures::CrateType::StaticLib]
+                || sess.opts.output_types.should_link()
+                || sess
+                    .opts
+                    .output_types
+                    .contains_key(&rustc_session::config::OutputType::Metadata)
+            {
+                sess.dcx().fatal("kernel-only compilation must emit only objects as staticlib; use cargo oxide --kernels-only");
+            }
+        }
         // Note: Don't log here - init() is called for ALL crates including dependencies.
         // We log in codegen_crate() only when there are kernels to compile.
 
@@ -523,14 +540,35 @@ impl CodegenBackend for CudaCodegenBackend {
         // trigger trimmed_def_paths. rust-gpu uses the same pattern.
         with_no_trimmed_paths!({
             // Step 1: Analyze for device code
-            let mono_partitions = tcx.collect_and_partition_mono_items(());
-            let kernel_count = collector::count_kernels_in_cgus(tcx, mono_partitions.codegen_units);
-            let device_fn_count =
-                collector::count_device_fns_in_cgus(tcx, mono_partitions.codegen_units);
-            let unsupported_protocol_root = collector::unsupported_codegen_protocol_root_in_cgus(
-                tcx,
-                mono_partitions.codegen_units,
-            );
+            let crate_name = tcx.crate_name(rustc_hir::def_id::LOCAL_CRATE);
+            let kernels_only = host_cache::kernels_only(crate_name.as_str());
+            let mut shader_collection =
+                kernels_only.then(|| collector::collect_local_kernel_functions(tcx));
+            let mono_partitions = (!kernels_only).then(|| tcx.collect_and_partition_mono_items(()));
+            let cgus = mono_partitions
+                .as_ref()
+                .map(|partitions| partitions.codegen_units)
+                .unwrap_or(&[]);
+            let kernel_count = shader_collection
+                .as_ref()
+                .map(|collection| {
+                    collection
+                        .functions
+                        .iter()
+                        .filter(|function| function.is_kernel)
+                        .count()
+                })
+                .unwrap_or_else(|| collector::count_kernels_in_cgus(tcx, cgus));
+            let device_fn_count = if kernels_only {
+                0
+            } else {
+                collector::count_device_fns_in_cgus(tcx, cgus)
+            };
+            let unsupported_protocol_root =
+                collector::unsupported_codegen_protocol_root_in_cgus(tcx, cgus);
+            if kernels_only && kernel_count == 0 {
+                tcx.dcx().fatal("kernel-only update requires local non-generic kernel entries; run a full build");
+            }
             if reject_unsupported_codegen_protocol(
                 std::env::var_os(reserved_oxide_symbols::CODEGEN_FINGERPRINT_ENV).is_some(),
                 unsupported_protocol_root.is_some(),
@@ -540,7 +578,6 @@ impl CodegenBackend for CudaCodegenBackend {
                     "[rustc_codegen_cuda] Device-code root `{root}` was emitted by a cuda-macros version that predates the scoped Cargo cache protocol. Rebuild the source with cuda-macros from the same cuda-oxide revision; older macro expansions, including pre-expanded output from before this protocol, cannot be cached safely across output and architecture changes."
                 ));
             }
-            let crate_name = tcx.crate_name(rustc_hir::def_id::LOCAL_CRATE);
             let owner_selected = self.config.allows_device_codegen_for(crate_name.as_str());
             let contains_device_code = kernel_count > 0 || device_fn_count > 0;
 
@@ -601,14 +638,73 @@ impl CodegenBackend for CudaCodegenBackend {
                 eprintln!(
                     "[rustc_codegen_cuda] Compiling crate '{}': {} CGUs, {} kernel(s), {} device fn(s)",
                     crate_name,
-                    mono_partitions.codegen_units.len(),
+                    cgus.len(),
                     kernel_count,
                     device_fn_count
                 );
             }
 
+            let host_proof_started = std::time::Instant::now();
+            let host_cache = has_device_code
+                .then(|| {
+                    host_cache::request(
+                        tcx,
+                        cgus,
+                        self.config
+                            .ptx_output_dir
+                            .as_deref()
+                            .unwrap_or_else(|| Path::new(".")),
+                    )
+                })
+                .flatten();
+            if has_device_code {
+                eprintln!(
+                    "[device-modules] host proof: {:.3}s",
+                    host_proof_started.elapsed().as_secs_f64()
+                );
+            }
+            let reused_host = if kernels_only {
+                if host_cache
+                    .as_ref()
+                    .and_then(host_cache::read_contract)
+                    .is_none()
+                {
+                    tcx.dcx().fatal("kernel-only update cannot prove unchanged host MIR/ABI; run a full native build with debug=0 and CUDA_OXIDE_REUSE_HOST_FOR_KERNEL_EDITS=1 first");
+                }
+                Some(CompiledModules {
+                    modules: Vec::new(),
+                    allocator_module: None,
+                })
+            } else {
+                host_cache.as_ref().and_then(host_cache::read)
+            };
             // Step 2: If device code exists, compile via cuda-oxide
-            let _device_result = if has_device_code {
+            let _device_result = if has_device_code
+                && std::env::var_os("CUDA_OXIDE_INCREMENTAL_MODULES").is_some()
+            {
+                let collection = shader_collection
+                    .take()
+                    .unwrap_or_else(|| collector::collect_device_functions(tcx, cgus, false));
+                let config =
+                    device_codegen::DeviceCodegenConfig {
+                        minimum_dynamic_shared_alignment: 0,
+                        output_dir: self.config.ptx_output_dir.clone().unwrap_or_else(|| {
+                            std::env::current_dir().unwrap_or_else(|_| ".".into())
+                        }),
+                        output_name: crate_name.to_string(),
+                        verbose: self.config.verbose,
+                        dump_rustc_mir: self.config.dump_rustc_mir,
+                        dump_mir_dialect: self.config.dump_mir_dialect,
+                        dump_llvm_dialect: self.config.dump_llvm_dialect,
+                    };
+                match incremental::compile(tcx, &collection, &config) {
+                    Ok(path) => artifact_objects.push(path),
+                    Err(error) => tcx.dcx().fatal(format!(
+                        "[rustc_codegen_cuda] Incremental device compilation failed: {error}"
+                    )),
+                }
+                None
+            } else if has_device_code {
                 let materialization_request =
                     materialize::request_from_env().unwrap_or_else(|error| {
                         tcx.dcx().fatal(format!(
@@ -620,11 +716,8 @@ impl CodegenBackend for CudaCodegenBackend {
                 }
 
                 // Collect all device-reachable functions (kernels + their callees)
-                let collection_result = collector::collect_device_functions(
-                    tcx,
-                    mono_partitions.codegen_units,
-                    self.config.verbose,
-                );
+                let collection_result =
+                    collector::collect_device_functions(tcx, cgus, self.config.verbose);
 
                 materialize::validate_collection(
                     materialization_request,
@@ -654,6 +747,7 @@ impl CodegenBackend for CudaCodegenBackend {
                 // Create device codegen config from our config
                 let device_config =
                     device_codegen::DeviceCodegenConfig {
+                        minimum_dynamic_shared_alignment: 0,
                         output_dir: self.config.ptx_output_dir.clone().unwrap_or_else(|| {
                             std::env::current_dir().unwrap_or_else(|_| ".".into())
                         }),
@@ -732,6 +826,17 @@ impl CodegenBackend for CudaCodegenBackend {
                         ));
                     }
                     Ok(Ok(result)) => {
+                        // Do not let a previous partitioned manifest shadow a
+                        // successful package-mode rebuild.
+                        let manifest = device_config
+                            .output_dir
+                            .join(format!("{}.modules.json", device_config.output_name));
+                        if let Err(error) = std::fs::remove_file(&manifest)
+                            && error.kind() != std::io::ErrorKind::NotFound
+                        {
+                            tcx.dcx()
+                                .fatal(format!("cannot retire module manifest: {error}"));
+                        }
                         if self.config.verbose
                             && let Some(artifact) = result.artifact.as_ref()
                         {
@@ -793,11 +898,20 @@ impl CodegenBackend for CudaCodegenBackend {
 
             // Step 3: Delegate ALL host codegen to LLVM backend
             // (No logging here - it fires for every crate including dependencies)
-            let host_result = self.llvm_backend.codegen_crate(tcx);
+            let host_result = if reused_host.is_some() {
+                eprintln!(
+                    "[device-modules] host objects reused: host MIR and kernel ABI unchanged"
+                );
+                None
+            } else {
+                Some(self.llvm_backend.codegen_crate(tcx))
+            };
 
             // Return the LLVM backend's result
             Box::new(CudaOngoingCodegen {
                 host: host_result,
+                reused_host,
+                host_cache,
                 artifact_objects,
             })
         })
@@ -814,13 +928,25 @@ impl CodegenBackend for CudaCodegenBackend {
         let ongoing = *ongoing_codegen
             .downcast::<CudaOngoingCodegen>()
             .expect("rustc_codegen_cuda received unexpected ongoing codegen state");
-        let (mut compiled_modules, work_products) = self.llvm_backend.join_codegen(
-            ongoing.host,
-            sess,
-            incr_comp_session,
-            outputs,
-            crate_info,
-        );
+        let (mut compiled_modules, work_products) = if let Some(host) = ongoing.host {
+            let result =
+                self.llvm_backend
+                    .join_codegen(host, sess, incr_comp_session, outputs, crate_info);
+            if let Some(request) = &ongoing.host_cache {
+                if let Err(error) = host_cache::write(request, &result.0) {
+                    eprintln!("[device-modules] host object cache unavailable: {error}");
+                }
+            }
+            result
+        } else {
+            (
+                ongoing.reused_host.expect("missing cached host objects"),
+                WorkProductMap::default(),
+            )
+        };
+        if !host_cache::kernels_only(crate_info.local_crate_name.as_str()) {
+            *self.pending_contract.lock().unwrap() = ongoing.host_cache;
+        }
         for (index, object) in ongoing.artifact_objects.into_iter().enumerate() {
             compiled_modules.modules.push(CompiledModule {
                 name: format!("oxide_artifact_embed_{index}"),
@@ -845,8 +971,30 @@ impl CodegenBackend for CudaCodegenBackend {
         metadata: EncodedMetadata,
         outputs: &OutputFilenames,
     ) {
+        if host_cache::kernels_only(crate_info.local_crate_name.as_str()) {
+            let object = compiled_modules
+                .modules
+                .first()
+                .and_then(|module| module.object.as_ref())
+                .expect("kernel-only object missing");
+            std::fs::copy(
+                object,
+                outputs
+                    .path(rustc_session::config::OutputType::Object)
+                    .as_path(),
+            )
+            .expect("could not write kernel-only object");
+            return;
+        }
         self.llvm_backend
             .link(sess, compiled_modules, crate_info, metadata, outputs);
+        if sess.dcx().has_errors().is_none() {
+            if let Some(request) = self.pending_contract.lock().unwrap().take() {
+                if let Err(error) = host_cache::publish_contract(&request) {
+                    eprintln!("[device-modules] kernel-only contract unavailable: {error}");
+                }
+            }
+        }
     }
 }
 
@@ -870,7 +1018,12 @@ fn write_device_artifact_object(
         artifact,
     )?;
     if let Some(materialized) = materialized_artifact.as_ref() {
-        emit_launch_bounds_spill_warnings(tcx, result, functions, &materialized.resource_usage);
+        emit_launch_bounds_spill_warnings(
+            tcx,
+            &result.kernel_launch_bounds,
+            functions,
+            &materialized.resource_usage,
+        );
     }
     let (artifact, was_materialized) = match materialized_artifact.as_ref() {
         Some(materialized) => (&materialized.artifact, true),
@@ -1053,7 +1206,7 @@ fn materialize_artifact_for_embedding(
 /// escape hatch covers builds that measured a spill and accepted it.
 fn emit_launch_bounds_spill_warnings(
     tcx: TyCtxt<'_>,
-    result: &device_codegen::DeviceCodegenResult,
+    bounds_by_kernel: &std::collections::BTreeMap<String, mir_importer::KernelLaunchBounds>,
     functions: &[collector::CollectedFunction<'_>],
     resource_usage: &[cuda_artifact_finalizer::KernelResourceUsage],
 ) {
@@ -1061,7 +1214,7 @@ fn emit_launch_bounds_spill_warnings(
         return;
     }
     for usage in resource_usage.iter().filter(|usage| usage.has_spills()) {
-        let Some(bounds) = result.kernel_launch_bounds.get(&usage.kernel) else {
+        let Some(bounds) = bounds_by_kernel.get(&usage.kernel) else {
             continue;
         };
         let Some(function) = functions
@@ -1183,6 +1336,7 @@ pub fn __rustc_codegen_backend() -> Box<dyn CodegenBackend> {
     Box::new(CudaCodegenBackend {
         config,
         llvm_backend,
+        pending_contract: std::sync::Mutex::new(None),
     })
 }
 

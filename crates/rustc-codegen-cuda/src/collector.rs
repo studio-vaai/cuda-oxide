@@ -1044,6 +1044,62 @@ pub fn collect_device_functions<'tcx>(
     result
 }
 
+/// Native shader updates need only local, non-generic kernel roots. Building
+/// the CPU monomorphization graph here would optimize unchanged host functions
+/// even though no host output is emitted. Native mode already rejects generic
+/// kernel bundle merging; keep that restriction explicit on this path too.
+pub fn collect_local_kernel_functions<'tcx>(tcx: TyCtxt<'tcx>) -> CollectionResult<'tcx> {
+    let mut collector = DeviceCollector::new(tcx, false);
+    let mut requires_ptx_bundle_merge = false;
+    for local in tcx.hir_crate_items(()).definitions() {
+        let id = local.to_def_id();
+        let Some(name) = tcx.opt_item_name(id) else {
+            continue;
+        };
+        if unsupported_codegen_protocol_root(name.as_str()) {
+            tcx.dcx()
+                .fatal("kernel-only update requires the current cuda-oxide macro protocol");
+        }
+        if is_ptx_merge_required_marker(name.as_str()) {
+            requires_ptx_bundle_merge = true;
+        }
+        if !matches!(
+            tcx.def_kind(id),
+            rustc_hir::def::DefKind::Fn | rustc_hir::def::DefKind::AssocFn
+        ) || !is_kernel_function(tcx, id)
+        {
+            continue;
+        }
+        if tcx.generics_of(id).requires_monomorphization(tcx) {
+            requires_ptx_bundle_merge = true;
+            continue;
+        }
+        let instance = Instance::mono(tcx, id);
+        let path = tcx.def_path_str(id);
+        let base = kernel_base_name(&path).expect("kernel name without reserved prefix");
+        collector.add_root(
+            instance,
+            true,
+            compute_kernel_export_name(tcx, instance, base),
+        );
+    }
+    let mut result = collector.collect();
+    result.requires_ptx_bundle_merge = requires_ptx_bundle_merge;
+    result
+}
+
+/// Reuse the exact collector semantics to compute a compilation unit's dependencies.
+pub fn collect_from_roots<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    roots: &[CollectedFunction<'tcx>],
+) -> CollectionResult<'tcx> {
+    let mut collector = DeviceCollector::new(tcx, false);
+    for root in roots {
+        collector.add_root(root.instance, root.is_kernel, root.export_name.clone());
+    }
+    collector.collect()
+}
+
 /// Worklist-based collector for device-reachable functions.
 ///
 /// Uses breadth-first traversal to discover all functions reachable from kernels.

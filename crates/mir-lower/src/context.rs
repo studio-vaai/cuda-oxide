@@ -17,6 +17,28 @@ use pliron::{context::Context, identifier::Identifier, r#type::TypeHandle};
 
 mod options_storage {
     pliron::dict_key!(LOWERING_OPTIONS_KEY, "cuda_oxide_mir_lower_options");
+    pliron::dict_key!(SHARED_NAMESPACE_KEY, "cuda_oxide_shared_global_namespace");
+}
+
+/// Set a stable namespace for anonymous shared allocations when independently
+/// compiled modules will be linked together. Named Rust statics retain their
+/// identity across modules; anonymous allocations remain local to this unit.
+pub fn set_shared_global_namespace(ctx: &mut Context, namespace: String) {
+    let key = options_storage::SHARED_NAMESPACE_KEY.clone();
+    if let Some(index) = ctx.aux_data_map.get(&key).copied() {
+        ctx.aux_data[index] = Box::new(namespace);
+    } else {
+        let index = ctx.aux_data.insert(Box::new(namespace));
+        ctx.aux_data_map.insert(key, index);
+    }
+}
+
+/// Namespace installed by the frontend for independently linkable units.
+pub fn shared_global_namespace(ctx: &Context) -> Option<&str> {
+    ctx.aux_data_map
+        .get(&*options_storage::SHARED_NAMESPACE_KEY)
+        .and_then(|index| ctx.aux_data[*index].downcast_ref::<String>())
+        .map(String::as_str)
 }
 
 /// Store the options for the active lowering pass in pliron's per-compilation

@@ -18,6 +18,9 @@ cuda-core = { workspace = true }
 cuda-artifact-finalizer = { workspace = true }
 ptx-parse = { workspace = true }
 sha2 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+libc = "0.2"
 thiserror = { workspace = true }
 cuda-async = { workspace = true, optional = true }
 

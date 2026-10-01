@@ -306,8 +306,28 @@ fn root_function_names<'a>(state: &'a ModuleExportState<'_>) -> Vec<&'a str> {
     names
 }
 
-fn emit_llvm_used(output: &mut String, state: &ModuleExportState<'_>) -> Result<(), String> {
-    let function_names = root_function_names(state);
+fn emit_llvm_used(
+    output: &mut String,
+    state: &ModuleExportState<'_>,
+    module: &ModuleOp,
+) -> Result<(), String> {
+    let linkable = module
+        .get_operation()
+        .deref(state.ctx)
+        .attributes
+        .get::<pliron::builtin::attributes::StringAttr>(
+            &"cuda_oxide_linkable_device_module".try_into().unwrap(),
+        )
+        .is_some();
+    let function_names = if linkable {
+        state
+            .all_kernels
+            .iter()
+            .map(|kernel| kernel.name.as_str())
+            .collect()
+    } else {
+        root_function_names(state)
+    };
     let mut global_names = state
         .retained_globals
         .iter()
@@ -682,7 +702,7 @@ pub(super) fn export_module_with_externs_impl(
     // device functions have no callers when compiled without a kernel (consumed by
     // external C++ via LTOIR). Both need @llvm.used to survive optimization.
     if config.emit_llvm_used() {
-        emit_llvm_used(&mut output, &state)?;
+        emit_llvm_used(&mut output, &state, module)?;
     }
 
     // 5. Debug intrinsic declarations used by full-debug local variables.
@@ -828,7 +848,7 @@ pub(super) fn export_module_to_string_with_config(
     // Without explicit marking, LLVM's optimizer sees them as "dead code" and removes them.
     // The @llvm.used global tells LLVM: "preserve these symbols, they're used externally."
     if config.emit_llvm_used() {
-        emit_llvm_used(&mut output, &state)?;
+        emit_llvm_used(&mut output, &state, module)?;
     }
 
     // Emit debug intrinsic declarations used by full-debug local variables.

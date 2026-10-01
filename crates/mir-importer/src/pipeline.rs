@@ -79,6 +79,8 @@ pub struct CollectedFunction {
     pub rustc_mono_successors: Vec<Vec<usize>>,
     /// True if this is a GPU kernel entry point (has `#[kernel]` attribute).
     pub is_kernel: bool,
+    /// Emit only the canonical device ABI declaration for another compilation unit.
+    pub declaration_only: bool,
     /// The name to export in PTX. For kernels, this is the user-visible name.
     pub export_name: String,
     /// rustc MIR source-scope data used to build inlined debug scopes.
@@ -181,6 +183,9 @@ pub struct CompilationResult {
 
 /// Configuration for the compilation pipeline.
 pub struct PipelineConfig {
+    /// Dynamic shared-memory alignment floor supplied by a partitioning frontend.
+    /// Zero leaves local launch-contract propagation unchanged.
+    pub minimum_dynamic_shared_alignment: u64,
     /// Directory for output files (`.ll`, `.ptx`).
     pub output_dir: std::path::PathBuf,
     /// Base name for output files (e.g., `"kernel"` → `kernel.ll`, `kernel.ptx`).
@@ -247,6 +252,7 @@ pub struct PipelineConfig {
 impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
+            minimum_dynamic_shared_alignment: 0,
             output_dir: std::env::current_dir().unwrap_or_else(|_| ".".into()),
             output_name: "kernel".to_string(),
             verbose: true,
@@ -488,6 +494,10 @@ pub fn run_pipeline(
 
     let mut ctx = Context::new();
 
+    if std::env::var_os("CUDA_OXIDE_INCREMENTAL_MODULES").is_some() {
+        mir_lower::context::set_shared_global_namespace(&mut ctx, config.output_name.clone());
+    }
+
     // Step 1: Register dialects
     crate::translator::register_dialects(&mut ctx);
 
@@ -498,6 +508,9 @@ pub fn run_pipeline(
         .try_into()
         .unwrap_or_else(|_| "kernel".try_into().unwrap());
     let module = pliron::builtin::ops::ModuleOp::new(&mut ctx, module_name);
+    if std::env::var_os("CUDA_OXIDE_INCREMENTAL_MODULES").is_some() {
+        llvm_export::export::mark_linkable_device_module(&mut ctx, &module);
+    }
     let module_op_ptr = module.get_operation();
 
     let mut legaliser = Legaliser::default();
@@ -530,6 +543,7 @@ pub fn run_pipeline(
             &func.rustc_mono_successors,
             func.is_kernel,
             func.is_inline_always,
+            func.declaration_only,
             Some(&func.export_name),
             &mut legaliser,
             config.debug_kind,
@@ -569,6 +583,11 @@ pub fn run_pipeline(
         append_to_module(&ctx, module_op_ptr, func_op_ptr);
     }
 
+    mir_lower::set_module_dynamic_shared_alignment(
+        &mut ctx,
+        module_op_ptr,
+        config.minimum_dynamic_shared_alignment,
+    );
     let ll_path = config.output_dir.join(format!("{}.ll", config.output_name));
     let ptx_path = config
         .output_dir
@@ -1278,6 +1297,7 @@ fn adversarial_export_name() -> u64 {
         fs::write(&cached_cubin, b"persistent cache entry").unwrap();
 
         let config = PipelineConfig {
+            minimum_dynamic_shared_alignment: 0,
             output_dir: root.clone(),
             output_name: "kernel".to_string(),
             verbose: false,
@@ -1331,6 +1351,7 @@ fn adversarial_export_name() -> u64 {
         assert!(!output_dir.exists());
 
         let config = PipelineConfig {
+            minimum_dynamic_shared_alignment: 0,
             output_dir: output_dir.clone(),
             output_name: "empty".to_string(),
             verbose: false,
@@ -1422,6 +1443,7 @@ fn adversarial_export_name() -> u64 {
             unique
         ));
         let config = PipelineConfig {
+            minimum_dynamic_shared_alignment: 0,
             output_dir: root.clone(),
             output_name: "extern_only".to_string(),
             verbose: false,

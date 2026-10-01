@@ -24,6 +24,7 @@ use pliron::op::Op;
 use pliron::operation::Operation;
 use pliron::result::Result;
 use pliron::r#type::{TypeHandle, Typed};
+use sha2::{Digest, Sha256};
 
 /// Convert `mir.shared_alloc` to LLVM global variable in shared address space.
 ///
@@ -215,8 +216,19 @@ fn create_shared_global(
 
     let counter = *next_shared_mem_index;
     *next_shared_mem_index += 1;
-    let name: pliron::identifier::Identifier =
-        format!("__shared_mem_{counter}").try_into().unwrap();
+    let symbol = if let Some(namespace) = crate::context::shared_global_namespace(ctx) {
+        // The same Rust static referenced from two compilation units must name
+        // one allocation after LTO. Unit-local numbering would collide unrelated
+        // statics; prefixing all names would silently duplicate a shared static.
+        if let Some(key) = &spec.alloc_key {
+            format!("__shared_mem_static_{:x}", Sha256::digest(key.as_bytes()))
+        } else {
+            format!("__shared_mem_{namespace}_{counter}")
+        }
+    } else {
+        format!("__shared_mem_{counter}")
+    };
+    let name: pliron::identifier::Identifier = symbol.try_into().unwrap();
 
     let global_op = if spec.alignment > 0 {
         llvm::GlobalOp::new_with_alignment(ctx, name.clone(), array_type.into(), spec.alignment)
@@ -224,6 +236,12 @@ fn create_shared_global(
         llvm::GlobalOp::new(ctx, name.clone(), array_type.into())
     };
     global_op.set_address_space(ctx, llvm_export::types::address_space::SHARED);
+    if crate::context::shared_global_namespace(ctx).is_some() && spec.alloc_key.is_some() {
+        global_op.set_attr_llvm_global_linkage(
+            ctx,
+            llvm_export::attributes::LinkageAttr::WeakODRLinkage,
+        );
+    }
     if let Some(source_name) = spec.source_name {
         use llvm_export::ops::GlobalOpExt;
         global_op.set_shared_source_name(ctx, source_name);

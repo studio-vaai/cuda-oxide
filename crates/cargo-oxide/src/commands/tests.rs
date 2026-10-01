@@ -1876,7 +1876,7 @@ fn build_passthrough_retains_release_profile_and_required_flags() {
     assert!(flags.contains(&"-Copt-level=0"));
     assert!(flags.contains(&"-Zcodegen-backend=llvm"));
     assert_eq!(
-        &flags[flags.len() - 6..],
+        &flags[flags.len() - 7..],
         [
             "-Zcodegen-backend=/tmp/librustc_codegen_cuda.so",
             "-Copt-level=3",
@@ -1884,6 +1884,7 @@ fn build_passthrough_retains_release_profile_and_required_flags() {
             "-Zmir-enable-passes=-JumpThreading",
             "-Zalways-encode-mir",
             "-Csymbol-mangling-version=v0",
+            "-Zinline-mir=yes",
         ]
     );
     assert!(!flags.contains(&"native=/nix/store/cuda-cudart/lib"));
@@ -1908,7 +1909,7 @@ fn encoded_rustflags_preserve_configured_flag_boundaries_and_spaces() {
     );
     assert_eq!(&flags[2..4], ["-L", "native=/nix/store/cuda-cudart/lib"]);
     assert_eq!(
-        flags[flags.len() - 6],
+        flags[flags.len() - 7],
         "-Zcodegen-backend=/tmp/backend path/librustc_codegen_cuda.so"
     );
 }
@@ -2679,6 +2680,27 @@ fn passthrough_fingerprint_tracks_output_affecting_settings() {
         Some("sm_80"),
         &MaterializationMode::default(),
         &inherited_env,
+    );
+
+    let routing = BTreeMap::from([
+        ("CUDA_OXIDE_KERNELS_ONLY".into(), b"gpu_crate".to_vec()),
+        ("CUDA_OXIDE_INTERNAL_RUSTC_WRAPPER".into(), b"1".to_vec()),
+        (
+            "CUDA_OXIDE_UPSTREAM_RUSTC_WRAPPER".into(),
+            b"/wrapper".to_vec(),
+        ),
+    ]);
+    assert_eq!(
+        base_hash,
+        passthrough_codegen_fingerprint_with_env(
+            &ctx,
+            &base,
+            None,
+            Some("sm_80"),
+            &MaterializationMode::default(),
+            &routing,
+        ),
+        "kernel-only output routing must preserve CUDA unit identity"
     );
 
     let arch = CargoPassthroughOptions {
