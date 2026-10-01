@@ -183,6 +183,17 @@ pub fn push_kernel_device_slice(
     args.push(len as *mut u64 as *mut c_void);
 }
 
+/// Push the pointer and count stored in a caller-owned slice argument pair.
+/// The pair must stay in place until the driver consumes the argument list.
+#[inline]
+#[doc(hidden)]
+pub fn push_kernel_device_slice_pair(
+    args: &mut Vec<*mut c_void>,
+    value: &mut (cuda_core::sys::CUdeviceptr, u64),
+) {
+    push_kernel_device_slice(args, &mut value.0, &mut value.1);
+}
+
 /// A device buffer together with the row width the kernel will index it by.
 ///
 /// Kernels whose index space fixes the row width in the type need nothing
@@ -309,6 +320,86 @@ pub fn push_kernel_row_width_device_slice(
     args.push(ptr as *mut cuda_core::sys::CUdeviceptr as *mut c_void);
     args.push(len as *mut u64 as *mut c_void);
     args.push(width as *mut u32 as *mut c_void);
+}
+
+/// Push a caller-owned pointer/count/row-width triple in device ABI order.
+/// The triple must stay in place until the driver consumes the argument list.
+#[inline]
+#[doc(hidden)]
+pub fn push_kernel_row_width_device_slice_triple(
+    args: &mut Vec<*mut c_void>,
+    value: &mut (cuda_core::sys::CUdeviceptr, u64, u32),
+) {
+    push_kernel_row_width_device_slice(args, &mut value.0, &mut value.1, &mut value.2);
+}
+
+/// One logical argument's live storage; never transported as a Rust tuple.
+#[doc(hidden)]
+pub trait KernelArgumentStorage {
+    const SLOTS: usize;
+    fn append(&mut self, args: &mut Vec<*mut c_void>);
+}
+impl<T: KernelScalar> KernelArgumentStorage for Scalar<T> {
+    const SLOTS: usize = if std::mem::size_of::<T>() == 0 { 0 } else { 1 };
+    #[inline]
+    fn append(&mut self, args: &mut Vec<*mut c_void>) {
+        push_kernel_scalar(args, &mut self.0);
+    }
+}
+impl KernelArgumentStorage for (cuda_core::sys::CUdeviceptr, u64) {
+    const SLOTS: usize = 2;
+    #[inline]
+    fn append(&mut self, args: &mut Vec<*mut c_void>) {
+        push_kernel_device_slice_pair(args, self);
+    }
+}
+impl KernelArgumentStorage for (cuda_core::sys::CUdeviceptr, u64, u32) {
+    const SLOTS: usize = 3;
+    #[inline]
+    fn append(&mut self, args: &mut Vec<*mut c_void>) {
+        push_kernel_row_width_device_slice_triple(args, self);
+    }
+}
+
+/// A tuple of logical arguments in source order.
+#[doc(hidden)]
+pub trait KernelArgumentList {
+    const SLOTS: usize;
+    fn append(&mut self, args: &mut Vec<*mut c_void>);
+}
+impl KernelArgumentList for () {
+    const SLOTS: usize = 0;
+    fn append(&mut self, _args: &mut Vec<*mut c_void>) {}
+}
+macro_rules! argument_lists {
+    (@impl $($ty:ident:$index:tt),+) => {
+        impl<$($ty: KernelArgumentStorage),+> KernelArgumentList for ($($ty,)+) {
+            const SLOTS: usize = 0 $(+ $ty::SLOTS)+;
+            #[inline]
+            fn append(&mut self, args: &mut Vec<*mut c_void>) {
+                $(self.$index.append(args);)+
+            }
+        }
+    };
+    (@grow [$($previous:ident:$slot:tt,)*] $next:ident:$index:tt $(,$rest:ident:$tail:tt)*) => {
+        argument_lists!(@impl $($previous:$slot,)* $next:$index);
+        argument_lists!(@grow [$($previous:$slot,)* $next:$index,] $($rest:$tail),*);
+    };
+    (@grow [$($previous:ident:$slot:tt,)*]) => {};
+}
+argument_lists!(@grow [] A0:0,A1:1,A2:2,A3:3,A4:4,A5:5,A6:6,A7:7,
+    A8:8,A9:9,A10:10,A11:11,A12:12,A13:13,A14:14,A15:15,
+    A16:16,A17:17,A18:18,A19:19,A20:20,A21:21,A22:22,A23:23,
+    A24:24,A25:25,A26:26,A27:27,A28:28,A29:29,A30:30,A31:31);
+
+/// Obtain driver pointers into caller-owned storage. Keep the storage in place
+/// until submission returns; zero-sized scalars occupy no driver argument slot.
+#[inline]
+#[doc(hidden)]
+pub fn kernel_argument_pointers<A: KernelArgumentList>(storage: &mut A) -> Vec<*mut c_void> {
+    let mut args = Vec::with_capacity(A::SLOTS);
+    storage.append(&mut args);
+    args
 }
 
 // =============================================================================
@@ -912,5 +1003,30 @@ mod tests {
             ptr
         );
         assert_eq!(unsafe { *(args[1] as *const u64) }, len);
+    }
+
+    #[test]
+    fn packed_slice_arguments_preserve_storage_order_and_field_widths() {
+        let mut storage = (
+            (0xfeed_beefu64, 1024u64),
+            Scalar(()),
+            Scalar(17u32),
+            (0xcafe_babeu64, 2048u64, 64u32),
+        );
+        let args = kernel_argument_pointers(&mut storage);
+        assert_eq!(args.len(), 6);
+        assert!(kernel_argument_pointers(&mut ()).is_empty());
+        // Slots reference the original live fields, not temporary copies.
+        storage.0.1 = 4096;
+        storage.3.2 = 128;
+        assert_eq!(args[0], std::ptr::from_mut(&mut storage.0.0).cast());
+        assert_eq!(args[1], std::ptr::from_mut(&mut storage.0.1).cast());
+        assert_eq!(args[2], std::ptr::from_mut(&mut storage.2.0).cast());
+        assert_eq!(args[3], std::ptr::from_mut(&mut storage.3.0).cast());
+        assert_eq!(args[4], std::ptr::from_mut(&mut storage.3.1).cast());
+        assert_eq!(args[5], std::ptr::from_mut(&mut storage.3.2).cast());
+        assert_eq!(unsafe { *args[1].cast::<u64>() }, 4096);
+        assert_eq!(unsafe { *args[2].cast::<u32>() }, 17);
+        assert_eq!(unsafe { *args[5].cast::<u32>() }, 128);
     }
 }
