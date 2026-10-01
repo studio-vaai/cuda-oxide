@@ -102,10 +102,13 @@ pub use kernel_family::{
 };
 pub use launch::{
     CudaKernel, GenericCudaKernel, HasLength, KernelScalar, ReadOnly, RowWidth, RowWidthOwned,
-    Scalar, WriteOnly, push_kernel_device_slice, push_kernel_row_width_device_slice,
+    Scalar, WriteOnly, push_kernel_device_slice, push_kernel_device_slice_pair,
+    push_kernel_row_width_device_slice, push_kernel_row_width_device_slice_triple,
     push_kernel_scalar, read_only_device_buffer_arg, row_width_device_buffer_arg,
     writable_device_buffer_arg,
 };
+#[doc(hidden)]
+pub use launch::{KernelArgumentList, KernelArgumentStorage, kernel_argument_pointers};
 #[doc(hidden)]
 pub use type_id::__intern_generic_kernel_name;
 pub use type_id::{type_id_u128, type_id_u128_of_val};
