@@ -298,6 +298,169 @@ pub fn codegen_cargo_passthrough(
     }
     println!();
 
+    let output_root = std::env::var_os("CUDA_OXIDE_PTX_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| ctx.workspace_root.clone());
+    let dirty_root = output_root.join(".oxide-artifacts/kernel-only-updates");
+    let mut dirty_markers = Vec::new();
+    if std::env::var_os("CUDA_OXIDE_KERNELS_ONLY").is_none() {
+        if let Ok(entries) = std::fs::read_dir(&dirty_root) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let Some(name) = name.to_str() else {
+                    continue;
+                };
+                let Some(name) = name.strip_suffix(".json") else {
+                    continue;
+                };
+                if !name.bytes().all(|x| x.is_ascii_alphanumeric() || x == b'_') {
+                    continue;
+                }
+                let Ok(bytes) = std::fs::read(entry.path()) else {
+                    continue;
+                };
+                let Ok(target) = serde_json::from_slice::<std::path::PathBuf>(&bytes) else {
+                    continue;
+                };
+                if let Ok(fingerprints) = std::fs::read_dir(target.join("release/.fingerprint")) {
+                    for fingerprint in fingerprints.flatten() {
+                        if fingerprint
+                            .file_name()
+                            .to_string_lossy()
+                            .replace('-', "_")
+                            .starts_with(&format!("{name}_"))
+                        {
+                            // Only invalidate this crate's Cargo freshness; retain
+                            // MIR, LLVM and device caches and all dependencies.
+                            let path = fingerprint.path().join(format!("lib-{name}"));
+                            if path.is_file() {
+                                std::fs::remove_file(path).expect(
+                                    "could not refresh full library after kernel-only update",
+                                );
+                            }
+                        }
+                    }
+                }
+                // Cargo's newer build-directory layout puts fingerprints beside
+                // each crate's outputs rather than in profile/.fingerprint.
+                if let Ok(packages) = std::fs::read_dir(target.join("release/build")) {
+                    for package in packages.flatten() {
+                        if package.file_name().to_string_lossy().replace('-', "_") == name {
+                            if let Ok(units) = std::fs::read_dir(package.path()) {
+                                for unit in units.flatten() {
+                                    let path =
+                                        unit.path().join("fingerprint").join(format!("lib-{name}"));
+                                    if path.is_file() {
+                                        std::fs::remove_file(path).expect("could not refresh full library after kernel-only update");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                dirty_markers.push(entry.path());
+            }
+        }
+    }
+    if std::env::var_os("CUDA_OXIDE_KERNELS_ONLY").is_some() {
+        // Cargo removes stale crate outputs before launching rustc. A separate
+        // target directory preserves the full host library and its fingerprints.
+        // Dependencies warm once here; later edits retain those Cargo caches.
+        if cargo_args
+            .iter()
+            .any(|arg| arg == "--target-dir" || arg.starts_with("--target-dir="))
+        {
+            eprintln!("Error: use --cargo-target-dir before `--` with --kernels-only");
+            std::process::exit(2);
+        }
+        let mut metadata = Command::new("cargo");
+        metadata
+            .args(["metadata", "--format-version=1", "--no-deps"])
+            .current_dir(&ctx.workspace_root);
+        for (key, value) in cmd.get_envs() {
+            if let Some(value) = value {
+                metadata.env(key, value);
+            }
+        }
+        for pair in cargo_args.windows(2) {
+            if pair[0] == "--manifest-path" {
+                metadata.args([&pair[0], &pair[1]]);
+            }
+        }
+        for arg in cargo_args
+            .iter()
+            .filter(|arg| arg.starts_with("--manifest-path="))
+        {
+            metadata.arg(arg);
+        }
+        let output = metadata
+            .output()
+            .expect("failed to resolve kernel-only Cargo target");
+        if !output.status.success() {
+            eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+            std::process::exit(2);
+        }
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("invalid Cargo metadata");
+        let target = std::path::PathBuf::from(
+            metadata["target_directory"]
+                .as_str()
+                .expect("missing Cargo target"),
+        )
+        .join("oxide-kernels-only");
+        let crate_name = std::env::var("CUDA_OXIDE_KERNELS_ONLY").unwrap();
+        let output_root = std::env::var_os("CUDA_OXIDE_PTX_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| ctx.workspace_root.clone());
+        let contract = output_root
+            .join(".oxide-artifacts/host-cache/v2")
+            .join(&crate_name)
+            .join("latest-contract.json");
+        let contract = std::fs::read(&contract).unwrap_or_else(|error| {
+            eprintln!(
+                "Error: run a full native library build with host reuse enabled first: {error}"
+            );
+            std::process::exit(2);
+        });
+        let marker = target.join(format!(".oxide-host-seed-{crate_name}.json"));
+        if std::fs::read(&marker).ok().as_deref() != Some(contract.as_slice()) {
+            let source = std::path::Path::new(metadata["target_directory"].as_str().unwrap())
+                .join("release");
+            let destination = target.join("release");
+            std::fs::create_dir_all(&destination).expect("could not create kernel-only cache");
+            eprintln!(
+                "Seeding kernel-only Cargo dependencies from the full build (once per host contract)…"
+            );
+            let mut copy = Command::new("cp");
+            copy.arg("-a");
+            if cfg!(target_os = "linux") {
+                copy.arg("--reflink=auto");
+            }
+            let status = copy
+                .arg(source.join("."))
+                .arg(&destination)
+                .status()
+                .expect("could not seed kernel-only cache");
+            if !status.success() {
+                std::process::exit(status.code().unwrap_or(1));
+            }
+            std::fs::write(&marker, &contract).expect("could not record kernel-only cache seed");
+        }
+        // A full build must republish kernels even if its host Cargo source
+        // checksum still matches the pre-update binary. Mark before compiling,
+        // so interruption cannot leave fresh Cargo fingerprints with stale GPU
+        // files. The separate target keeps the full host artifacts untouched.
+        std::fs::create_dir_all(&dirty_root).expect("could not record kernel-only update");
+        std::fs::write(
+            dirty_root.join(format!("{crate_name}.json")),
+            serde_json::to_vec(&std::path::PathBuf::from(
+                metadata["target_directory"].as_str().unwrap(),
+            ))
+            .unwrap(),
+        )
+        .expect("could not record kernel-only update");
+        cmd.env("CARGO_TARGET_DIR", target);
+    }
     let status = cmd.status().expect("Failed to run cargo");
     if !status.success() {
         eprintln!(
@@ -309,5 +472,8 @@ pub fn codegen_cargo_passthrough(
     }
 
     println!();
+    for marker in dirty_markers {
+        let _ = std::fs::remove_file(marker);
+    }
     println!("✓ Cargo {} succeeded", cargo_subcommand_name);
 }

@@ -1,0 +1,9 @@
+[package]
+name = "incremental_modules"
+version = "0.1.0"
+edition = "2024"
+[workspace]
+[dependencies]
+cuda-device = { path = "../../../cuda-device" }
+cuda-host = { path = "../../../cuda-host" }
+cuda-core = "0.3.1"

@@ -133,8 +133,8 @@ pub use cuda_async::simt::launch::{
 };
 
 pub use embedded::{
-    EmbeddedModuleError, load_all_ptx_bundles_merged, load_embedded_module,
-    load_first_embedded_module,
+    EmbeddedModuleError, load_all_ptx_bundles_merged, load_embedded_cuda_module,
+    load_embedded_module, load_first_embedded_module,
 };
 pub use entry_registry::{
     diagnose_generic_kernel_load_error, divergent_type_id_entries, panic_generic_kernel_load_failed,
@@ -162,3 +162,8 @@ pub use cuda_macros::cuda_launch_async;
 pub use tiling::{
     TILE_SIZE, k_major_index, mn_major_index, print_layout_indices, to_k_major_f16, to_mn_major_f16,
 };
+
+/// Identity used by a generated typed binding to select its physical module.
+pub trait CudaModuleBinding {
+    const MODULE_ID: &'static str;
+}

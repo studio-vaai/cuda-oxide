@@ -45,6 +45,8 @@ crates/dialect-mir/src/passes/
 .oxide-artifacts/
 **/.oxide-artifacts/
 *.cubin
+*.modules.json
+*.modules/
 *.identity
 *.gpu
 *.fatbin

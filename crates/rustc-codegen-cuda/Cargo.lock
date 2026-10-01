@@ -525,6 +525,7 @@ dependencies = [
  "pliron-derive",
  "reserved-oxide-symbols",
  "rustc-hash",
+ "sha2",
  "thiserror",
 ]
 
@@ -737,6 +738,7 @@ dependencies = [
  "cuda-artifact-finalizer",
  "dialect-mir",
  "dialect-nvvm",
+ "libnvvm-sys",
  "linkme",
  "llvm-export",
  "mir-importer",
@@ -747,6 +749,7 @@ dependencies = [
  "pliron-derive",
  "reserved-oxide-symbols",
  "serde_json",
+ "sha2",
  "thiserror",
 ]
 

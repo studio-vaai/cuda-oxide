@@ -56,6 +56,18 @@ pub use externs::{AsDeviceExtern, DeviceExternAttrs, DeviceExternDecl, DeviceExt
 
 use pliron::{builtin::ops::ModuleOp, context::Context};
 
+/// Preserve device definitions for separate compilation without making every
+/// helper a permanent `llvm.used` root in the final native link. Kernel entries
+/// and explicitly retained globals remain roots. The linker resolves callers
+/// against the externally visible helper definitions before eliminating dead code.
+pub fn mark_linkable_device_module(ctx: &mut Context, module: &ModuleOp) {
+    use pliron::op::Op;
+    module.get_operation().deref_mut(ctx).attributes.set(
+        "cuda_oxide_linkable_device_module".try_into().unwrap(),
+        pliron::builtin::attributes::StringAttr::new("v1".to_string()),
+    );
+}
+
 /// Textual LLVM IR plus the exporter-derived symbols consumed outside the
 /// module. The optimizer uses this semantic root set instead of reparsing the
 /// rendered LLVM syntax.
