@@ -54,7 +54,7 @@ fn cuda_launch_requires_unsafe() {
 }
 
 /// Shared argument storage handles empty/ZST lists and the maximum tuple arity,
-/// while larger signatures continue to use per-argument storage.
+/// while larger signatures use nested groups in the same ABI order.
 #[test]
 #[cfg(not(feature = "async"))]
 fn cuda_module_argument_storage() {
