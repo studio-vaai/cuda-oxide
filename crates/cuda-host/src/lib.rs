@@ -100,16 +100,18 @@ pub use kernel_family::{
     KernelSelectionError, KernelSelectionResult, KernelSelector, KernelVariant,
     NoKernelSelectionCache, SelectedVariant, SelectionMode, SelectionSource,
 };
+#[doc(hidden)]
+pub use launch::{
+    __launch_kernel_cooperative_on_stream, __launch_kernel_ex_cooperative_on_stream,
+    __launch_kernel_ex_on_stream, __launch_kernel_on_stream, KernelArgumentGroup,
+    KernelArgumentList, KernelArgumentStorage, kernel_argument_pointers,
+};
 pub use launch::{
     CudaKernel, GenericCudaKernel, HasLength, KernelScalar, ReadOnly, RowWidth, RowWidthOwned,
     Scalar, WriteOnly, push_kernel_device_slice, push_kernel_device_slice_pair,
     push_kernel_row_width_device_slice, push_kernel_row_width_device_slice_triple,
     push_kernel_scalar, read_only_device_buffer_arg, row_width_device_buffer_arg,
     writable_device_buffer_arg,
-};
-#[doc(hidden)]
-pub use launch::{
-    KernelArgumentGroup, KernelArgumentList, KernelArgumentStorage, kernel_argument_pointers,
 };
 #[doc(hidden)]
 pub use type_id::__intern_generic_kernel_name;
