@@ -888,7 +888,6 @@ fn cuda_module_owned_resources_ty(
 }
 
 fn cuda_module_arguments(kernel: &CudaModuleKernel) -> TokenStream2 {
-    let args = internal_ident("__cuda_oxide_args");
     let storage = internal_ident("__cuda_oxide_argument_storage");
     let mut fields: Vec<_> = kernel
         .params
@@ -920,8 +919,7 @@ fn cuda_module_arguments(kernel: &CudaModuleKernel) -> TokenStream2 {
             .collect();
     }
     quote! {
-        let mut #storage = (#(#fields,)*);
-        let mut #args = ::cuda_host::kernel_argument_pointers(&mut #storage);
+        let #storage = (#(#fields,)*);
     }
 }
 
@@ -1035,59 +1033,16 @@ fn cuda_module_launch_call(kernel: &CudaModuleKernel) -> TokenStream2 {
     let function = internal_ident("__cuda_oxide_function");
     let stream = internal_ident("__cuda_oxide_stream");
     let config = internal_ident("__cuda_oxide_config");
-    let args = internal_ident("__cuda_oxide_args");
-    let cluster_dim = kernel.cluster_dim.map(|(x, y, z)| quote! { (#x, #y, #z) });
-    match (cluster_dim, kernel.cooperative) {
-        (Some(cluster_dim), true) => quote! {
-            unsafe {
-                ::cuda_core::launch_kernel_ex_cooperative_on_stream(
-                    #function,
-                    #config.grid_dim,
-                    #config.block_dim,
-                    #config.shared_mem_bytes,
-                    #cluster_dim,
-                    #stream,
-                    &mut #args,
-                )
-            }
-        },
-        (Some(cluster_dim), false) => quote! {
-            unsafe {
-                ::cuda_core::launch_kernel_ex_on_stream(
-                    #function,
-                    #config.grid_dim,
-                    #config.block_dim,
-                    #config.shared_mem_bytes,
-                    #cluster_dim,
-                    #stream,
-                    &mut #args,
-                )
-            }
-        },
-        (None, true) => quote! {
-            unsafe {
-                ::cuda_core::launch_kernel_cooperative_on_stream(
-                    #function,
-                    #config.grid_dim,
-                    #config.block_dim,
-                    #config.shared_mem_bytes,
-                    #stream,
-                    &mut #args,
-                )
-            }
-        },
-        (None, false) => quote! {
-            unsafe {
-                ::cuda_core::launch_kernel_on_stream(
-                    #function,
-                    #config.grid_dim,
-                    #config.block_dim,
-                    #config.shared_mem_bytes,
-                    #stream,
-                    &mut #args,
-                )
-            }
-        },
+    let storage = internal_ident("__cuda_oxide_argument_storage");
+    let cluster = kernel.cluster_dim.map(|(x, y, z)| quote! { (#x, #y, #z), });
+    let submit = match (kernel.cluster_dim.is_some(), kernel.cooperative) {
+        (true, true) => quote!(::cuda_host::__launch_kernel_ex_cooperative_on_stream),
+        (true, false) => quote!(::cuda_host::__launch_kernel_ex_on_stream),
+        (false, true) => quote!(::cuda_host::__launch_kernel_cooperative_on_stream),
+        (false, false) => quote!(::cuda_host::__launch_kernel_on_stream),
+    };
+    quote! {
+        unsafe { #submit(#function, #config, #stream, #cluster #storage) }
     }
 }
 

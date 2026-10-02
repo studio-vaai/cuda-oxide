@@ -414,6 +414,48 @@ pub fn kernel_argument_pointers<A: KernelArgumentList>(storage: &mut A) -> Vec<*
     args
 }
 
+// Keep argument storage in the submission frame. CUDA copies these values
+// during the driver call; neither storage nor its pointer list escapes it.
+macro_rules! argument_launch {
+    ($name:ident, $driver:ident $(, $cluster:ident)?) => {
+        /// Shared submission implementation for generated synchronous launchers.
+        /// # Safety
+        /// The function's ABI and resource/geometry requirements must match
+        /// the supplied arguments, configuration, stream and cluster.
+        #[doc(hidden)]
+        pub unsafe fn $name<A: KernelArgumentList>(
+            function: &cuda_core::CudaFunction,
+            config: cuda_core::simt::LaunchConfig,
+            stream: &cuda_core::CudaStream,
+            $( $cluster: (u32, u32, u32), )?
+            mut storage: A,
+        ) -> Result<(), cuda_core::DriverError> {
+            let mut args = kernel_argument_pointers(&mut storage);
+            unsafe {
+                cuda_core::$driver(
+                    function, config.grid_dim, config.block_dim,
+                    config.shared_mem_bytes, $( $cluster, )? stream, &mut args,
+                )
+            }
+        }
+    };
+}
+argument_launch!(__launch_kernel_on_stream, launch_kernel_on_stream);
+argument_launch!(
+    __launch_kernel_cooperative_on_stream,
+    launch_kernel_cooperative_on_stream
+);
+argument_launch!(
+    __launch_kernel_ex_on_stream,
+    launch_kernel_ex_on_stream,
+    cluster
+);
+argument_launch!(
+    __launch_kernel_ex_cooperative_on_stream,
+    launch_kernel_ex_cooperative_on_stream,
+    cluster
+);
+
 // =============================================================================
 // Typed Async Kernel Arguments
 // =============================================================================
