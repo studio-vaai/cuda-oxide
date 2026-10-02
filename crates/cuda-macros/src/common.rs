@@ -12,6 +12,77 @@ use reserved_oxide_symbols::{
 };
 use syn::{FnArg, Ident, ItemFn, visit::Visit};
 
+/// Keep each identical proof once, including its identifier hygiene. Repeated
+/// arguments often add the same scalar or slice proof to a launch signature.
+pub(crate) fn deduplicate_where_predicates(generics: &mut syn::Generics) {
+    use quote::ToTokens;
+    let Some(clause) = &mut generics.where_clause else {
+        return;
+    };
+    let mut seen = std::collections::BTreeMap::<String, Vec<proc_macro2::TokenStream>>::new();
+    clause.predicates = core::mem::take(&mut clause.predicates)
+        .into_iter()
+        .filter(|predicate| {
+            let tokens = predicate.to_token_stream();
+            let bucket = seen.entry(tokens.to_string()).or_default();
+            if bucket
+                .iter()
+                .any(|previous| same_proof_tokens(previous.clone(), tokens.clone()))
+            {
+                false
+            } else {
+                bucket.push(tokens);
+                true
+            }
+        })
+        .collect();
+}
+
+fn same_proof_tokens(a: proc_macro2::TokenStream, b: proc_macro2::TokenStream) -> bool {
+    use proc_macro2::TokenTree;
+    let mut a = a.into_iter();
+    let mut b = b.into_iter();
+    loop {
+        match (a.next(), b.next()) {
+            (None, None) => return true,
+            (Some(TokenTree::Group(a)), Some(TokenTree::Group(b))) => {
+                if a.delimiter() != b.delimiter() || !same_proof_tokens(a.stream(), b.stream()) {
+                    return false;
+                }
+            }
+            (Some(TokenTree::Ident(a)), Some(TokenTree::Ident(b))) => {
+                if a != b {
+                    return false;
+                }
+                if proc_macro::is_available() {
+                    // Ignore locations, but retain the contexts which determine
+                    // whether two identically spelled types actually resolve alike.
+                    let location = proc_macro::Span::call_site();
+                    if !a
+                        .span()
+                        .unwrap()
+                        .located_at(location)
+                        .eq(&b.span().unwrap().located_at(location))
+                    {
+                        return false;
+                    }
+                }
+            }
+            (Some(TokenTree::Punct(a)), Some(TokenTree::Punct(b))) => {
+                if a.as_char() != b.as_char() || a.spacing() != b.spacing() {
+                    return false;
+                }
+            }
+            (Some(TokenTree::Literal(a)), Some(TokenTree::Literal(b))) => {
+                if a.to_string() != b.to_string() {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+}
+
 /// Record cuda-oxide's exact device-codegen identity in the consuming crate's
 /// dep-info. Cargo then rebuilds only crates that can own or instantiate device
 /// code when output mode, architecture, policy, or tool provenance changes.
