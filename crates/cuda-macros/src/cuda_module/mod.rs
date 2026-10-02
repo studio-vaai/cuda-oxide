@@ -11,8 +11,8 @@ pub(crate) mod launchers;
 pub(crate) mod model;
 
 use crate::common::{
-    attr_path_ends_with, has_attr_named, impl_trait_parameter_error, internal_ident,
-    track_codegen_environment,
+    attr_path_ends_with, deduplicate_where_predicates, has_attr_named, impl_trait_parameter_error,
+    internal_ident, track_codegen_environment,
 };
 use crate::cuda_module::constants::{
     collect_cuda_module_constants, cuda_module_items_with_constant_symbols,
@@ -624,6 +624,7 @@ fn cuda_module_kernel(
     if launch_contract.is_none() {
         add_cuda_module_disjoint_abi_bounds(&mut generics, &params);
     }
+    deduplicate_where_predicates(&mut generics);
     let is_generic = has_codegen_generics(&item_fn.sig.generics);
     let cfg_attrs = cuda_module_cfg_attrs(&item_fn.attrs)?;
     let mut effective_cfg_attrs = ancestor_cfg_attrs.to_vec();

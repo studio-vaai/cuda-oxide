@@ -29,7 +29,7 @@
 //! so the same switch that turns host emission on also adds the `cuda-host`
 //! dependency that resolves it.
 
-#![feature(proc_macro_def_site, proc_macro_tracked_env)]
+#![feature(proc_macro_def_site, proc_macro_span, proc_macro_tracked_env)]
 
 mod common;
 mod cuda_module;

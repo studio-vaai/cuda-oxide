@@ -6,7 +6,7 @@
 //! Generated host-side launch method families for `#[cuda_module]`
 //! kernels: sync, prepared, async, and owned-async.
 
-use crate::common::{cuda_module_async_lifetime, internal_ident};
+use crate::common::{cuda_module_async_lifetime, deduplicate_where_predicates, internal_ident};
 use crate::cuda_module::contract::{
     DynamicSharedContract, RequiresLenAccess, generate_requires_checks,
 };
@@ -788,6 +788,7 @@ fn cuda_module_launch_generics(kernel: &CudaModuleKernel) -> syn::Generics {
                 .push(syn::parse_quote! { #host_ty: ::cuda_host::KernelScalar });
         }
     }
+    deduplicate_where_predicates(&mut generics);
     generics
 }
 
@@ -819,6 +820,7 @@ fn cuda_module_owned_async_launch_generics(
                 .push(syn::parse_quote! { #host_ty: ::cuda_host::KernelScalar + 'static });
         }
     }
+    deduplicate_where_predicates(&mut generics);
     generics
 }
 
@@ -838,6 +840,7 @@ fn cuda_module_async_launch_generics(kernel: &CudaModuleKernel) -> syn::Generics
                 .push(syn::parse_quote! { #host_ty: ::cuda_host::KernelScalar + #async_lifetime });
         }
     }
+    deduplicate_where_predicates(&mut generics);
     generics
 }
 
