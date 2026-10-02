@@ -1040,7 +1040,7 @@ fn aliased_disjoint_index_space_is_checked_by_rust_type_resolution() {
         ),
         "the bound must preserve the original index-space alias: {expanded}"
     );
-    assert!(expanded.contains("__LaunchContractDisjointSlice<u32,2u8>"));
+    assert!(expanded.contains("__LaunchSlice<u32,2u8,false>"));
 }
 
 #[test]
@@ -1062,7 +1062,7 @@ fn one_dimensional_index_space_is_not_accepted_by_identifier_spelling() {
         ),
         "the bound must preserve the misleading alias for Rust to resolve: {expanded}"
     );
-    assert!(expanded.contains("__LaunchContractDisjointSlice<u32,2u8>"));
+    assert!(expanded.contains("__LaunchSlice<u32,2u8,false>"));
 }
 
 #[test]
@@ -1085,7 +1085,7 @@ fn local_disjoint_slice_lookalike_gets_the_genuine_type_bound() {
         expanded.contains("for<'__cuda_oxide_disjoint>DisjointSlice<'__cuda_oxide_disjoint,u32>:"),
         "the look-alike must receive the genuine cuda-device trait bound: {expanded}"
     );
-    assert!(expanded.contains("__LaunchContractDisjointSlice<u32,1u8>"));
+    assert!(expanded.contains("__LaunchSlice<u32,1u8,false>"));
 }
 
 #[test]
