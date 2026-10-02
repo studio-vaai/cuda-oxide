@@ -341,10 +341,14 @@ pub(super) fn add_cuda_module_disjoint_contract_bounds(
         else {
             continue;
         };
+        let has_row_width = matches!(
+            param.marshal,
+            CudaModuleParamMarshal::RowWidthDeviceBuffer { .. }
+        );
         let (device_ty, bound_lifetime) = cuda_module_disjoint_bound_type(device_ty);
         generics.make_where_clause().predicates.push(parse_quote! {
             for<#bound_lifetime> #device_ty:
-                ::cuda_device::__LaunchContractDisjointSlice<#element_ty, #domain>
+                ::cuda_device::__LaunchSlice<#element_ty, #domain, #has_row_width>
         });
     }
 }

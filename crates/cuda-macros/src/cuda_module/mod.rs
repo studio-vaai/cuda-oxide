@@ -650,7 +650,9 @@ fn cuda_module_kernel(
     // The launch packet's shape (two or three words per slice) must match the
     // resolved device type with or without a launch contract, so this bound
     // is unconditional too.
-    add_cuda_module_disjoint_abi_bounds(&mut generics, &params);
+    if launch_contract.is_none() {
+        add_cuda_module_disjoint_abi_bounds(&mut generics, &params);
+    }
     let is_generic = has_codegen_generics(&item_fn.sig.generics);
     let cfg_attrs = cuda_module_cfg_attrs(&item_fn.attrs)?;
     let mut effective_cfg_attrs = ancestor_cfg_attrs.to_vec();
