@@ -1,4 +1,7 @@
-// SPDX-License-Identifier: Apache-2.0
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
 //! Check scalar/ZST/slice ABI order across the 32-field argument-group boundary.
 //! Run: cargo oxide run argument_storage
 use cuda_core::simt::LaunchConfig;
@@ -8,6 +11,8 @@ use cuda_host::cuda_module;
 #[cuda_module]
 mod kernels {
     use cuda_device::kernel;
+    // This ABI fixture deliberately crosses the 32-field grouping boundary.
+    #[allow(clippy::too_many_arguments)]
     #[kernel]
     pub fn readback(
         a0: u32,
@@ -41,18 +46,15 @@ mod kernels {
         a28: u32,
         a29: u32,
         a30: u32,
-        zero: (),
+        _zero: (),
         out: &mut [u32],
         tail: u64,
     ) {
-        let _ = zero;
         let values = [
             a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18,
             a19, a20, a21, a22, a23, a24, a25, a26, a27, a28, a29, a30,
         ];
-        for i in 0..31 {
-            out[i] = values[i];
-        }
+        out[..31].copy_from_slice(&values);
         out[31] = tail as u32;
         out[32] = (tail >> 32) as u32;
         out[33] = out.len() as u32;
