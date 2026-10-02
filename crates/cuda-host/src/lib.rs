@@ -102,9 +102,10 @@ pub use kernel_family::{
 };
 #[doc(hidden)]
 pub use launch::{
-    __launch_kernel_cooperative_on_stream, __launch_kernel_ex_cooperative_on_stream,
-    __launch_kernel_ex_on_stream, __launch_kernel_on_stream, KernelArgumentGroup,
-    KernelArgumentList, KernelArgumentStorage, kernel_argument_pointers,
+    __LaunchRequirement, __launch_kernel_cooperative_on_stream,
+    __launch_kernel_ex_cooperative_on_stream, __launch_kernel_ex_on_stream,
+    __launch_kernel_on_stream, KernelArgumentGroup, KernelArgumentList, KernelArgumentStorage,
+    kernel_argument_pointers,
 };
 pub use launch::{
     CudaKernel, GenericCudaKernel, HasLength, KernelScalar, ReadOnly, RowWidth, RowWidthOwned,
