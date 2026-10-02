@@ -456,6 +456,63 @@ argument_launch!(
     cluster
 );
 
+/// Error context shared by one generated `requires` relation.
+#[doc(hidden)]
+pub struct __LaunchRequirement {
+    kernel: &'static str,
+    relation: &'static str,
+}
+impl __LaunchRequirement {
+    pub const fn new(kernel: &'static str, relation: &'static str) -> Self {
+        Self { kernel, relation }
+    }
+
+    /// Keep the checked-arithmetic error and the failing relation together.
+    pub fn value(&self, value: Option<u64>) -> Result<u64, cuda_core::LaunchContractError> {
+        value.ok_or(cuda_core::LaunchContractError::SizeRequirementOverflow {
+            kernel: self.kernel,
+            relation: self.relation,
+        })
+    }
+
+    fn check(
+        &self,
+        lhs: u64,
+        rhs: u64,
+        satisfied: bool,
+    ) -> Result<(), cuda_core::LaunchContractError> {
+        if satisfied {
+            Ok(())
+        } else {
+            Err(cuda_core::LaunchContractError::SizeRequirementViolated {
+                kernel: self.kernel,
+                relation: self.relation,
+                lhs,
+                rhs,
+            })
+        }
+    }
+
+    pub fn lt(&self, lhs: u64, rhs: u64) -> Result<(), cuda_core::LaunchContractError> {
+        self.check(lhs, rhs, lhs < rhs)
+    }
+    pub fn le(&self, lhs: u64, rhs: u64) -> Result<(), cuda_core::LaunchContractError> {
+        self.check(lhs, rhs, lhs <= rhs)
+    }
+    pub fn eq(&self, lhs: u64, rhs: u64) -> Result<(), cuda_core::LaunchContractError> {
+        self.check(lhs, rhs, lhs == rhs)
+    }
+    pub fn ne(&self, lhs: u64, rhs: u64) -> Result<(), cuda_core::LaunchContractError> {
+        self.check(lhs, rhs, lhs != rhs)
+    }
+    pub fn ge(&self, lhs: u64, rhs: u64) -> Result<(), cuda_core::LaunchContractError> {
+        self.check(lhs, rhs, lhs >= rhs)
+    }
+    pub fn gt(&self, lhs: u64, rhs: u64) -> Result<(), cuda_core::LaunchContractError> {
+        self.check(lhs, rhs, lhs > rhs)
+    }
+}
+
 // =============================================================================
 // Typed Async Kernel Arguments
 // =============================================================================
@@ -964,6 +1021,45 @@ impl<T> HasLength for cuda_core::DeviceBuffer<T> {
 mod tests {
     use super::*;
     use std::ffi::c_void;
+
+    #[test]
+    fn launch_requirement_preserves_comparisons_and_error_values() {
+        let r = __LaunchRequirement::new("kernel", "input.len() >= n * stride");
+        for (lhs, rhs) in [(0, 0), (0, 1), (1, 0), (u64::MAX, u64::MAX)] {
+            for (result, expected) in [
+                (r.lt(lhs, rhs), lhs < rhs),
+                (r.le(lhs, rhs), lhs <= rhs),
+                (r.eq(lhs, rhs), lhs == rhs),
+                (r.ne(lhs, rhs), lhs != rhs),
+                (r.ge(lhs, rhs), lhs >= rhs),
+                (r.gt(lhs, rhs), lhs > rhs),
+            ] {
+                assert_eq!(result.is_ok(), expected);
+                if let Err(error) = result {
+                    assert!(
+                        matches!(error, cuda_core::LaunchContractError::SizeRequirementViolated {
+                        kernel: "kernel", relation: "input.len() >= n * stride",
+                        lhs: actual_lhs, rhs: actual_rhs,
+                    } if actual_lhs == lhs && actual_rhs == rhs)
+                    );
+                }
+            }
+        }
+        assert_eq!(r.value(3u64.checked_mul(7)).unwrap(), 21);
+        for overflow in [
+            u64::MAX.checked_add(1),
+            0u64.checked_sub(1),
+            u64::MAX.checked_mul(2),
+        ] {
+            assert!(matches!(
+                r.value(overflow),
+                Err(cuda_core::LaunchContractError::SizeRequirementOverflow {
+                    kernel: "kernel",
+                    relation: "input.len() >= n * stride",
+                })
+            ));
+        }
+    }
 
     // Dummy kernel marker for testing
     struct TestKernelMarker;
