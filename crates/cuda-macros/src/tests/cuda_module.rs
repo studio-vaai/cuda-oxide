@@ -9,7 +9,7 @@ use crate::cuda_module::{
     transform_cuda_module_items,
 };
 use proc_macro2::TokenStream as TokenStream2;
-use quote::quote;
+use quote::{ToTokens, quote};
 use reserved_oxide_symbols::PTX_MERGE_REQUIRED_PREFIX;
 use reserved_oxide_symbols::ptx_merge_required_marker;
 use syn::{ItemMod, parse_quote};
@@ -1317,4 +1317,90 @@ fn non_generic_kernel_lookups_never_consult_the_divergence_diagnosis() {
         !expanded.contains("diagnose_generic_kernel_load_error"),
         "non-generic lookups must keep the ordinary error path: {expanded}"
     );
+}
+
+#[test]
+fn repeated_parameters_share_scalar_and_slice_proofs() {
+    let module: ItemMod = parse_quote! {
+        mod kernels {
+            #[kernel]
+            #[launch_bounds(128)]
+            #[launch_contract(domain = 1)]
+            pub fn repeated<T: Copy>(
+                a: T, b: T, n: u32, m: u32,
+                mut x: DisjointSlice<f32>, mut y: DisjointSlice<f32>,
+            ) {}
+        }
+    };
+    let expanded: ItemMod = syn::parse2(expand_cuda_module(module).unwrap()).unwrap();
+    let items = expanded.content.unwrap().1;
+    let loaded = items
+        .iter()
+        .filter_map(|item| {
+            if let syn::Item::Impl(item) = item {
+                Some(item)
+            } else {
+                None
+            }
+        })
+        .find(|item| {
+            item.trait_.is_none() && item.self_ty.to_token_stream().to_string() == "LoadedModule"
+        })
+        .unwrap();
+    let mut checked = 0;
+    for item in &loaded.items {
+        let syn::ImplItem::Fn(method) = item else {
+            continue;
+        };
+        if !method.sig.ident.to_string().contains("repeated") {
+            continue;
+        }
+        let bounds = method
+            .sig
+            .generics
+            .where_clause
+            .as_ref()
+            .unwrap()
+            .predicates
+            .iter()
+            .map(|p| p.to_token_stream().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            bounds
+                .iter()
+                .filter(|p| p.contains("__LaunchSlice"))
+                .count(),
+            1,
+            "{bounds:?}"
+        );
+        if method.sig.ident.to_string().starts_with("prepare_") {
+            continue;
+        }
+        assert_eq!(
+            bounds.iter().filter(|p| p.starts_with("T :")).count(),
+            1,
+            "{bounds:?}"
+        );
+        assert_eq!(
+            bounds.iter().filter(|p| p.starts_with("u32 :")).count(),
+            1,
+            "{bounds:?}"
+        );
+        checked += 1;
+    }
+    assert!(checked >= 2);
+}
+
+#[test]
+fn proof_deduplication_preserves_distinct_types_lifetimes_and_layouts() {
+    let mut generics: syn::Generics = parse_quote!(<'a, 'b, T, U>);
+    generics.where_clause = Some(parse_quote! {
+        where T: Copy, T: Copy, U: Copy, T: Send,
+        &'a T: Copy, &'b T: Copy,
+        for<'s> DisjointSlice<'s, T>: Proof<T, 1, false>,
+        for<'s> DisjointSlice<'s, T>: Proof<T, 1, true>,
+        for<'s> DisjointSlice<'s, T>: Proof<T, 2, false>,
+    });
+    crate::common::deduplicate_where_predicates(&mut generics);
+    assert_eq!(generics.where_clause.unwrap().predicates.len(), 8);
 }
