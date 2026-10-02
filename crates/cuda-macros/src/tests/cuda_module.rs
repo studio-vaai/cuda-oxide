@@ -646,8 +646,11 @@ fn requires_relations_generate_overflow_safe_checks_in_checked_launchers_only() 
 
     // Every operand is widened to u64 and arithmetic goes through
     // checked ops with a typed overflow error.
-    assert!(expanded.contains("SizeRequirementViolated"), "{expanded}");
-    assert!(expanded.contains("SizeRequirementOverflow"), "{expanded}");
+    assert!(expanded.contains("__LaunchRequirement::new"), "{expanded}");
+    assert!(
+        expanded.contains("__cuda_oxide_requires.value("),
+        "{expanded}"
+    );
     assert!(expanded.contains("checked_mul"), "{expanded}");
     assert!(expanded.contains("(nasu64)"), "{expanded}");
     // The relation's source text rides along for the error message.
@@ -662,13 +665,13 @@ fn requires_relations_generate_overflow_safe_checks_in_checked_launchers_only() 
     // `_async_owned` twins check too (2 relations each).
     #[cfg(not(feature = "async"))]
     assert_eq!(
-        expanded.matches("SizeRequirementViolated").count(),
+        expanded.matches("__LaunchRequirement::new").count(),
         2,
         "{expanded}"
     );
     #[cfg(feature = "async")]
     assert_eq!(
-        expanded.matches("SizeRequirementViolated").count(),
+        expanded.matches("__LaunchRequirement::new").count(),
         6,
         "{expanded}"
     );
@@ -718,6 +721,25 @@ fn requires_relations_wrap_async_launchers_in_result() {
         !plain.contains("Result<::cuda_host::PreparedOwnedAsyncKernelLaunch<"),
         "{plain}"
     );
+}
+
+#[test]
+fn requires_relations_route_every_comparison_to_the_shared_context() {
+    let module: ItemMod = parse_quote! {
+        mod kernels {
+            #[kernel]
+            #[launch_contract(domain = 1, block = (64, 1, 1),
+                requires = (n < 3, n <= 4, n == 1, n != 2, n >= 1, n > 0))]
+            pub fn comparisons(n: u64) {}
+        }
+    };
+    let expanded = expand_to_compact_string(module);
+    for compare in ["lt", "le", "eq", "ne", "ge", "gt"] {
+        assert!(
+            expanded.contains(&format!("__cuda_oxide_requires.{compare}(")),
+            "{expanded}"
+        );
+    }
 }
 
 #[test]
