@@ -1072,17 +1072,22 @@ pub fn generate_device_code_partition<'tcx>(
     // 2. Sets up thread-local CompilerCtxt
     // 3. Runs our closure with access to stable() conversion
     // 4. Tears down the context and returns our result
-    // Pre-compute `#[inline(always)]` flags before entering the stable_mir
+    // Pre-compute Rust's inline policy before entering the stable_mir
     // context, since the query lives on `rustc_middle::TyCtxt` and is not
     // exposed through stable_mir. Preserving this hint avoids making helper
     // boundaries depend entirely on later optimizer heuristics.
-    let inline_always_flags: Vec<bool> = functions
+    let inline_flags: Vec<(bool, bool)> = functions
         .iter()
         .map(|func| {
             let def_id = func.instance.def_id();
-            matches!(
-                tcx.codegen_fn_attrs(def_id).inline,
-                rustc_hir::attrs::InlineAttr::Always | rustc_hir::attrs::InlineAttr::Force { .. }
+            let inline = tcx.codegen_fn_attrs(def_id).inline;
+            (
+                matches!(
+                    inline,
+                    rustc_hir::attrs::InlineAttr::Always
+                        | rustc_hir::attrs::InlineAttr::Force { .. }
+                ),
+                matches!(inline, rustc_hir::attrs::InlineAttr::Never),
             )
         })
         .collect();
@@ -1147,11 +1152,14 @@ pub fn generate_device_code_partition<'tcx>(
             .iter()
             .zip(export_names.iter())
             .zip(debug_scope_maps.iter())
-            .zip(inline_always_flags.iter())
+            .zip(inline_flags.iter())
             .zip(device_mono_reachability.iter())
             .filter_map(
                 |(
-                    (((func, (export_name, is_kernel)), debug_source_scopes), is_inline_always),
+                    (
+                        ((func, (export_name, is_kernel)), debug_source_scopes),
+                        (is_inline_always, is_inline_never),
+                    ),
                     reachability,
                 )| {
                     // Use rustc_internal::stable() to convert the Instance.
@@ -1184,6 +1192,7 @@ pub fn generate_device_code_partition<'tcx>(
                         debug_source_scopes: Some(debug_source_scopes.clone()),
                         statement_debug_info,
                         is_inline_always: *is_inline_always,
+                        is_inline_never: *is_inline_never,
                     })
                 },
             )

@@ -233,6 +233,16 @@ fn input_fingerprint<'tcx>(
                         local.ty.stable_hash(hcx, &mut hasher);
                     }
                 } else {
+                    // Earlier lowering omitted `#[inline(never)]`. Invalidate
+                    // only affected definitions so old cached IR cannot silently
+                    // discard the newly preserved policy. Declaration-only
+                    // users reuse their IR and relink with the new helper LTOIR.
+                    if matches!(
+                        tcx.codegen_fn_attrs(function.instance.def_id()).inline,
+                        rustc_hir::attrs::InlineAttr::Never
+                    ) {
+                        "device-noinline-v1".stable_hash(hcx, &mut hasher);
+                    }
                     body.stable_hash(hcx, &mut hasher);
                     if tcx.is_mir_available(function.instance.def_id()) {
                         tcx.promoted_mir(function.instance.def_id())

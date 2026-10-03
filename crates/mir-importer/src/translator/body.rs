@@ -1813,6 +1813,8 @@ fn emit_entry_allocas(
 /// * `is_kernel` - Add `gpu_kernel` attribute for kernel entry points
 /// * `is_inline_always` - Add `alwaysinline` attribute (non-kernel functions
 ///   marked `#[inline(always)]` in rustc)
+/// * `is_inline_never` - Add `noinline` attribute (non-kernel functions
+///   marked `#[inline(never)]` in rustc)
 /// * `override_name` - Custom export name (defaults to instance name)
 pub fn translate_body(
     ctx: &mut Context,
@@ -1822,6 +1824,7 @@ pub fn translate_body(
     rustc_mono_successors: &[Vec<usize>],
     is_kernel: bool,
     is_inline_always: bool,
+    is_inline_never: bool,
     declaration_only: bool,
     override_name: Option<&str>,
     legaliser: &mut Legaliser,
@@ -2200,7 +2203,13 @@ pub fn translate_body(
         llvm_export::ops::set_debug_source_scope_map(ctx, op_ptr, scope_map);
     }
 
-    set_alwaysinline_attr_from_flag(ctx, &mir_func_op, is_kernel, is_inline_always);
+    set_inline_attrs_from_flags(
+        ctx,
+        &mir_func_op,
+        is_kernel,
+        is_inline_always,
+        is_inline_never,
+    );
 
     // Get the function body region (region 0)
     let region_ptr = op_ptr.deref(ctx).get_region(0);
@@ -2334,19 +2343,27 @@ fn function_debug_name(instance: &mono::Instance, is_kernel: bool, export_name: 
     }
 }
 
-/// Propagate `#[inline(always)]` as an LLVM `alwaysinline` function
+/// Propagate Rust's inline policy as an LLVM function
 /// attribute. Kernel entry points are excluded because they're `.entry` in PTX
 /// and never callees, so marking them `alwaysinline` would be a no-op at best
 /// and rejected by LLVM at worst.
-fn set_alwaysinline_attr_from_flag(
+fn set_inline_attrs_from_flags(
     ctx: &mut Context,
     mir_func_op: &MirFuncOp,
     is_kernel: bool,
     is_inline_always: bool,
+    is_inline_never: bool,
 ) {
-    if is_inline_always && !is_kernel {
+    assert!(!(is_inline_always && is_inline_never));
+    if !is_kernel && (is_inline_always || is_inline_never) {
         let attr = pliron::builtin::attributes::StringAttr::new("true".to_string());
-        let key: Identifier = "alwaysinline".try_into().unwrap();
+        let key: Identifier = if is_inline_never {
+            "noinline"
+        } else {
+            "alwaysinline"
+        }
+        .try_into()
+        .unwrap();
         mir_func_op
             .get_operation()
             .deref_mut(ctx)
@@ -2567,7 +2584,36 @@ pub fn cuda_oxide_device_generated_kernel(mut wrapped: Wrapper<u16>) -> u32 {
     }
 
     #[test]
-    fn inline_always_flag_reaches_llvm_func_attr_before_export() {
+    fn kernel_entry_does_not_receive_explicit_inline_attributes() {
+        let mut ctx = Context::new();
+        crate::translator::register_dialects(&mut ctx);
+        let func_type = FunctionType::get(&ctx, vec![], vec![]);
+        let type_attr = TypeAttr::new(func_type.into());
+        let op = Operation::new(
+            &mut ctx,
+            MirFuncOp::get_concrete_op_info(),
+            vec![],
+            vec![],
+            vec![],
+            1,
+        );
+        let func = MirFuncOp::new(&mut ctx, op, type_attr);
+        for (always, never) in [(true, false), (false, true)] {
+            set_inline_attrs_from_flags(&mut ctx, &func, true, always, never);
+            for policy in ["alwaysinline", "noinline"] {
+                let key: Identifier = policy.try_into().unwrap();
+                assert!(!op.deref(&ctx).attributes.0.contains_key(&key));
+            }
+        }
+    }
+
+    #[test]
+    fn inline_policy_reaches_llvm_func_attr_before_export() {
+        check_inline_policy_lowering(true, false, "alwaysinline");
+        check_inline_policy_lowering(false, true, "noinline");
+    }
+
+    fn check_inline_policy_lowering(always: bool, never: bool, expected: &str) {
         let mut ctx = Context::new();
         crate::translator::register_dialects(&mut ctx);
 
@@ -2604,7 +2650,7 @@ pub fn cuda_oxide_device_generated_kernel(mut wrapped: Wrapper<u16>) -> u32 {
             func
         };
 
-        set_alwaysinline_attr_from_flag(&mut ctx, &mir_func, false, true);
+        set_inline_attrs_from_flags(&mut ctx, &mir_func, false, always, never);
         llvm_export::ops::set_debug_function_name(
             &mut ctx,
             mir_func.get_operation(),
@@ -2624,7 +2670,7 @@ pub fn cuda_oxide_device_generated_kernel(mut wrapped: Wrapper<u16>) -> u32 {
                 .expect("lowered LLVM function")
         };
 
-        let key: Identifier = "alwaysinline".try_into().unwrap();
+        let key: Identifier = expected.try_into().unwrap();
         assert!(
             llvm_func
                 .get_operation()
@@ -2632,7 +2678,7 @@ pub fn cuda_oxide_device_generated_kernel(mut wrapped: Wrapper<u16>) -> u32 {
                 .attributes
                 .0
                 .contains_key(&key),
-            "`is_inline_always` must become an LLVM dialect alwaysinline attribute before export",
+            "Rust inline policy must survive MIR-to-LLVM lowering",
         );
         assert_eq!(
             llvm_export::ops::debug_function_name(&ctx, llvm_func.get_operation()).as_deref(),

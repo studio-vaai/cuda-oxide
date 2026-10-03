@@ -104,6 +104,10 @@ pub struct CollectedFunction {
     /// This preserves Rust's inline intent for device helpers and avoids
     /// making helper boundaries depend entirely on later optimizer heuristics.
     pub is_inline_always: bool,
+    /// Preserve `#[inline(never)]` through device LTO as LLVM `noinline`.
+    /// Rust's MIR inliner already honors this hint; NVIDIA's optimizer also
+    /// needs it to retain the requested helper boundary.
+    pub is_inline_never: bool,
 }
 
 /// Per-function statement debug records aligned with the stable MIR body.
@@ -543,6 +547,7 @@ pub fn run_pipeline(
             &func.rustc_mono_successors,
             func.is_kernel,
             func.is_inline_always,
+            func.is_inline_never,
             func.declaration_only,
             Some(&func.export_name),
             &mut legaliser,
