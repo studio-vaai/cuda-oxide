@@ -29,12 +29,16 @@ mod shared {
         let ptr = unsafe { SharedArray::as_raw_mut_ptr(&raw mut SCRATCH) };
         unsafe { *ptr.add(index) }
     }
+    // Exercise device pointer remainder rather than a library intrinsic.
+    #[allow(clippy::manual_is_multiple_of)]
     #[device]
     pub fn read_dynamic(index: usize) -> u32 {
         let ptr = DynamicSharedArray::<u32>::get();
         let alignment_error = if (ptr as usize) % 256 == 0 { 0 } else { 1000 };
         unsafe { *ptr.add(index) + alignment_error }
     }
+    // Retain the device ABI call; the ordinary host shim adds its own inline hint.
+    #[allow(unused_attributes)]
     #[device]
     #[inline(never)]
     pub fn pair<const MULTIPLIER: u32>(value: u32) -> Pair {
@@ -189,10 +193,8 @@ pub fn run() {
         .unwrap();
     let mut a = DeviceBuffer::<u32>::zeroed(&stream, 32).unwrap();
     let mut b = DeviceBuffer::<u32>::zeroed(&stream, 32).unwrap();
-    unsafe {
-        first.first(&stream, &first_config, &mut a).unwrap();
-        second.second(&stream, &second_config, &mut b).unwrap();
-    }
+    first.first(&stream, &first_config, &mut a).unwrap();
+    second.second(&stream, &second_config, &mut b).unwrap();
     let a = a.to_host_vec(&stream).unwrap();
     let b = b.to_host_vec(&stream).unwrap();
     for i in 0..32 {

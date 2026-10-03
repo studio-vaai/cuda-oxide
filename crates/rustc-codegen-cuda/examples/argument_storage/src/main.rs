@@ -4,6 +4,12 @@
  */
 //! Check scalar/ZST/slice ABI order across the 32-field argument-group boundary.
 //! Run: cargo oxide run argument_storage
+// Keep the scalar/ZST argument boundary and explicit device stores under test.
+#![allow(
+    clippy::too_many_arguments,
+    clippy::let_unit_value,
+    clippy::manual_memcpy
+)]
 use cuda_core::simt::LaunchConfig;
 use cuda_core::{CudaContext, DeviceBuffer};
 use cuda_host::cuda_module;
