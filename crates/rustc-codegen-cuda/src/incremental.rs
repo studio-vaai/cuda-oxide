@@ -279,6 +279,7 @@ fn input_fingerprint<'tcx>(
     digest(
         json!([
             "device-module-input-v2",
+            llvm_export::export::CONVERGENCE_POLICY_VERSION,
             name,
             metadata,
             mir,

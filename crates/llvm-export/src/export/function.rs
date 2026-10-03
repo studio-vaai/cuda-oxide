@@ -799,9 +799,8 @@ impl<'a> ModuleExportState<'a> {
                 write!(output, " noreturn").unwrap();
             }
 
-            // Check if this is a known convergent intrinsic
-            let is_convergent_intrinsic = Self::is_convergent_intrinsic(&fixed_func_name);
-            if is_convergent_intrinsic {
+            // Protect collective intrinsics and conservatively classified externs.
+            if self.function_is_convergent(&fixed_func_name) {
                 writeln!(output, " #0").unwrap();
                 self.convergent_used = true;
             } else {
@@ -877,24 +876,22 @@ impl<'a> ModuleExportState<'a> {
                 write!(output, " {name}").unwrap();
                 next_value_id += 1;
             }
-            // Mark every emitted device function `convergent` (attr group #0).
-            // GPU code is convergent-by-default, as in Clang/nvcc: a function
-            // that (transitively) performs a barrier / shuffle / vote must not
-            // have those ops sunk or duplicated into divergent control flow by
-            // `opt -O2`. Without this, an inlined `grid::sync()` / warp collective
-            // gets its `bar.sync.aligned` pushed into a `tid`-dependent branch
-            // and deadlocks. opt's FunctionAttrs strips `convergent` from
-            // functions it proves never reach a convergent op.
-            // alwaysinline (from #[inline(always)]) and !dbg are independent:
-            // either, both, or neither can be present. Emit the inline keyword
-            // before the convergent attr group #0, then the debug scope.
+            // A convergent intrinsic/asm seeds its containing function and
+            // propagates through the call graph. Arithmetic-only definitions
+            // need no convergence restriction, including alwaysinline helpers.
             let inline_attr = if is_alwaysinline { "alwaysinline " } else { "" };
+            let is_convergent = self.function_is_convergent(&fixed_func_name);
+            let convergence_attr = if is_convergent { "#0 " } else { "" };
             if let Some(scope_id) = debug_scope {
-                writeln!(output, ") {inline_attr}#0 !dbg !{scope_id} {{").unwrap();
+                writeln!(
+                    output,
+                    ") {inline_attr}{convergence_attr}!dbg !{scope_id} {{"
+                )
+                .unwrap();
             } else {
-                writeln!(output, ") {inline_attr}#0 {{").unwrap();
+                writeln!(output, ") {inline_attr}{convergence_attr}{{").unwrap();
             }
-            self.convergent_used = true;
+            self.convergent_used |= is_convergent;
 
             // Assign labels to all blocks
             let mut block_labels = FxHashMap::default();
