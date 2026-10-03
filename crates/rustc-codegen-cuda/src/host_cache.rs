@@ -376,7 +376,7 @@ pub(crate) fn publish_contract(request: &Request) -> Result<(), Error> {
         &serde_json::to_vec(&json!({"contract":request.contract,"key":request.key}))?,
     )
 }
-pub(crate) fn read_contract(request: &Request) -> Option<CompiledModules> {
+fn contract_request(request: &Request) -> Option<Request> {
     let record: Value =
         serde_json::from_slice(&std::fs::read(request.root.join("latest-contract.json")).ok()?)
             .ok()?;
@@ -387,10 +387,20 @@ pub(crate) fn read_contract(request: &Request) -> Option<CompiledModules> {
     if key.len() != 64 || !key.bytes().all(|x| x.is_ascii_hexdigit()) {
         return None;
     }
-    read_record(&Request {
+    Some(Request {
         key: key.into(),
         ..request.clone()
     })
+}
+pub(crate) fn read_contract(request: &Request) -> Option<CompiledModules> {
+    read_record(&contract_request(request)?)
+}
+/// Restore verified host objects from the latest matching source contract before
+/// collecting the host monomorphization graph. Keep the original full-MIR key.
+pub(crate) fn read_for_contract(request: &Request) -> Option<(Request, CompiledModules)> {
+    let request = contract_request(request)?;
+    let modules = read(&request)?;
+    Some((request, modules))
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), Error> {

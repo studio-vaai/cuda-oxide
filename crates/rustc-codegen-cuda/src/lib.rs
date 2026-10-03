@@ -541,9 +541,53 @@ impl CodegenBackend for CudaCodegenBackend {
             // Step 1: Analyze for device code
             let crate_name = tcx.crate_name(rustc_hir::def_id::LOCAL_CRATE);
             let kernels_only = host_cache::kernels_only(crate_name.as_str());
-            let mut shader_collection =
-                kernels_only.then(|| collector::collect_local_kernel_functions(tcx));
-            let mono_partitions = (!kernels_only).then(|| tcx.collect_and_partition_mono_items(()));
+            let native = std::env::var("CUDA_OXIDE_INCREMENTAL_MODULES").map_or(true, |value| {
+                !matches!(value.as_str(), "0" | "false" | "off")
+            });
+            let early_proof_started = std::time::Instant::now();
+            let mut early_host = if !kernels_only
+                && native
+                && self.config.allows_device_codegen_for(crate_name.as_str())
+                && std::env::var_os("CUDA_OXIDE_REUSE_HOST_FOR_KERNEL_EDITS").is_some()
+                && tcx.hir_crate_items(()).definitions().any(|local| {
+                    tcx.opt_item_name(local.to_def_id())
+                        .is_some_and(|name| reserved_oxide_symbols::is_kernel_symbol(name.as_str()))
+                }) {
+                let output = self.config.ptx_output_dir.clone().unwrap_or_else(|| {
+                    tcx.sess
+                        .io
+                        .output_dir
+                        .clone()
+                        .unwrap_or_else(|| "target".into())
+                        .join("oxide")
+                });
+                host_cache::request(tcx, &[], &output)
+                    .and_then(|request| host_cache::read_for_contract(&request))
+            } else {
+                None
+            };
+            let mut shader_collection = (kernels_only || early_host.is_some())
+                .then(|| collector::collect_local_kernel_functions(tcx));
+            if !kernels_only
+                && shader_collection.as_ref().is_some_and(|collection| {
+                    collection.requires_ptx_bundle_merge
+                        || !collection
+                            .functions
+                            .iter()
+                            .any(|function| function.is_kernel)
+                })
+            {
+                early_host = None;
+                shader_collection = None;
+            }
+            if early_host.is_some() {
+                eprintln!(
+                    "[device-modules] host source contract reused before mono collection: {:.3}s",
+                    early_proof_started.elapsed().as_secs_f64()
+                );
+            }
+            let mono_partitions = (!kernels_only && early_host.is_none())
+                .then(|| tcx.collect_and_partition_mono_items(()));
             let cgus = mono_partitions
                 .as_ref()
                 .map(|partitions| partitions.codegen_units)
@@ -558,7 +602,7 @@ impl CodegenBackend for CudaCodegenBackend {
                         .count()
                 })
                 .unwrap_or_else(|| collector::count_kernels_in_cgus(tcx, cgus));
-            let device_fn_count = if kernels_only {
+            let device_fn_count = if shader_collection.is_some() {
                 0
             } else {
                 collector::count_device_fns_in_cgus(tcx, cgus)
@@ -647,22 +691,27 @@ impl CodegenBackend for CudaCodegenBackend {
             }
 
             let host_proof_started = std::time::Instant::now();
-            let host_cache = has_device_code
-                .then(|| {
-                    host_cache::request(
-                        tcx,
-                        cgus,
-                        &self.config.ptx_output_dir.clone().unwrap_or_else(|| {
-                            tcx.sess
-                                .io
-                                .output_dir
-                                .clone()
-                                .unwrap_or_else(|| Path::new("target").to_owned())
-                                .join("oxide")
-                        }),
-                    )
-                })
-                .flatten();
+            let host_cache = early_host
+                .as_ref()
+                .map(|(request, _)| request.clone())
+                .or_else(|| {
+                    has_device_code
+                        .then(|| {
+                            host_cache::request(
+                                tcx,
+                                cgus,
+                                &self.config.ptx_output_dir.clone().unwrap_or_else(|| {
+                                    tcx.sess
+                                        .io
+                                        .output_dir
+                                        .clone()
+                                        .unwrap_or_else(|| Path::new("target").to_owned())
+                                        .join("oxide")
+                                }),
+                            )
+                        })
+                        .flatten()
+                });
             if has_device_code {
                 eprintln!(
                     "[device-modules] host proof: {:.3}s",
@@ -682,13 +731,13 @@ impl CodegenBackend for CudaCodegenBackend {
                     allocator_module: None,
                 })
             } else {
-                host_cache.as_ref().and_then(host_cache::read)
+                early_host
+                    .take()
+                    .map(|(_, modules)| modules)
+                    .or_else(|| host_cache.as_ref().and_then(host_cache::read))
             };
             // Step 2: If device code exists, compile via cuda-oxide
-            let _device_result = if has_device_code
-                && std::env::var("CUDA_OXIDE_INCREMENTAL_MODULES").map_or(true, |value| {
-                    !matches!(value.as_str(), "0" | "false" | "off")
-                }) {
+            let _device_result = if has_device_code && native {
                 let collection = shader_collection
                     .take()
                     .unwrap_or_else(|| collector::collect_device_functions(tcx, cgus, false));

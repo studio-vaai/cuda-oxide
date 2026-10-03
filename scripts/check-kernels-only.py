@@ -18,11 +18,11 @@ metadata=json.loads(subprocess.check_output(['cargo','metadata','--format-versio
 artifact_root=Path(metadata['target_directory'])/'release/oxide'
 
 records=[]
-def build(label,only=False,success=True):
+def build(label,only=False,success=True,library=False):
     command=[args.cargo_oxide]
     if only:command+=['--kernels-only','incremental_modules']
     command+=['build','--emit-nvvm-ir','--','--release','--manifest-path',str(root/'Cargo.toml')]
-    if only:command+=['--lib']
+    if only or library:command+=['--lib']
     log=args.output/(label+'.log');start=time.perf_counter()
     with log.open('w') as stream:code=subprocess.call(command,cwd=root,env=env,stdout=stream,stderr=subprocess.STDOUT)
     record=dict(label=label,seconds=time.perf_counter()-start,exit_code=code);records.append(record);print(json.dumps(record),flush=True)
@@ -40,6 +40,30 @@ try:
     artifacts={p:digest(p) for p in [library,library.with_suffix('.rmeta'),binary]}
     run()
     delta=100+time.time_ns()%1000000
+    for increment in range(2):
+        source.write_text(original.replace('kernel_bias = 10u32',f'kernel_bias = {10+delta+increment}u32',1))
+        log=build(f'automatic_kernel_edit_{increment}',library=True)
+        assert 'host source contract reused before mono collection:' in log
+        assert digest(binary)==artifacts[binary]
+        run(delta+increment)
+    source.write_text(original)
+    build('automatic_restore',library=True)
+    # Ordinary builds must reject the same unsafe reuse cases as explicit updates.
+    for label,changed in [
+        ('automatic_host_change',original.replace('fn host_value() -> u32 {\n    7\n}', 'fn host_value() -> u32 {\n    8\n}')),
+        ('automatic_cpu_closure_change',original.replace('let thunk = || 7u32','let thunk = || 8u32',1)),
+        ('automatic_host_location_change',original.replace('let kernel_bias =', '\n        let kernel_bias =',1)),
+        ('automatic_helper_change',original.replace('x: value + 2','x: value + 3',1)),
+        ('automatic_abi_change',original.replace('#[derive(Clone, Copy)]','#[derive(Clone, Copy)] #[repr(C, align(16))]',1)),
+    ]:
+        assert changed!=original
+        source.write_text(changed)
+        log=build(label,library=True)
+        assert 'host source contract reused before mono collection:' not in log
+    source.write_text(original)
+    build('restore_host_seed')
+    artifacts={p:digest(p) for p in artifacts}
+    run()
     for increment in range(2):
         source.write_text(original.replace('kernel_bias = 10u32',f'kernel_bias = {10+delta+increment}u32',1))
         build(f'kernel_edit_{increment}',only=True)
@@ -75,6 +99,9 @@ try:
         source.write_text(original.replace('kernel_bias = 10u32',f'kernel_bias = {11+delta}u32',1))
         build('reject_corrupted_host_cache',only=True,success=False)
         assert digest(manifest)==before and {p:digest(p) for p in artifacts}==artifacts
+        log=build('automatic_corrupted_host_cache',library=True)
+        assert 'host source contract reused before mono collection:' not in log
+        run(delta+1)
     finally:proof.write_bytes(saved)
     print('PASS: successive native updates execute in the unchanged binary; CPU, location, helper, ABI and corrupted-proof edits rejected before publication',flush=True)
 finally:
