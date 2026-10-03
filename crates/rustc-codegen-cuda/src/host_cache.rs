@@ -108,6 +108,10 @@ pub(crate) fn request<'tcx>(
     } else {
         tcx.with_stable_hashing_context(|mut hcx| {
             let mut hash = StableHasher::new();
+            // Monomorphizations share instance MIR before substituting their
+            // arguments. Hash each body once; symbol/instance/ABI identity is
+            // still covered separately for every emitted host mono item.
+            let mut body_fingerprints = std::collections::HashMap::new();
             // Host panic/track_caller locations can be observable even with debug
             // information disabled. Retain source positions in the host key.
             hcx.while_hashing_spans(false, |hcx| {
@@ -153,15 +157,25 @@ pub(crate) fn request<'tcx>(
                                     local.ty.stable_hash(hcx, &mut hash);
                                 }
                             } else {
-                                body.stable_hash(hcx, &mut hash);
-                                source_positions(tcx, body).stable_hash(hcx, &mut hash);
-                                if tcx.is_mir_available(instance.def_id()) {
-                                    tcx.promoted_mir(instance.def_id())
-                                        .stable_hash(hcx, &mut hash);
-                                    for body in tcx.promoted_mir(instance.def_id()).iter() {
-                                        source_positions(tcx, body).stable_hash(hcx, &mut hash);
-                                    }
-                                }
+                                let fingerprint =
+                                    body_fingerprints.entry(instance.def).or_insert_with(|| {
+                                        let mut body_hash = StableHasher::new();
+                                        body.stable_hash(hcx, &mut body_hash);
+                                        source_positions(tcx, body)
+                                            .stable_hash(hcx, &mut body_hash);
+                                        if tcx.is_mir_available(instance.def_id()) {
+                                            tcx.promoted_mir(instance.def_id())
+                                                .stable_hash(hcx, &mut body_hash);
+                                            for promoted in
+                                                tcx.promoted_mir(instance.def_id()).iter()
+                                            {
+                                                source_positions(tcx, promoted)
+                                                    .stable_hash(hcx, &mut body_hash);
+                                            }
+                                        }
+                                        body_hash.finish::<Fingerprint>()
+                                    });
+                                fingerprint.stable_hash(hcx, &mut hash);
                             }
                         }
                         MonoItem::Static(id) => {
@@ -201,7 +215,7 @@ pub(crate) fn request<'tcx>(
         mir_started.elapsed().as_secs_f64()
     );
     let key = digest(
-        json!(["host-kernel-edit-v4", key_parts, contract])
+        json!(["host-kernel-edit-v5-body-fingerprints", key_parts, contract])
             .to_string()
             .as_bytes(),
     );
