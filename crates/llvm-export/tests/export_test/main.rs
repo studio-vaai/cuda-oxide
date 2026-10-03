@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+mod allocas;
 mod calls_and_addresses;
 mod common;
 mod control_flow;
