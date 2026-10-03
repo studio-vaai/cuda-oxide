@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
 //! Optional whole-host reuse for edits confined to reserved CUDA kernel entries.
 //! Public host functions and device helpers keep their ordinary Rust semantics.
 //! Only the generated, GPU-only kernel entry's body is excluded from the key.
@@ -206,7 +208,7 @@ pub(crate) fn request<'tcx>(
     Some(Request {
         contract,
         root: output
-            .join(".oxide-artifacts/host-cache/v2")
+            .join("cache/host/v2")
             .join(tcx.crate_name(rustc_hir::def_id::LOCAL_CRATE).as_str()),
         key,
     })

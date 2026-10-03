@@ -91,7 +91,7 @@ impl CacheResult {
 /// Return a verified cache entry or build it once under a per-key file lock.
 ///
 /// `source_dir` is the directory containing the source artifact. Cache data is
-/// kept below `source_dir/.oxide-artifacts/ltoir-cubin-cache/v1/`. Every cache
+/// kept below `source_dir/cache/ltoir-cubin-cache/v1/`. Every cache
 /// I/O error is treated as an optimization failure: the builder still runs and
 /// its result is returned with no immutable path. Errors from `build` itself
 /// are always propagated.
@@ -141,7 +141,7 @@ struct CachePaths {
 impl CachePaths {
     fn new(source_dir: &Path, key: &[u8; DIGEST_LENGTH]) -> Self {
         let root = source_dir
-            .join(".oxide-artifacts")
+            .join("cache")
             .join(CACHE_DIRECTORY)
             .join(CACHE_VERSION);
         let entries = root.join("entries");
@@ -932,7 +932,7 @@ mod tests {
     #[test]
     fn cache_setup_failure_still_returns_fresh_bytes() {
         let dir = TestDirectory::new("setup-failure");
-        fs::write(dir.path().join(".oxide-artifacts"), b"not a directory").unwrap();
+        fs::write(dir.path().join("cache"), b"not a directory").unwrap();
         let key = test_key();
         let builds = AtomicU64::new(0);
 

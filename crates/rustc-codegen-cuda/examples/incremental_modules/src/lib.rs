@@ -1,6 +1,8 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
 use cuda_core::{CudaContext, DeviceBuffer};
 use cuda_device::{
-    device, kernel, launch_contract, thread, DisjointSlice, DynamicSharedArray, SharedArray,
+    DisjointSlice, DynamicSharedArray, SharedArray, device, kernel, launch_contract, thread,
 };
 use cuda_host::cuda_module;
 
@@ -147,7 +149,7 @@ pub fn run() {
     let stream = context.default_stream();
     let load = std::time::Instant::now();
     let files = std::env::args().any(|argument| argument == "--files");
-    let stem = concat!(env!("CARGO_MANIFEST_DIR"), "/incremental_modules");
+    let stem = "incremental_modules";
     let first = unsafe {
         if files {
             first::from_module(

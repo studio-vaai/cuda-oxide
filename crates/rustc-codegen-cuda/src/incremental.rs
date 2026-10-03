@@ -1,4 +1,6 @@
-//! Experimental per-module NVVM/LTO compilation. All three cache boundaries
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+//! Cached per-module NVVM/LTO compilation. All three cache boundaries
 //! precede the expensive operation they memoize; a hit never translates MIR.
 use crate::collector::{self, CollectedFunction, CollectionResult};
 use crate::device_codegen::{self, DeviceCodegenConfig};
@@ -192,10 +194,10 @@ pub(crate) fn metadata_fingerprint_with_spans(tcx: TyCtxt<'_>, spans: bool) -> S
                             tcx.mir_for_ctfe(id).stable_hash(hcx, &mut hasher);
                         }
                     }
-                    DefKind::Fn | DefKind::AssocFn if tcx.is_const_fn(id) => {
-                        if tcx.is_mir_available(id) {
-                            tcx.mir_for_ctfe(id).stable_hash(hcx, &mut hasher);
-                        }
+                    DefKind::Fn | DefKind::AssocFn
+                        if tcx.is_const_fn(id) && tcx.is_mir_available(id) =>
+                    {
+                        tcx.mir_for_ctfe(id).stable_hash(hcx, &mut hasher);
                     }
                     _ => {}
                 }
@@ -348,7 +350,7 @@ pub(crate) fn compile<'tcx>(
         owners.insert(function.instance, unit.clone());
         groups.entry(unit).or_default().push(index);
     }
-    let cache = config.output_dir.join(".oxide-artifacts/module-cache/v1");
+    let cache = config.output_dir.join("cache/modules/v1");
     let finalizer = Finalizer::discover()?;
     let compiler_provenance = finalizer
         .compiler()
@@ -361,7 +363,7 @@ pub(crate) fn compile<'tcx>(
         digest(&compiler_provenance)
     );
     let target = std::env::var("CUDA_OXIDE_TARGET")
-        .map_err(|_| "incremental modules require an explicit CUDA_OXIDE_TARGET")?;
+        .map_err(|_| "native modules require a GPU or --arch/CUDA_OXIDE_TARGET for cross-compilation; use --no-incremental-modules for package compilation")?;
     let debug = device_codegen::device_debug_kind(tcx.sess.opts.debuginfo);
     let policy = match debug {
         llvm_export::export::DebugKind::Off => DebugPolicy::None,
@@ -371,7 +373,8 @@ pub(crate) fn compile<'tcx>(
     let options = FinalizationOptions::new(target.parse::<libnvvm_sys::CudaArch>()?)
         .with_fma_contraction(std::env::var_os("CUDA_OXIDE_NO_FMA").is_none())
         .with_debug_policy(policy);
-    let mut units: BTreeMap<String, (Vec<u8>, BTreeSet<String>, [u8; 32])> = BTreeMap::new();
+    type CompiledUnit = (Vec<u8>, BTreeSet<String>, [u8; 32]);
+    let mut units: BTreeMap<String, CompiledUnit> = BTreeMap::new();
     let mut timings = Vec::new();
     let mut bounds_by_kernel = BTreeMap::new();
     for (name, indices) in &groups {
@@ -456,13 +459,13 @@ pub(crate) fn compile<'tcx>(
         let ir_seconds = ir_started.elapsed().as_secs_f64();
         let compiler_key = finalizer
             .compiler()
-            .artifact_digest(name, &ir, &options)
+            .artifact_digest(name, ir, &options)
             .ok_or("libNVVM provenance is unavailable; cannot safely cache")?;
         let lto_started = Instant::now();
         let (lto, lto_hit) = cached(&cache, "ltoir", &digest(&compiler_key), || {
             Ok(finalizer
                 .compiler()
-                .compile_nvvm_ir_to_ltoir(name, &ir, &options)?)
+                .compile_nvvm_ir_to_ltoir(name, ir, &options)?)
         })?;
         timings.push(json!({"module":name, "definitions":roots.len(), "declarations":declarations.len(),
             "nvvm_hit":ir_hit,"nvvm_seconds":ir_seconds,"ltoir_hit":lto_hit,
@@ -590,7 +593,7 @@ pub(crate) fn compile<'tcx>(
                 .with_payload(oxide_artifacts::ArtifactPayloadSpec::new(
                     oxide_artifacts::ArtifactPayloadKind::Cubin,
                     &filename,
-                    &cubin,
+                    cubin,
                 ));
             for kernel in &kernels {
                 spec = spec.with_entry(oxide_artifacts::ArtifactEntrySpec::new(

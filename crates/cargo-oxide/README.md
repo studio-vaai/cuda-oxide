@@ -18,6 +18,16 @@ cargo +nightly-2026-08-28 install --git https://github.com/NVlabs/cuda-oxide.git
 
 On first run, `cargo-oxide` will automatically fetch and build the codegen backend if it's not already available.
 
+Normal build, run and test commands cache native modules and compile them with
+nvJitLink during the build. Artifacts and caches reuse Cargo's target directory
+(`target/<profile>/oxide/`). The GPU target is detected locally; use `--arch` for
+cross-compilation. Embedded binaries need no runtime toolkit or artifact path.
+
+Use `--no-incremental-modules` or `CUDA_OXIDE_INCREMENTAL_MODULES=0` for legacy
+package compilation, including programs with ordinary shared device globals or
+cross-crate generic kernel bundle merging. `inspect`, `pipeline`, `emit-ltoir`
+and debugging commands retain their explicit output formats.
+
 ## Usage
 
 ```bash
@@ -50,6 +60,7 @@ cargo oxide update --force          # inside the workspace, run setup via update
 
 | Flag                         | Applies to                       | Description                                     |
 |------------------------------|----------------------------------|-------------------------------------------------|
+| `--no-incremental-modules` | build, run, test, sanitize | Opt out of default cached native module compilation |
 | `--materialize-cubin`        | run, sanitize, build, test, pipeline, debug | Finalize and embed target-specific native GPU code during the host build |
 | `--emit-nvvm-ir`             | run, build, pipeline             | Generate NVVM IR for libNVVM                    |
 | `--arch <sm_XX>`             | run, sanitize, build, test, pipeline, emit-ltoir, inspect, debug | Target architecture override |

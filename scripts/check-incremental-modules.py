@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """GPU regression and timing checks on the small module fixture.
 
 Uses persistent Cargo/NVIDIA caches. Source is restored even on failures.
@@ -24,8 +26,10 @@ def main():
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
-    env['CUDA_OXIDE_INCREMENTAL_MODULES'] = '1'
-    env['CUDA_OXIDE_PTX_DIR'] = str(root)
+    env.pop('CUDA_OXIDE_INCREMENTAL_MODULES', None)
+    env.pop('CUDA_OXIDE_PTX_DIR', None)
+    metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--format-version=1', '--no-deps', '--manifest-path', str(root / 'Cargo.toml')], env=env, cwd=root))
+    artifact_root = Path(metadata['target_directory']) / 'release/oxide'
     command = [args.cargo_oxide, 'build', '--emit-nvvm-ir', '--', '--release', '--manifest-path', str(root / 'Cargo.toml')]
     report = []
 
@@ -40,7 +44,7 @@ def main():
         if code:
             print(log.read_text()[-6000:])
             raise RuntimeError(f'{label} failed; see {log}')
-        manifest = json.loads((root / 'incremental_modules.modules.json').read_text())
+        manifest = json.loads((artifact_root / 'incremental_modules.modules.json').read_text())
         (output / (label + '.manifest.json')).write_text(json.dumps(manifest, indent=2))
         return manifest
 
@@ -98,7 +102,7 @@ def main():
         assert units['incremental_modules::second']['nvvm_hit']
         assert promoted['modules']['incremental_modules::second']['sha256'] == baseline['modules']['incremental_modules::second']['sha256']
         # Published immutable files must be repaired from validated cache bytes.
-        image = root / promoted['modules']['incremental_modules::first']['path']
+        image = artifact_root / promoted['modules']['incremental_modules::first']['path']
         expected = image.read_bytes()
         image.write_bytes(expected[:-1] + bytes([expected[-1] ^ 1]))
         source.write_text(source.read_text().replace('value + 999', 'value + 997', 1))

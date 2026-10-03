@@ -237,9 +237,7 @@ fn apply_codegen_rustflags(
     device_cfgs: &[String],
 ) {
     let mut encoded = build_encoded_rustflags(ctx, profile, device_cfgs);
-    if profile == CodegenProfilePolicy::CargoSelected
-        && std::env::var_os("CUDA_OXIDE_INCREMENTAL_MODULES").is_some()
-    {
+    if profile == CodegenProfilePolicy::CargoSelected && native_modules_enabled() {
         // `test -- --release` keeps Cargo's profile, but needs the same MIR
         // inlining when host incrementality is enabled by the native workflow.
         encoded.push(ENCODED_RUSTFLAGS_SEPARATOR);
@@ -264,6 +262,9 @@ pub(super) fn apply_codegen_configuration(
     user_device_cfgs: &[String],
     codegen_fingerprint: &str,
 ) -> Result<(), String> {
+    if native_modules_enabled() && std::env::var_os("CARGO_INCREMENTAL").is_none() {
+        cmd.env("CARGO_INCREMENTAL", "1");
+    }
     let backend_digest = backend_artifact_digest(&ctx.backend_so)?;
     let mut global_cfgs = Vec::with_capacity(user_device_cfgs.len() + 1);
     global_cfgs.push(format!("{BACKEND_IDENTITY_CFG}=\"{backend_digest}\""));
@@ -302,7 +303,7 @@ pub(super) fn apply_output_mode(
     if let Some(target_arch) = arch {
         cmd.env("CUDA_OXIDE_TARGET", target_arch);
     }
-    if emit_nvvm_ir || materialization.enabled() {
+    if native_modules_enabled() || emit_nvvm_ir || materialization.enabled() {
         cmd.env("CUDA_OXIDE_EMIT_NVVM_IR", "1");
     }
     materialization.apply(cmd);
@@ -708,5 +709,106 @@ pub(super) fn apply_ld_library_path(cmd: &mut Command, ctx: &Context) {
     }
     if !ld_paths.is_empty() {
         cmd.env("LD_LIBRARY_PATH", ld_paths.join(":"));
+    }
+}
+
+/// CLI resolves the default and exports a normalized native-mode request.
+pub(super) fn native_modules_enabled() -> bool {
+    std::env::var("CUDA_OXIDE_INCREMENTAL_MODULES")
+        .is_ok_and(|value| !matches!(value.as_str(), "0" | "false" | "off"))
+}
+
+/// Store generated device files beside Cargo's selected profile outputs.
+/// Cargo metadata honors config files, workspace roots and CARGO_TARGET_DIR.
+pub(super) fn configure_artifact_directory(cmd: &mut Command) -> Result<(), String> {
+    if std::env::var_os("CUDA_OXIDE_PTX_DIR").is_some()
+        || cmd
+            .get_envs()
+            .any(|(key, value)| key == "CUDA_OXIDE_PTX_DIR" && value.is_some())
+    {
+        return Ok(());
+    }
+    let args: Vec<_> = cmd
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    let mut metadata = Command::new("cargo");
+    metadata.args(["metadata", "--format-version=1", "--no-deps"]);
+    if let Some(dir) = cmd.get_current_dir() {
+        metadata.current_dir(dir);
+    }
+    for (key, value) in cmd.get_envs() {
+        if let Some(value) = value {
+            metadata.env(key, value);
+        }
+    }
+    for pair in args.windows(2) {
+        if matches!(pair[0].as_str(), "--manifest-path" | "--config") {
+            metadata.args(pair);
+        }
+    }
+    for arg in &args {
+        if arg.starts_with("--manifest-path=") || arg.starts_with("--config=") {
+            metadata.arg(arg);
+        }
+    }
+    // --target-dir is a build option, not a metadata option.
+    let value = |name: &str| -> Option<String> {
+        args.windows(2)
+            .find(|pair| pair[0] == name)
+            .map(|pair| pair[1].clone())
+            .or_else(|| {
+                args.iter()
+                    .find_map(|arg| arg.strip_prefix(&format!("{name}=")).map(str::to_string))
+            })
+    };
+    if let Some(target) = value("--target-dir") {
+        metadata.env("CARGO_TARGET_DIR", target);
+    }
+    let output = metadata
+        .output()
+        .map_err(|error| format!("Cargo artifact directory: {error}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&output.stdout).map_err(|error| error.to_string())?;
+    let target = metadata["target_directory"]
+        .as_str()
+        .ok_or("Cargo metadata has no target directory")?;
+    let profile = value("--profile").unwrap_or_else(|| {
+        if args.iter().any(|arg| arg == "--release" || arg == "-r") {
+            "release".into()
+        } else {
+            "debug".into()
+        }
+    });
+    let profile = if profile == "dev" { "debug" } else { &profile };
+    let mut directory = std::path::PathBuf::from(target);
+    if let Some(target) = value("--target") {
+        directory.push(target);
+    }
+    directory.push(profile);
+    directory.push("oxide");
+    cmd.env("CUDA_OXIDE_PTX_DIR", directory);
+    Ok(())
+}
+
+/// Resolve automatic target selection before fingerprinting or launching Cargo.
+/// Runs only on the single-threaded CLI setup path, preserving project defaults.
+pub fn initialize_native_target(ctx: &Context) {
+    if !native_modules_enabled() || std::env::var_os("CUDA_OXIDE_TARGET").is_some() {
+        return;
+    }
+    let target = ctx
+        .config
+        .default_arch
+        .clone()
+        .or_else(|| project_config_env(ctx, "CUDA_OXIDE_TARGET").map(str::to_string))
+        .or_else(|| query_device_compute_cap().map(format_sm_arch));
+    if let Some(target) = target {
+        unsafe {
+            std::env::set_var("CUDA_OXIDE_TARGET", target);
+        }
     }
 }
