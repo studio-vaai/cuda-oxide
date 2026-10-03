@@ -83,7 +83,7 @@ fn nvvm_metadata_version_uses_next_allocated_metadata_id() {
 
 #[test]
 fn export_explicit_inline_policy_uses_llvm_define_syntax() {
-    for policy in ["alwaysinline", "noinline"] {
+    for policy in ["alwaysinline", "noinline", "inlinehint"] {
         check_inline_policy_syntax(policy);
     }
 }
@@ -126,7 +126,7 @@ fn check_inline_policy_syntax(policy: &str) {
 
 #[test]
 fn export_explicit_inline_policy_coexists_with_debug_scope() {
-    for policy in ["alwaysinline", "noinline"] {
+    for policy in ["alwaysinline", "noinline", "inlinehint"] {
         check_inline_policy_debug_scope(policy);
     }
 }

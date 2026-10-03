@@ -577,7 +577,7 @@ fn propagate_return_abi_alignment(
 
 /// Preserve Rust's explicit inline policy across MIR-to-LLVM lowering.
 fn propagate_inline_attrs(ctx: &mut Context, mir_op: Ptr<Operation>, llvm_func: &llvm::FuncOp) {
-    for spelling in ["alwaysinline", "noinline"] {
+    for spelling in ["alwaysinline", "noinline", "inlinehint"] {
         let key: pliron::identifier::Identifier = spelling.try_into().unwrap();
         let attr = mir_op
             .deref(ctx)
