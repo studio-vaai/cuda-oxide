@@ -82,7 +82,13 @@ fn nvvm_metadata_version_uses_next_allocated_metadata_id() {
 }
 
 #[test]
-fn export_alwaysinline_function_attribute_uses_llvm_define_syntax() {
+fn export_explicit_inline_policy_uses_llvm_define_syntax() {
+    for policy in ["alwaysinline", "noinline"] {
+        check_inline_policy_syntax(policy);
+    }
+}
+
+fn check_inline_policy_syntax(policy: &str) {
     let mut ctx = Context::new();
     let module = ModuleOp::new(&mut ctx, "test_module".try_into().unwrap());
     let module_block = module_top_block(&mut ctx, &module);
@@ -95,7 +101,7 @@ fn export_alwaysinline_function_attribute_uses_llvm_define_syntax() {
         .get_operation()
         .insert_at_back(entry, &ctx);
 
-    let key: pliron::identifier::Identifier = "alwaysinline".try_into().unwrap();
+    let key: pliron::identifier::Identifier = policy.try_into().unwrap();
     func.get_operation()
         .deref_mut(&ctx)
         .attributes
@@ -108,8 +114,9 @@ fn export_alwaysinline_function_attribute_uses_llvm_define_syntax() {
         .find(|line| line.starts_with("define void @inline_helper("))
         .expect("inline helper definition");
     assert_eq!(
-        define_line, "define void @inline_helper() alwaysinline {",
-        "`alwaysinline` must be emitted after the parameter list:\n{ir}"
+        define_line,
+        format!("define void @inline_helper() {policy} {{"),
+        "`{policy}` must be emitted after the parameter list:\n{ir}"
     );
     assert!(
         !ir.contains("attributes #0 = { convergent }"),
@@ -118,10 +125,13 @@ fn export_alwaysinline_function_attribute_uses_llvm_define_syntax() {
 }
 
 #[test]
-fn export_alwaysinline_coexists_with_debug_scope() {
-    // alwaysinline and the !dbg scope are emitted on the same define line and
-    // must not crowd each other out. This guards the 4-way emission: a future
-    // change that drops either one when both are present fails here.
+fn export_explicit_inline_policy_coexists_with_debug_scope() {
+    for policy in ["alwaysinline", "noinline"] {
+        check_inline_policy_debug_scope(policy);
+    }
+}
+
+fn check_inline_policy_debug_scope(policy: &str) {
     let mut ctx = Context::new();
     let module = ModuleOp::new(&mut ctx, "test_module".try_into().unwrap());
     let module_block = module_top_block(&mut ctx, &module);
@@ -137,7 +147,7 @@ fn export_alwaysinline_coexists_with_debug_scope() {
     ret.get_operation().deref_mut(&ctx).set_loc(ret_loc);
     ret.get_operation().insert_at_back(entry, &ctx);
 
-    let key: pliron::identifier::Identifier = "alwaysinline".try_into().unwrap();
+    let key: pliron::identifier::Identifier = policy.try_into().unwrap();
     func.get_operation()
         .deref_mut(&ctx)
         .attributes
@@ -155,12 +165,12 @@ fn export_alwaysinline_coexists_with_debug_scope() {
         .find(|line| line.starts_with("define void @inline_helper("))
         .expect("inline helper definition");
     assert!(
-        define_line.contains("alwaysinline"),
-        "alwaysinline must survive when debug info is on:\n{ir}"
+        define_line.contains(policy),
+        "{policy} must survive when debug info is on:\n{ir}"
     );
     assert!(
         define_line.contains("!dbg !"),
-        "!dbg scope must survive when alwaysinline is present:\n{ir}"
+        "!dbg scope must survive when {policy} is present:\n{ir}"
     );
 }
 
