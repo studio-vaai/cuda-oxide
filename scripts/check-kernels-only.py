@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """GPU regression for metadata-free kernel edits against an existing binary."""
 import argparse,hashlib,json,os,subprocess,time
 from pathlib import Path
@@ -7,8 +9,14 @@ parser.add_argument('--cargo-oxide',required=True)
 parser.add_argument('--output',type=Path,required=True)
 args=parser.parse_args()
 root=Path(__file__).resolve().parents[1]/'crates/rustc-codegen-cuda/examples/incremental_modules'
+
 source=root/'src/lib.rs';original=source.read_text();args.output.mkdir(parents=True,exist_ok=True)
-env=dict(os.environ,CUDA_OXIDE_INCREMENTAL_MODULES='1',CUDA_OXIDE_MODULE_FILES_ONLY='1',CUDA_OXIDE_REUSE_HOST_FOR_KERNEL_EDITS='1',CUDA_OXIDE_PTX_DIR=str(root),CARGO_PROFILE_RELEASE_DEBUG='0')
+env=dict(os.environ,CUDA_OXIDE_MODULE_FILES_ONLY='1',CUDA_OXIDE_REUSE_HOST_FOR_KERNEL_EDITS='1',CARGO_PROFILE_RELEASE_DEBUG='0')
+env.pop('CUDA_OXIDE_INCREMENTAL_MODULES', None)
+env.pop('CUDA_OXIDE_PTX_DIR', None)
+metadata=json.loads(subprocess.check_output(['cargo','metadata','--format-version=1','--no-deps','--manifest-path',str(root/'Cargo.toml')],env=env,cwd=root))
+artifact_root=Path(metadata['target_directory'])/'release/oxide'
+
 records=[]
 def build(label,only=False,success=True):
     command=[args.cargo_oxide]
@@ -37,7 +45,7 @@ try:
         build(f'kernel_edit_{increment}',only=True)
         assert {p:digest(p) for p in artifacts}==artifacts
         run(delta+increment)
-    manifest=root/'incremental_modules.modules.json';before=digest(manifest)
+    manifest=artifact_root/'incremental_modules.modules.json';before=digest(manifest)
     source.write_text(source.read_text().replace('fn host_value() -> u32 {\n    7\n}', 'fn host_value() -> u32 {\n    8\n}'))
     log=build('reject_host_change',only=True,success=False)
     assert 'cannot prove unchanged host MIR/ABI' in log
@@ -57,7 +65,7 @@ try:
         assert 'cannot prove unchanged host MIR/ABI' in log
         assert digest(manifest)==before and {p:digest(p) for p in artifacts}==artifacts
     # A damaged proof cache never approves use of an unknown CPU image.
-    cache=root/'.oxide-artifacts/host-cache/v2/incremental_modules'
+    cache=artifact_root/'cache/host/v2/incremental_modules'
     latest=json.loads((cache/'latest-contract.json').read_text())
     record=json.loads((cache/(latest['key']+'.json')).read_text())
     module=next(m for m in record['modules'] if m['object'])

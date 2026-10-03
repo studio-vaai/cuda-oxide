@@ -1368,6 +1368,23 @@ fn read_compilation_artifact(
     }
 }
 
+/// Ordinary device globals cannot be duplicated across independently loaded cubins.
+pub(crate) fn has_device_globals<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    functions: &[CollectedFunction<'tcx>],
+) -> bool {
+    let mut provenance = StaticDebugProvenance::new(tcx);
+    for function in functions {
+        provenance.current_instance = Some(function.instance);
+        provenance.visit_body(tcx.instance_mir(function.instance.def));
+    }
+    provenance.drain_allocations();
+    provenance
+        .statics
+        .iter()
+        .any(|id| shared_static_debug_storage(tcx, *id).is_none())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1478,21 +1495,4 @@ mod tests {
             .as_nanos();
         std::env::temp_dir().join(format!("{name}-{}-{nanos}", std::process::id()))
     }
-}
-
-/// Ordinary device globals cannot be duplicated across independently loaded cubins.
-pub(crate) fn has_device_globals<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    functions: &[CollectedFunction<'tcx>],
-) -> bool {
-    let mut provenance = StaticDebugProvenance::new(tcx);
-    for function in functions {
-        provenance.current_instance = Some(function.instance);
-        provenance.visit_body(tcx.instance_mir(function.instance.def));
-    }
-    provenance.drain_allocations();
-    provenance
-        .statics
-        .iter()
-        .any(|id| shared_static_debug_storage(tcx, *id).is_none())
 }

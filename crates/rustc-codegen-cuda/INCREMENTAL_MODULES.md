@@ -1,14 +1,17 @@
 # Incremental native device modules
 
-The opt-in `cargo oxide --incremental-modules build -- --release --lib --locked`
+The default `cargo oxide build -- --release --lib --locked`
 workflow partitions reachable device code by `#[cuda_module]`, caches NVVM IR and
 LTOIR for each compilation unit, and links architecture-specific cubins with
-nvJitLink at build time. Set `CUDA_OXIDE_TARGET` to the deployment GPU architecture.
-The equivalent environment switch is `CUDA_OXIDE_INCREMENTAL_MODULES=1`.
+nvJitLink at build time. The local GPU architecture is detected automatically. For cross-compilation,
+set `--arch` or `CUDA_OXIDE_TARGET` to the deployment GPU architecture.
+Use `--no-incremental-modules` (or `CUDA_OXIDE_INCREMENTAL_MODULES=0`) to opt out.
+The old `--incremental-modules` switch remains accepted.
 
-Keep Cargo's target directory and the package's `.oxide-artifacts/module-cache/`
-between builds. Enable `incremental = true` in the release Cargo profile to reuse
-host compilation too; use a stable `codegen-units` setting across builds. The Studio iteration
+Keep Cargo's target directory between builds. Device files and caches live in
+`target/<profile>/oxide/`, honoring Cargo's target-directory configuration and
+`CARGO_TARGET_DIR`; no artifact-directory configuration is needed. Cargo host
+incrementality is enabled by default; `CARGO_INCREMENTAL=0` opts out. Use a stable `codegen-units` setting across builds. The Studio iteration
 profile uses 256 units and disables debug information. The wrapper explicitly enables release MIR
 inlining because rustc's incremental default would disable it.
 
@@ -40,9 +43,8 @@ Load/preload modules before CUDA stream capture. Native-only builds require a
 compatible GPU; there is no PTX fallback in this mode.
 
 Ordinary device globals shared across cubins and cross-crate generic-kernel bundle
-merging are currently rejected. Use explicit device buffers or the existing
-package build mode for those programs. The package build remains available when
-the incremental switch is absent.
+merging are currently rejected. Use explicit device buffers or `--no-incremental-modules` for those programs.
+Diagnostic commands that explicitly inspect PTX/IR retain their requested format.
 
 ## Small GPU regression fixture
 
@@ -65,7 +67,6 @@ Use file loading and seed a full release library with the same compiler, target,
 features, dependencies and profile:
 
 ```sh
-export CUDA_OXIDE_INCREMENTAL_MODULES=1
 export CUDA_OXIDE_MODULE_FILES_ONLY=1
 export CUDA_OXIDE_REUSE_HOST_FOR_KERNEL_EDITS=1
 export CARGO_PROFILE_RELEASE_DEBUG=0

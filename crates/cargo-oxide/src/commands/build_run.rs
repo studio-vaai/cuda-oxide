@@ -86,7 +86,9 @@ pub fn codegen_run(
         std::process::exit(2);
     }
 
-    clean_generated_files(&example_dir, example);
+    if !native_modules_enabled() {
+        clean_generated_files(&example_dir, example);
+    }
 
     println!("=========================================");
     println!("RUSTC-CODEGEN-CUDA: {}", example);
@@ -120,7 +122,9 @@ pub fn codegen_run(
     println!("  CARGO_ENCODED_RUSTFLAGS=<cuda-oxide flags> cargo run");
     println!();
 
-    touch_main_rs(&example_dir);
+    if !native_modules_enabled() {
+        touch_main_rs(&example_dir);
+    }
 
     let mut cmd = Command::new("cargo");
     cmd.args(["run", "--release"]).current_dir(&example_dir);
@@ -171,6 +175,17 @@ pub fn codegen_run(
     }
     println!();
 
+    if std::env::var("CUDA_OXIDE_CARGO_ARTIFACTS").as_deref() == Ok("1") {
+        configure_artifact_directory(&mut cmd).unwrap_or_else(|error| {
+            eprintln!("Error: {error}");
+            std::process::exit(2);
+        });
+    }
+    if std::env::var("CUDA_OXIDE_CARGO_ARTIFACTS").as_deref() != Ok("1")
+        && std::env::var_os("CUDA_OXIDE_PTX_DIR").is_none()
+    {
+        cmd.env("CUDA_OXIDE_PTX_DIR", &example_dir);
+    }
     let status = cmd.status().expect("Failed to run cargo");
     if !status.success() {
         eprintln!("\nFailed with exit code: {:?}", status.code());
@@ -253,7 +268,9 @@ pub fn codegen_sanitize(
         return;
     }
 
-    clean_generated_files(&example_dir, example);
+    if !native_modules_enabled() {
+        clean_generated_files(&example_dir, example);
+    }
 
     println!("=========================================");
     println!("RUSTC-CODEGEN-CUDA SANITIZE: {}", example);
@@ -264,7 +281,9 @@ pub fn codegen_sanitize(
     println!("Compute Sanitizer tool: {tool}");
     println!();
 
-    touch_main_rs(&example_dir);
+    if !native_modules_enabled() {
+        touch_main_rs(&example_dir);
+    }
     let binary = codegen_build_host_binary(
         ctx,
         example,
@@ -345,14 +364,18 @@ pub fn codegen_build(
         std::process::exit(2);
     }
 
-    clean_generated_files(&example_dir, example);
+    if !native_modules_enabled() {
+        clean_generated_files(&example_dir, example);
+    }
 
     println!("=========================================");
     println!("RUSTC-CODEGEN-CUDA BUILD: {}", example);
     println!("=========================================");
     println!();
 
-    touch_main_rs(&example_dir);
+    if !native_modules_enabled() {
+        touch_main_rs(&example_dir);
+    }
 
     let mut cmd = Command::new("cargo");
     cmd.args(["build", "--release"]).current_dir(&example_dir);
@@ -392,6 +415,17 @@ pub fn codegen_build(
     println!("Building {}...", example);
     println!();
 
+    if std::env::var("CUDA_OXIDE_CARGO_ARTIFACTS").as_deref() == Ok("1") {
+        configure_artifact_directory(&mut cmd).unwrap_or_else(|error| {
+            eprintln!("Error: {error}");
+            std::process::exit(2);
+        });
+    }
+    if std::env::var("CUDA_OXIDE_CARGO_ARTIFACTS").as_deref() != Ok("1")
+        && std::env::var_os("CUDA_OXIDE_PTX_DIR").is_none()
+    {
+        cmd.env("CUDA_OXIDE_PTX_DIR", &example_dir);
+    }
     let status = cmd.status().expect("Failed to run cargo");
     if !status.success() {
         eprintln!("\nBuild failed with exit code: {:?}", status.code());

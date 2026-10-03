@@ -952,15 +952,73 @@ impl ModuleManifest {
     }
 }
 
+/// Discover file artifacts next to the executable or in Cargo's profile cache.
+/// Absolute stems remain explicit overrides. This never searches another profile
+/// or falls back after finding a malformed manifest.
+pub fn kernel_artifact_stem(name: &str, package_dir: Option<&Path>) -> PathBuf {
+    let path = Path::new(name);
+    if path.is_absolute() {
+        return path.to_owned();
+    }
+    let name = if path.components().count() == 1 {
+        name.replace('-', "_")
+    } else {
+        name.to_owned()
+    };
+    let executable = std::env::current_exe().ok();
+    let mut roots = Vec::new();
+    if let Some(parent) = executable.as_deref().and_then(Path::parent) {
+        roots.push(parent.join("oxide"));
+        roots.push(parent.to_owned());
+        if parent
+            .file_name()
+            .is_some_and(|name| matches!(name.to_str(), Some("deps" | "examples")))
+            && let Some(profile) = parent.parent()
+        {
+            roots.push(profile.join("oxide"));
+        }
+    }
+    if let Some(package_dir) = package_dir {
+        // Studio builds its excluded device package separately from its host.
+        // The build recipe packages artifacts beside the executable; this path
+        // also makes standalone Cargo library consumers work during development.
+        let profile = if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        };
+        roots.push(package_dir.join("target").join(profile).join("oxide"));
+        roots.push(package_dir.to_owned());
+    }
+    roots.push(manifest_dir());
+    roots
+        .into_iter()
+        .map(|root| root.join(&name))
+        .find(|stem| {
+            ["modules.json", "target", "ptx", "ll", "ltoir", "cubin"]
+                .iter()
+                .any(|extension| stem.with_extension(extension).exists())
+        })
+        .unwrap_or_else(|| {
+            executable
+                .as_deref()
+                .and_then(Path::parent)
+                .unwrap_or_else(|| Path::new("."))
+                .join("oxide")
+                .join(name)
+        })
+}
+
 /// Select a typed module's native artifact, with legacy package fallback.
 pub fn load_kernel_cuda_module(
     ctx: &Arc<CudaContext>,
     stem: &str,
     module: &str,
 ) -> Result<Arc<CudaModule>, LtoirError> {
-    match ModuleManifest::read(Path::new(stem))? {
-        Some(manifest) => manifest.load(ctx, Path::new(stem), module),
-        None => load_kernel_module(ctx, stem),
+    let stem = kernel_artifact_stem(stem, None);
+    match ModuleManifest::read(&stem)? {
+        Some(manifest) => manifest.load(ctx, &stem, module),
+        None => load_kernel_module(ctx, &stem.to_string_lossy()),
     }
 }
 
@@ -985,7 +1043,11 @@ pub fn load_kernel_module(
     ctx: &Arc<CudaContext>,
     name: &str,
 ) -> Result<Arc<CudaModule>, LtoirError> {
-    let dir = manifest_dir();
+    let stem = kernel_artifact_stem(name, None);
+    let name = stem
+        .to_str()
+        .ok_or_else(|| LtoirError::InvalidModuleManifest("artifact path is not UTF-8".into()))?;
+    let dir = stem.parent().unwrap_or_else(|| Path::new(".")).to_owned();
     let cubin = dir.join(format!("{name}.cubin"));
     let ptx = dir.join(format!("{name}.ptx"));
     let ll = dir.join(format!("{name}.ll"));
@@ -2103,5 +2165,15 @@ entry:
         assert_ne!(changed_hit.immutable_cubin_path, Some(native_cache_path));
 
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod artifact_discovery_tests {
+    use super::*;
+    #[test]
+    fn explicit_paths_preserve_hyphens_and_do_not_fall_back() {
+        let path = "/tmp/kernel-bundle/device-module";
+        assert_eq!(kernel_artifact_stem(path, None), PathBuf::from(path));
     }
 }

@@ -30,7 +30,7 @@
 //! cargo oxide update                  # refresh cached backend (external)
 //! ```
 
-use clap::{error::ErrorKind, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
 use std::path::PathBuf;
 
 mod artifact_identity;
@@ -57,11 +57,14 @@ struct Cli {
     #[arg(long, global = true)]
     materialize_cubin: bool,
     /// Cache NVVM IR and LTOIR per cuda_module and link native cubins during build.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, conflicts_with = "materialize_cubin")]
     incremental_modules: bool,
+    /// Use the legacy package compiler instead of cached native modules.
+    #[arg(long, global = true, conflicts_with_all = ["incremental_modules", "kernels_only"])]
+    no_incremental_modules: bool,
     /// Update native kernels while retaining the previous host library/binary.
     /// Requires --lib, file loading, debug=0, and an unchanged host MIR/ABI.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, conflicts_with = "materialize_cubin")]
     kernels_only: Option<String>,
     #[command(subcommand)]
     command: Commands,
@@ -544,6 +547,23 @@ fn build_passthrough_trigger(
     }
 }
 
+fn native_modules_requested(cli: &Cli, inherited: Option<&str>) -> bool {
+    let native_command = matches!(
+        cli.command,
+        Commands::Build { .. }
+            | Commands::Test { .. }
+            | Commands::Run { .. }
+            | Commands::Sanitize { .. }
+    );
+    if cli.no_incremental_modules || cli.materialize_cubin {
+        false
+    } else if cli.incremental_modules || cli.kernels_only.is_some() {
+        true
+    } else {
+        native_command && inherited.is_none_or(|value| !matches!(value, "0" | "false" | "off"))
+    }
+}
+
 fn validate_materialization_cli(cli: &Cli) -> Result<(), String> {
     if !cli.materialize_cubin {
         return Ok(());
@@ -705,7 +725,33 @@ fn main() {
     }
     // No worker threads have started: publish this CLI choice before resolving
     // the compiler context. Existing environment fingerprinting tracks it.
-    if cli.incremental_modules || cli.kernels_only.is_some() {
+    // Ordinary commands use Cargo's output layout in both native and opt-out modes.
+    let cargo_artifacts = matches!(
+        cli.command,
+        Commands::Build { .. }
+            | Commands::Run { .. }
+            | Commands::Test { .. }
+            | Commands::Sanitize { .. }
+    );
+    unsafe {
+        std::env::set_var(
+            "CUDA_OXIDE_CARGO_ARTIFACTS",
+            if cargo_artifacts { "1" } else { "0" },
+        );
+    }
+    let native = native_modules_requested(
+        &cli,
+        std::env::var("CUDA_OXIDE_INCREMENTAL_MODULES")
+            .ok()
+            .as_deref(),
+    );
+    unsafe {
+        std::env::set_var(
+            "CUDA_OXIDE_INCREMENTAL_MODULES",
+            if native { "1" } else { "0" },
+        );
+    }
+    if native {
         unsafe {
             std::env::set_var("CUDA_OXIDE_INCREMENTAL_MODULES", "1");
         }
@@ -774,6 +820,7 @@ fn main() {
             app_args,
         } => {
             let ctx = commands::resolve_context();
+            commands::initialize_native_target(&ctx);
             let example = resolve_example_name(example, &ctx, "run");
             validate_output_arch(
                 &ctx,
@@ -812,6 +859,7 @@ fn main() {
             sanitizer_args,
         } => {
             let ctx = commands::resolve_context();
+            commands::initialize_native_target(&ctx);
             let example = resolve_example_name(example, &ctx, "sanitize");
             validate_output_arch(&ctx, &example, false, materialize_cubin, arch.as_deref());
             let (sanitizer_args, application_args) =
@@ -849,6 +897,7 @@ fn main() {
             cargo_args,
         } => {
             let ctx = commands::resolve_context();
+            commands::initialize_native_target(&ctx);
             let passthrough = use_build_passthrough(
                 explicit_passthrough,
                 cargo_target_dir.is_some(),
@@ -935,6 +984,7 @@ fn main() {
             fail_on_finding,
         } => {
             let ctx = commands::resolve_context();
+            commands::initialize_native_target(&ctx);
             let (seed_start, seed_end) = ptx_schedule::campaign::parse_seed_range(&seeds)
                 .unwrap_or_else(|error| {
                     eprintln!("Error: {error}");
@@ -1003,6 +1053,7 @@ fn main() {
             cargo_args,
         } => {
             let ctx = commands::resolve_context();
+            commands::initialize_native_target(&ctx);
             validate_output_arch(
                 &ctx,
                 "cargo test",
@@ -1041,6 +1092,7 @@ fn main() {
             device_debug,
         } => {
             let ctx = commands::resolve_context();
+            commands::initialize_native_target(&ctx);
             let example = resolve_example_name(example, &ctx, "emit-ltoir");
             commands::emit_ltoir(
                 &ctx,
@@ -1064,6 +1116,7 @@ fn main() {
             device_debug,
         } => {
             let ctx = commands::resolve_context();
+            commands::initialize_native_target(&ctx);
             let example = resolve_example_name(example, &ctx, "pipeline");
             validate_output_arch(
                 &ctx,
@@ -1094,6 +1147,7 @@ fn main() {
             device_debug,
         } => {
             let ctx = commands::resolve_context();
+            commands::initialize_native_target(&ctx);
             let example = resolve_example_name(example, &ctx, "inspect");
             commands::codegen_inspect_ptx(
                 &ctx,
@@ -1115,6 +1169,7 @@ fn main() {
             tui,
         } => {
             let ctx = commands::resolve_context();
+            commands::initialize_native_target(&ctx);
             let example = resolve_example_name(example, &ctx, "debug");
             validate_output_arch(&ctx, &example, false, materialize_cubin, arch.as_deref());
             commands::codegen_debug(
@@ -1156,6 +1211,7 @@ fn main() {
         }
         Commands::Setup => {
             let ctx = commands::resolve_context();
+            commands::initialize_native_target(&ctx);
             commands::setup(&ctx);
         }
         Commands::Update { force } => {
@@ -1771,5 +1827,46 @@ mod tests {
         assert_eq!(DeviceDebug::from_flags(false, true), DeviceDebug::Full);
         // Full debug already carries line tables, so it wins over --lineinfo.
         assert_eq!(DeviceDebug::from_flags(true, true), DeviceDebug::Full);
+    }
+}
+
+#[cfg(test)]
+mod native_default_tests {
+    use super::*;
+    #[test]
+    fn normal_build_defaults_native_and_opt_out_is_explicit() {
+        let build =
+            Cli::try_parse_from(["cargo-oxide", "build", "--", "--release", "--lib"]).unwrap();
+        assert!(native_modules_requested(&build, None));
+        for value in ["0", "false", "off"] {
+            assert!(!native_modules_requested(&build, Some(value)));
+        }
+        let legacy = Cli::try_parse_from([
+            "cargo-oxide",
+            "--no-incremental-modules",
+            "build",
+            "--",
+            "--release",
+        ])
+        .unwrap();
+        assert!(!native_modules_requested(&legacy, Some("1")));
+        assert!(
+            Cli::try_parse_from([
+                "cargo-oxide",
+                "--no-incremental-modules",
+                "--kernels-only",
+                "toy",
+                "build"
+            ])
+            .is_err()
+        );
+    }
+    #[test]
+    fn inspection_and_materialization_retain_their_requested_formats() {
+        let inspect = Cli::try_parse_from(["cargo-oxide", "inspect", "toy"]).unwrap();
+        assert!(!native_modules_requested(&inspect, None));
+        let materialize =
+            Cli::try_parse_from(["cargo-oxide", "--materialize-cubin", "build"]).unwrap();
+        assert!(!native_modules_requested(&materialize, None));
     }
 }

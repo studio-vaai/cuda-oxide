@@ -230,6 +230,9 @@ pub(super) fn cargo_passthrough_command_with_env(
         cmd.args(["--features", features]);
     }
     cmd.args(cargo_args).current_dir(&ctx.workspace_root);
+    if let Some(cargo_target_dir) = opts.cargo_target_dir {
+        cmd.env("CARGO_TARGET_DIR", cargo_target_dir);
+    }
 
     // Project configuration provides defaults. Explicit wrapper flags and
     // internal compiler requirements are applied afterward and therefore win.
@@ -282,6 +285,11 @@ pub fn codegen_cargo_passthrough(
             std::process::exit(2);
         });
 
+    configure_artifact_directory(&mut cmd).unwrap_or_else(|error| {
+        eprintln!("Error: {error}");
+        std::process::exit(2);
+    });
+
     let displayed_args: Vec<_> = cmd
         .get_args()
         .skip(1)
@@ -298,41 +306,61 @@ pub fn codegen_cargo_passthrough(
     }
     println!();
 
-    let output_root = std::env::var_os("CUDA_OXIDE_PTX_DIR")
+    let output_root = cmd
+        .get_envs()
+        .find_map(|(key, value)| (key == "CUDA_OXIDE_PTX_DIR").then_some(value).flatten())
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| ctx.workspace_root.clone());
-    let dirty_root = output_root.join(".oxide-artifacts/kernel-only-updates");
+        .or_else(|| std::env::var_os("CUDA_OXIDE_PTX_DIR").map(std::path::PathBuf::from))
+        .expect("artifact directory configured");
+    let dirty_root = output_root.join("cache/kernel-only-updates");
     let mut dirty_markers = Vec::new();
-    if std::env::var_os("CUDA_OXIDE_KERNELS_ONLY").is_none() {
-        if let Ok(entries) = std::fs::read_dir(&dirty_root) {
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                let Some(name) = name.to_str() else {
-                    continue;
-                };
-                let Some(name) = name.strip_suffix(".json") else {
-                    continue;
-                };
-                if !name.bytes().all(|x| x.is_ascii_alphanumeric() || x == b'_') {
-                    continue;
+    if std::env::var_os("CUDA_OXIDE_KERNELS_ONLY").is_none()
+        && let Ok(entries) = std::fs::read_dir(&dirty_root)
+    {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let Some(name) = name.strip_suffix(".json") else {
+                continue;
+            };
+            if !name.bytes().all(|x| x.is_ascii_alphanumeric() || x == b'_') {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(entry.path()) else {
+                continue;
+            };
+            let Ok(target) = serde_json::from_slice::<std::path::PathBuf>(&bytes) else {
+                continue;
+            };
+            if let Ok(fingerprints) = std::fs::read_dir(target.join("release/.fingerprint")) {
+                for fingerprint in fingerprints.flatten() {
+                    if fingerprint
+                        .file_name()
+                        .to_string_lossy()
+                        .replace('-', "_")
+                        .starts_with(&format!("{name}_"))
+                    {
+                        // Only invalidate this crate's Cargo freshness; retain
+                        // MIR, LLVM and device caches and all dependencies.
+                        let path = fingerprint.path().join(format!("lib-{name}"));
+                        if path.is_file() {
+                            std::fs::remove_file(path)
+                                .expect("could not refresh full library after kernel-only update");
+                        }
+                    }
                 }
-                let Ok(bytes) = std::fs::read(entry.path()) else {
-                    continue;
-                };
-                let Ok(target) = serde_json::from_slice::<std::path::PathBuf>(&bytes) else {
-                    continue;
-                };
-                if let Ok(fingerprints) = std::fs::read_dir(target.join("release/.fingerprint")) {
-                    for fingerprint in fingerprints.flatten() {
-                        if fingerprint
-                            .file_name()
-                            .to_string_lossy()
-                            .replace('-', "_")
-                            .starts_with(&format!("{name}_"))
-                        {
-                            // Only invalidate this crate's Cargo freshness; retain
-                            // MIR, LLVM and device caches and all dependencies.
-                            let path = fingerprint.path().join(format!("lib-{name}"));
+            }
+            // Cargo's newer build-directory layout puts fingerprints beside
+            // each crate's outputs rather than in profile/.fingerprint.
+            if let Ok(packages) = std::fs::read_dir(target.join("release/build")) {
+                for package in packages.flatten() {
+                    if package.file_name().to_string_lossy().replace('-', "_") == name
+                        && let Ok(units) = std::fs::read_dir(package.path())
+                    {
+                        for unit in units.flatten() {
+                            let path = unit.path().join("fingerprint").join(format!("lib-{name}"));
                             if path.is_file() {
                                 std::fs::remove_file(path).expect(
                                     "could not refresh full library after kernel-only update",
@@ -341,25 +369,8 @@ pub fn codegen_cargo_passthrough(
                         }
                     }
                 }
-                // Cargo's newer build-directory layout puts fingerprints beside
-                // each crate's outputs rather than in profile/.fingerprint.
-                if let Ok(packages) = std::fs::read_dir(target.join("release/build")) {
-                    for package in packages.flatten() {
-                        if package.file_name().to_string_lossy().replace('-', "_") == name {
-                            if let Ok(units) = std::fs::read_dir(package.path()) {
-                                for unit in units.flatten() {
-                                    let path =
-                                        unit.path().join("fingerprint").join(format!("lib-{name}"));
-                                    if path.is_file() {
-                                        std::fs::remove_file(path).expect("could not refresh full library after kernel-only update");
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                dirty_markers.push(entry.path());
             }
+            dirty_markers.push(entry.path());
         }
     }
     if std::env::var_os("CUDA_OXIDE_KERNELS_ONLY").is_some() {
@@ -409,11 +420,9 @@ pub fn codegen_cargo_passthrough(
         )
         .join("oxide-kernels-only");
         let crate_name = std::env::var("CUDA_OXIDE_KERNELS_ONLY").unwrap();
-        let output_root = std::env::var_os("CUDA_OXIDE_PTX_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| ctx.workspace_root.clone());
+        let output_root = output_root.clone();
         let contract = output_root
-            .join(".oxide-artifacts/host-cache/v2")
+            .join("cache/host/v2")
             .join(&crate_name)
             .join("latest-contract.json");
         let contract = std::fs::read(&contract).unwrap_or_else(|error| {

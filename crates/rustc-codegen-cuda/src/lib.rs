@@ -468,16 +468,15 @@ impl CodegenBackend for CudaCodegenBackend {
     }
 
     fn init(&self, sess: &Session) {
-        if host_cache::kernels_only(sess.opts.crate_name.as_deref().unwrap_or("")) {
-            if sess.opts.crate_types != [rustc_structures::CrateType::StaticLib]
+        if host_cache::kernels_only(sess.opts.crate_name.as_deref().unwrap_or(""))
+            && (sess.opts.crate_types != [rustc_structures::CrateType::StaticLib]
                 || sess.opts.output_types.should_link()
                 || sess
                     .opts
                     .output_types
-                    .contains_key(&rustc_session::config::OutputType::Metadata)
-            {
-                sess.dcx().fatal("kernel-only compilation must emit only objects as staticlib; use cargo oxide --kernels-only");
-            }
+                    .contains_key(&rustc_session::config::OutputType::Metadata))
+        {
+            sess.dcx().fatal("kernel-only compilation must emit only objects as staticlib; use cargo oxide --kernels-only");
         }
         // Note: Don't log here - init() is called for ALL crates including dependencies.
         // We log in codegen_crate() only when there are kernels to compile.
@@ -616,11 +615,14 @@ impl CodegenBackend for CudaCodegenBackend {
             // `.oxart` bundle. New owner-aware macros omit the reference for
             // unselected crates and do not need the fallback.
             if kernel_count > 0 && !owner_selected {
-                let output_dir = self
-                    .config
-                    .ptx_output_dir
-                    .clone()
-                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+                let output_dir = self.config.ptx_output_dir.clone().unwrap_or_else(|| {
+                    tcx.sess
+                        .io
+                        .output_dir
+                        .clone()
+                        .unwrap_or_else(|| "target".into())
+                        .join("oxide")
+                });
                 match write_filtered_artifact_anchor_object(
                     &output_dir,
                     crate_name.as_str(),
@@ -650,10 +652,14 @@ impl CodegenBackend for CudaCodegenBackend {
                     host_cache::request(
                         tcx,
                         cgus,
-                        self.config
-                            .ptx_output_dir
-                            .as_deref()
-                            .unwrap_or_else(|| Path::new(".")),
+                        &self.config.ptx_output_dir.clone().unwrap_or_else(|| {
+                            tcx.sess
+                                .io
+                                .output_dir
+                                .clone()
+                                .unwrap_or_else(|| Path::new("target").to_owned())
+                                .join("oxide")
+                        }),
                     )
                 })
                 .flatten();
@@ -680,23 +686,28 @@ impl CodegenBackend for CudaCodegenBackend {
             };
             // Step 2: If device code exists, compile via cuda-oxide
             let _device_result = if has_device_code
-                && std::env::var_os("CUDA_OXIDE_INCREMENTAL_MODULES").is_some()
-            {
+                && std::env::var("CUDA_OXIDE_INCREMENTAL_MODULES").map_or(true, |value| {
+                    !matches!(value.as_str(), "0" | "false" | "off")
+                }) {
                 let collection = shader_collection
                     .take()
                     .unwrap_or_else(|| collector::collect_device_functions(tcx, cgus, false));
-                let config =
-                    device_codegen::DeviceCodegenConfig {
-                        minimum_dynamic_shared_alignment: 0,
-                        output_dir: self.config.ptx_output_dir.clone().unwrap_or_else(|| {
-                            std::env::current_dir().unwrap_or_else(|_| ".".into())
-                        }),
-                        output_name: crate_name.to_string(),
-                        verbose: self.config.verbose,
-                        dump_rustc_mir: self.config.dump_rustc_mir,
-                        dump_mir_dialect: self.config.dump_mir_dialect,
-                        dump_llvm_dialect: self.config.dump_llvm_dialect,
-                    };
+                let config = device_codegen::DeviceCodegenConfig {
+                    minimum_dynamic_shared_alignment: 0,
+                    output_dir: self.config.ptx_output_dir.clone().unwrap_or_else(|| {
+                        tcx.sess
+                            .io
+                            .output_dir
+                            .clone()
+                            .unwrap_or_else(|| "target".into())
+                            .join("oxide")
+                    }),
+                    output_name: crate_name.to_string(),
+                    verbose: self.config.verbose,
+                    dump_rustc_mir: self.config.dump_rustc_mir,
+                    dump_mir_dialect: self.config.dump_mir_dialect,
+                    dump_llvm_dialect: self.config.dump_llvm_dialect,
+                };
                 match incremental::compile(tcx, &collection, &config) {
                     Ok(path) => artifact_objects.push(path),
                     Err(error) => tcx.dcx().fatal(format!(
@@ -745,18 +756,22 @@ impl CodegenBackend for CudaCodegenBackend {
                 let device_functions = &collection_result.functions;
 
                 // Create device codegen config from our config
-                let device_config =
-                    device_codegen::DeviceCodegenConfig {
-                        minimum_dynamic_shared_alignment: 0,
-                        output_dir: self.config.ptx_output_dir.clone().unwrap_or_else(|| {
-                            std::env::current_dir().unwrap_or_else(|_| ".".into())
-                        }),
-                        output_name: tcx.crate_name(rustc_hir::def_id::LOCAL_CRATE).to_string(),
-                        verbose: self.config.verbose,
-                        dump_rustc_mir: self.config.dump_rustc_mir,
-                        dump_mir_dialect: self.config.dump_mir_dialect,
-                        dump_llvm_dialect: self.config.dump_llvm_dialect,
-                    };
+                let device_config = device_codegen::DeviceCodegenConfig {
+                    minimum_dynamic_shared_alignment: 0,
+                    output_dir: self.config.ptx_output_dir.clone().unwrap_or_else(|| {
+                        tcx.sess
+                            .io
+                            .output_dir
+                            .clone()
+                            .unwrap_or_else(|| "target".into())
+                            .join("oxide")
+                    }),
+                    output_name: tcx.crate_name(rustc_hir::def_id::LOCAL_CRATE).to_string(),
+                    verbose: self.config.verbose,
+                    dump_rustc_mir: self.config.dump_rustc_mir,
+                    dump_mir_dialect: self.config.dump_mir_dialect,
+                    dump_llvm_dialect: self.config.dump_llvm_dialect,
+                };
 
                 // Run the cuda-oxide pipeline, catching backend panics and
                 // re-emitting them as a cuda-oxide diagnostic. A panic
@@ -877,6 +892,17 @@ impl CodegenBackend for CudaCodegenBackend {
                                 "[rustc_codegen_cuda] Device codegen did not produce an embeddable artifact",
                             );
                         }
+                        // A successful opt-out build must supersede an older
+                        // native manifest in the same Cargo profile directory.
+                        let manifest = device_config
+                            .output_dir
+                            .join(format!("{}.modules.json", device_config.output_name));
+                        if let Err(error) = std::fs::remove_file(&manifest)
+                            && error.kind() != std::io::ErrorKind::NotFound
+                        {
+                            tcx.dcx()
+                                .fatal(format!("could not retire native manifest: {error}"));
+                        }
                         Some(result)
                     }
                     Ok(Err(e)) => {
@@ -932,10 +958,10 @@ impl CodegenBackend for CudaCodegenBackend {
             let result =
                 self.llvm_backend
                     .join_codegen(host, sess, incr_comp_session, outputs, crate_info);
-            if let Some(request) = &ongoing.host_cache {
-                if let Err(error) = host_cache::write(request, &result.0) {
-                    eprintln!("[device-modules] host object cache unavailable: {error}");
-                }
+            if let Some(request) = &ongoing.host_cache
+                && let Err(error) = host_cache::write(request, &result.0)
+            {
+                eprintln!("[device-modules] host object cache unavailable: {error}");
             }
             result
         } else {
@@ -988,12 +1014,11 @@ impl CodegenBackend for CudaCodegenBackend {
         }
         self.llvm_backend
             .link(sess, compiled_modules, crate_info, metadata, outputs);
-        if sess.dcx().has_errors().is_none() {
-            if let Some(request) = self.pending_contract.lock().unwrap().take() {
-                if let Err(error) = host_cache::publish_contract(&request) {
-                    eprintln!("[device-modules] kernel-only contract unavailable: {error}");
-                }
-            }
+        if sess.dcx().has_errors().is_none()
+            && let Some(request) = self.pending_contract.lock().unwrap().take()
+            && let Err(error) = host_cache::publish_contract(&request)
+        {
+            eprintln!("[device-modules] kernel-only contract unavailable: {error}");
         }
     }
 }
