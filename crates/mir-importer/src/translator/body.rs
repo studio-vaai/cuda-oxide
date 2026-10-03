@@ -1815,6 +1815,8 @@ fn emit_entry_allocas(
 ///   marked `#[inline(always)]` in rustc)
 /// * `is_inline_never` - Add `noinline` attribute (non-kernel functions
 ///   marked `#[inline(never)]` in rustc)
+/// * `is_inline_hint` - Add `inlinehint` attribute (non-kernel functions
+///   marked `#[inline]` in rustc)
 /// * `override_name` - Custom export name (defaults to instance name)
 pub fn translate_body(
     ctx: &mut Context,
@@ -1825,6 +1827,7 @@ pub fn translate_body(
     is_kernel: bool,
     is_inline_always: bool,
     is_inline_never: bool,
+    is_inline_hint: bool,
     declaration_only: bool,
     override_name: Option<&str>,
     legaliser: &mut Legaliser,
@@ -2209,6 +2212,7 @@ pub fn translate_body(
         is_kernel,
         is_inline_always,
         is_inline_never,
+        is_inline_hint,
     );
 
     // Get the function body region (region 0)
@@ -2353,14 +2357,17 @@ fn set_inline_attrs_from_flags(
     is_kernel: bool,
     is_inline_always: bool,
     is_inline_never: bool,
+    is_inline_hint: bool,
 ) {
-    assert!(!(is_inline_always && is_inline_never));
-    if !is_kernel && (is_inline_always || is_inline_never) {
+    assert!(u8::from(is_inline_always) + u8::from(is_inline_never) + u8::from(is_inline_hint) <= 1);
+    if !is_kernel && (is_inline_always || is_inline_never || is_inline_hint) {
         let attr = pliron::builtin::attributes::StringAttr::new("true".to_string());
         let key: Identifier = if is_inline_never {
             "noinline"
-        } else {
+        } else if is_inline_always {
             "alwaysinline"
+        } else {
+            "inlinehint"
         }
         .try_into()
         .unwrap();
@@ -2598,9 +2605,13 @@ pub fn cuda_oxide_device_generated_kernel(mut wrapped: Wrapper<u16>) -> u32 {
             1,
         );
         let func = MirFuncOp::new(&mut ctx, op, type_attr);
-        for (always, never) in [(true, false), (false, true)] {
-            set_inline_attrs_from_flags(&mut ctx, &func, true, always, never);
-            for policy in ["alwaysinline", "noinline"] {
+        for (always, never, hint) in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            set_inline_attrs_from_flags(&mut ctx, &func, true, always, never, hint);
+            for policy in ["alwaysinline", "noinline", "inlinehint"] {
                 let key: Identifier = policy.try_into().unwrap();
                 assert!(!op.deref(&ctx).attributes.0.contains_key(&key));
             }
@@ -2609,11 +2620,13 @@ pub fn cuda_oxide_device_generated_kernel(mut wrapped: Wrapper<u16>) -> u32 {
 
     #[test]
     fn inline_policy_reaches_llvm_func_attr_before_export() {
-        check_inline_policy_lowering(true, false, "alwaysinline");
-        check_inline_policy_lowering(false, true, "noinline");
+        check_inline_policy_lowering(true, false, false, Some("alwaysinline"));
+        check_inline_policy_lowering(false, true, false, Some("noinline"));
+        check_inline_policy_lowering(false, false, true, Some("inlinehint"));
+        check_inline_policy_lowering(false, false, false, None);
     }
 
-    fn check_inline_policy_lowering(always: bool, never: bool, expected: &str) {
+    fn check_inline_policy_lowering(always: bool, never: bool, hint: bool, expected: Option<&str>) {
         let mut ctx = Context::new();
         crate::translator::register_dialects(&mut ctx);
 
@@ -2650,7 +2663,7 @@ pub fn cuda_oxide_device_generated_kernel(mut wrapped: Wrapper<u16>) -> u32 {
             func
         };
 
-        set_inline_attrs_from_flags(&mut ctx, &mir_func, false, always, never);
+        set_inline_attrs_from_flags(&mut ctx, &mir_func, false, always, never, hint);
         llvm_export::ops::set_debug_function_name(
             &mut ctx,
             mir_func.get_operation(),
@@ -2670,16 +2683,19 @@ pub fn cuda_oxide_device_generated_kernel(mut wrapped: Wrapper<u16>) -> u32 {
                 .expect("lowered LLVM function")
         };
 
-        let key: Identifier = expected.try_into().unwrap();
-        assert!(
-            llvm_func
-                .get_operation()
-                .deref(&ctx)
-                .attributes
-                .0
-                .contains_key(&key),
-            "Rust inline policy must survive MIR-to-LLVM lowering",
-        );
+        for policy in ["alwaysinline", "noinline", "inlinehint"] {
+            let key: Identifier = policy.try_into().unwrap();
+            assert_eq!(
+                llvm_func
+                    .get_operation()
+                    .deref(&ctx)
+                    .attributes
+                    .0
+                    .contains_key(&key),
+                expected == Some(policy),
+                "Rust inline policy must survive MIR-to-LLVM lowering",
+            );
+        }
         assert_eq!(
             llvm_export::ops::debug_function_name(&ctx, llvm_func.get_operation()).as_deref(),
             Some("source_crate::inline_helper"),

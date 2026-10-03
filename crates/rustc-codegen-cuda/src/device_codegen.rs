@@ -1076,7 +1076,7 @@ pub fn generate_device_code_partition<'tcx>(
     // context, since the query lives on `rustc_middle::TyCtxt` and is not
     // exposed through stable_mir. Preserving this hint avoids making helper
     // boundaries depend entirely on later optimizer heuristics.
-    let inline_flags: Vec<(bool, bool)> = functions
+    let inline_flags: Vec<(bool, bool, bool)> = functions
         .iter()
         .map(|func| {
             let def_id = func.instance.def_id();
@@ -1088,6 +1088,7 @@ pub fn generate_device_code_partition<'tcx>(
                         | rustc_hir::attrs::InlineAttr::Force { .. }
                 ),
                 matches!(inline, rustc_hir::attrs::InlineAttr::Never),
+                matches!(inline, rustc_hir::attrs::InlineAttr::Hint),
             )
         })
         .collect();
@@ -1158,7 +1159,7 @@ pub fn generate_device_code_partition<'tcx>(
                 |(
                     (
                         ((func, (export_name, is_kernel)), debug_source_scopes),
-                        (is_inline_always, is_inline_never),
+                        (is_inline_always, is_inline_never, is_inline_hint),
                     ),
                     reachability,
                 )| {
@@ -1193,6 +1194,7 @@ pub fn generate_device_code_partition<'tcx>(
                         statement_debug_info,
                         is_inline_always: *is_inline_always,
                         is_inline_never: *is_inline_never,
+                        is_inline_hint: *is_inline_hint,
                     })
                 },
             )

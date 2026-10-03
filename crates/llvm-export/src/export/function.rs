@@ -820,7 +820,7 @@ impl<'a> ModuleExportState<'a> {
             .iter(self.ctx)
             .next();
 
-        // Preserve both explicit Rust inline policies through device LTO.
+        // Preserve explicit Rust inline policies through device LTO.
         // Emitted as a function attribute keyword between the parameter
         // list and the body open brace.
         let alwaysinline_key: pliron::identifier::Identifier = "alwaysinline".try_into().unwrap();
@@ -830,6 +830,10 @@ impl<'a> ModuleExportState<'a> {
         let noinline_key: pliron::identifier::Identifier = "noinline".try_into().unwrap();
         let is_noinline = attrs
             .get::<pliron::builtin::attributes::StringAttr>(&noinline_key)
+            .is_some();
+        let inlinehint_key: pliron::identifier::Identifier = "inlinehint".try_into().unwrap();
+        let is_inlinehint = attrs
+            .get::<pliron::builtin::attributes::StringAttr>(&inlinehint_key)
             .is_some();
 
         if let Some(entry_block) = entry_block_opt {
@@ -888,6 +892,8 @@ impl<'a> ModuleExportState<'a> {
                 "noinline "
             } else if is_alwaysinline {
                 "alwaysinline "
+            } else if is_inlinehint {
+                "inlinehint "
             } else {
                 ""
             };

@@ -108,6 +108,9 @@ pub struct CollectedFunction {
     /// Rust's MIR inliner already honors this hint; NVIDIA's optimizer also
     /// needs it to retain the requested helper boundary.
     pub is_inline_never: bool,
+    /// Preserve plain `#[inline]` through device LTO as LLVM `inlinehint`.
+    /// This favors inlining without bypassing the optimizer's size heuristics.
+    pub is_inline_hint: bool,
 }
 
 /// Per-function statement debug records aligned with the stable MIR body.
@@ -548,6 +551,7 @@ pub fn run_pipeline(
             func.is_kernel,
             func.is_inline_always,
             func.is_inline_never,
+            func.is_inline_hint,
             func.declaration_only,
             Some(&func.export_name),
             &mut legaliser,

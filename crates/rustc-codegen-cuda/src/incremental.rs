@@ -243,6 +243,15 @@ fn input_fingerprint<'tcx>(
                     ) {
                         "device-noinline-v1".stable_hash(hcx, &mut hasher);
                     }
+                    // Plain #[inline] was previously omitted from device IR.
+                    // Invalidate these definitions while leaving declaration-only
+                    // callers and definitions with other policies reusable.
+                    if matches!(
+                        tcx.codegen_fn_attrs(function.instance.def_id()).inline,
+                        rustc_hir::attrs::InlineAttr::Hint
+                    ) {
+                        "device-inlinehint-v1".stable_hash(hcx, &mut hasher);
+                    }
                     body.stable_hash(hcx, &mut hasher);
                     if tcx.is_mir_available(function.instance.def_id()) {
                         tcx.promoted_mir(function.instance.def_id())
