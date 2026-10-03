@@ -91,6 +91,8 @@ pub(super) struct ModuleExportState<'a> {
     pub(super) ctx: &'a pliron::context::Context,
     /// Track if any convergent operations were used (for emitting attributes section)
     pub(super) convergent_used: bool,
+    /// Definitions and callees whose operations require convergence protection.
+    pub(super) convergent_functions: HashSet<String>,
     /// Track kernels with cluster configurations for nvvm.annotations metadata
     pub(super) cluster_kernels: Vec<KernelClusterConfig>,
     /// Track kernels with launch bounds for nvvm.annotations metadata
@@ -221,6 +223,7 @@ impl<'a> ModuleExportState<'a> {
         Self {
             ctx,
             convergent_used: false,
+            convergent_functions: HashSet::new(),
             cluster_kernels: Vec::new(),
             launch_bounds_kernels: Vec::new(),
             all_kernels: Vec::new(),

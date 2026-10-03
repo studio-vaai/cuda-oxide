@@ -1730,14 +1730,15 @@ impl<'a> ModuleExportState<'a> {
             }
         }
 
-        // Every device call is emitted `convergent` (attr group #0). GPU code is
-        // convergent-by-default (as in Clang/nvcc): if the callee transitively
-        // performs a barrier / shuffle / vote, `opt -O2` must not sink or
-        // duplicate the call across divergent control flow. opt strips the
-        // attribute from calls it proves never reach a convergent op.
+        // Preserve convergence at calls to collectives and their wrappers.
+        // Indirect targets cannot be proven non-convergent here.
+        let is_convergent = direct_callee_name
+            .as_deref()
+            .is_none_or(|name| self.function_is_convergent(name));
         let noreturn_attr = if is_noreturn { " noreturn" } else { "" };
-        writeln!(output, "){noreturn_attr} #0").unwrap();
-        self.convergent_used = true;
+        let convergence_attr = if is_convergent { " #0" } else { "" };
+        writeln!(output, "){noreturn_attr}{convergence_attr}").unwrap();
+        self.convergent_used |= is_convergent;
 
         if normalize_pointer_result {
             let decl = device_extern.as_ref().unwrap();
@@ -1838,23 +1839,13 @@ impl<'a> ModuleExportState<'a> {
         let constraints = read_string_attr(op.get_attr_inline_asm_constraints(self.ctx));
         // NVVM-dialect ops carry an AsmKind tag (set by InlineAsmOpExt::build).
         // User-written ptx_asm! ops carry separate sideeffect/convergent attrs.
-        // Resolve both into (has_sideeffect, is_convergent).
-        let kind = ops::asm_kind_opt(self.ctx, op);
-        let (has_sideeffect, is_convergent) = match kind {
-            Some(ops::AsmKind::Convergent) => (true, true),
-            Some(ops::AsmKind::ConvergentPure) => (false, true),
-            Some(ops::AsmKind::SideEffect) => (true, false),
-            Some(ops::AsmKind::Pure) => (false, false),
-            None => {
-                // ptx_asm! path: read the individual attributes.
-                let se = ops::inline_asm_sideeffect(self.ctx, op.get_operation());
-                let cv = op
-                    .get_attr_inline_asm_convergent(self.ctx)
-                    .map(|a| bool::from((*a).clone()))
-                    .unwrap_or(false);
-                (se, cv)
-            }
+        // Use the same convergence classification as the call-graph prepass.
+        let has_sideeffect = match ops::asm_kind_opt(self.ctx, op) {
+            Some(ops::AsmKind::Convergent | ops::AsmKind::SideEffect) => true,
+            Some(ops::AsmKind::ConvergentPure | ops::AsmKind::Pure) => false,
+            None => ops::inline_asm_sideeffect(self.ctx, op.get_operation()),
         };
+        let is_convergent = super::convergence::inline_asm_is_convergent(self.ctx, op);
 
         // pliron-llvm always stores a single result slot (a void result for
         // no-value asm), so decide void vs valued by the result *type*, not the

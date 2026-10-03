@@ -108,12 +108,12 @@ fn export_alwaysinline_function_attribute_uses_llvm_define_syntax() {
         .find(|line| line.starts_with("define void @inline_helper("))
         .expect("inline helper definition");
     assert_eq!(
-        define_line, "define void @inline_helper() alwaysinline #0 {",
-        "`alwaysinline` must be emitted after the parameter list, before attr group #0:\n{ir}"
+        define_line, "define void @inline_helper() alwaysinline {",
+        "`alwaysinline` must be emitted after the parameter list:\n{ir}"
     );
     assert!(
-        ir.contains("attributes #0 = { convergent }"),
-        "convergent attribute group must still be emitted:\n{ir}"
+        !ir.contains("attributes #0 = { convergent }"),
+        "arithmetic-only helpers need no convergent attribute group:\n{ir}"
     );
 }
 

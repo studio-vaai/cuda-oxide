@@ -37,6 +37,7 @@
 //! - `metadata`: nvvm annotations and version, llvm.used
 
 mod config;
+mod convergence;
 mod debug;
 mod externs;
 mod function;
@@ -55,6 +56,9 @@ pub use config::{
 pub use externs::{AsDeviceExtern, DeviceExternAttrs, DeviceExternDecl, DeviceExternType};
 
 use pliron::{builtin::ops::ModuleOp, context::Context};
+
+/// Version of convergence inference in cached exported device IR.
+pub const CONVERGENCE_POLICY_VERSION: &str = "device-convergence-v1";
 
 /// Preserve device definitions for separate compilation without making every
 /// helper a permanent `llvm.used` root in the final native link. Kernel entries
