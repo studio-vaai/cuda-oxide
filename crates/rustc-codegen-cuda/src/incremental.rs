@@ -44,7 +44,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     std::fs::rename(tmp, path)?;
     Ok(())
 }
-fn write_cache(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+pub(crate) fn write_cache(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     let mut contents = Sha256::digest(bytes).to_vec();
     contents.extend_from_slice(bytes);
     atomic_write(path, &contents)

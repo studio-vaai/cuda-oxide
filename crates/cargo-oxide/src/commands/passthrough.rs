@@ -470,7 +470,16 @@ pub fn codegen_cargo_passthrough(
         .expect("could not record kernel-only update");
         cmd.env("CARGO_TARGET_DIR", target);
     }
-    let status = cmd.status().expect("Failed to run cargo");
+    let status = if cargo_subcommand == CargoPassthroughSubcommand::Build
+        && std::env::var_os("CUDA_OXIDE_KERNELS_ONLY").is_none()
+    {
+        super::module_snapshots::build(&cmd, &output_root).unwrap_or_else(|error| {
+            eprintln!("Error: {error}");
+            std::process::exit(2);
+        })
+    } else {
+        cmd.status().expect("Failed to run cargo")
+    };
     if !status.success() {
         eprintln!(
             "\nCargo {} failed with exit code: {:?}",
