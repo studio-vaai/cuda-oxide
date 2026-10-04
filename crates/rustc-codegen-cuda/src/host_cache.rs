@@ -89,6 +89,19 @@ pub(crate) fn request<'tcx>(
     {
         return None;
     }
+    // The source contract covers all CPU/helper HIR, attributes, constants,
+    // layouts, external crate metadata and observable source positions. Refuse
+    // global assembly on the pre-mono path, just as the full mono path does.
+    if cgus.is_empty()
+        && tcx.hir_crate_items(()).definitions().any(|local| {
+            matches!(
+                tcx.def_kind(local.to_def_id()),
+                rustc_hir::def::DefKind::GlobalAsm
+            )
+        })
+    {
+        return None;
+    }
     let mut items = BTreeMap::new();
     for cgu in cgus {
         for (&item, data) in cgu.items() {
@@ -215,9 +228,17 @@ pub(crate) fn request<'tcx>(
         mir_started.elapsed().as_secs_f64()
     );
     let key = digest(
-        json!(["host-kernel-edit-v5-body-fingerprints", key_parts, contract])
-            .to_string()
-            .as_bytes(),
+        json!([
+            if cgus.is_empty() {
+                "host-kernel-edit-v6-source-contract"
+            } else {
+                "host-kernel-edit-v5-body-fingerprints"
+            },
+            key_parts,
+            contract
+        ])
+        .to_string()
+        .as_bytes(),
     );
     Some(Request {
         contract,
@@ -227,10 +248,10 @@ pub(crate) fn request<'tcx>(
         key,
     })
 }
-// The kernel-only output mode collects a different host mono graph. Compare
-// local source semantics instead, and retain the stronger mono graph key for
-// actual reuse of compiled host objects. Conservatively hash every host/helper
-// body, including generic bodies, all type/trait/impl HIR, and external metadata.
+// The source contract identifies host semantics before collecting CPU mono
+// items. Cover every host/helper body, including generic and unused bodies,
+// all type/trait/impl HIR, external metadata and observable source positions.
+// Kernel bodies are excluded only when host HIR never references their entries.
 fn is_kernel_entry(tcx: TyCtxt<'_>, id: rustc_hir::def_id::DefId) -> bool {
     tcx.opt_item_name(id)
         .is_some_and(|name| reserved_oxide_symbols::is_kernel_symbol(name.as_str()))
@@ -380,6 +401,35 @@ fn source_contract(tcx: TyCtxt<'_>, key_parts: &Value) -> Option<String> {
         .to_string()
         .as_bytes(),
     ))
+}
+
+/// Retain only ordinary Rust work products whose original codegen dependency
+/// node is still green. Returning an empty map would remove reusable CGUs from
+/// the next incremental session after a whole-host cache hit.
+pub(crate) fn retained_work_products(tcx: TyCtxt<'_>) -> rustc_middle::dep_graph::WorkProductMap {
+    let mut products = rustc_middle::dep_graph::WorkProductMap::default();
+    if !tcx.dep_graph.is_fully_enabled() {
+        return products;
+    }
+    for (id, product) in tcx
+        .dep_graph
+        .previous_work_products()
+        .to_sorted_stable_ord()
+    {
+        if product.cgu_name == "metadata" {
+            continue;
+        }
+        let node =
+            CodegenUnit::new(rustc_span::Symbol::intern(&product.cgu_name)).codegen_dep_node(tcx);
+        if tcx.dep_graph.try_mark_green(tcx, &node).is_some() {
+            products.insert(*id, product.clone());
+        }
+    }
+    eprintln!(
+        "[device-modules] retained {} green host work products",
+        products.len()
+    );
+    products
 }
 
 pub(crate) fn publish_contract(request: &Request) -> Result<(), Error> {

@@ -48,14 +48,14 @@ def main():
         (output / (label + '.manifest.json')).write_text(json.dumps(manifest, indent=2))
         return manifest
 
-    def run():
+    def run(arguments=()):
         # Use Cargo metadata: CARGO_TARGET_DIR may be provided by remote compute.
         metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--format-version=1', '--no-deps',
             '--manifest-path', str(root / 'Cargo.toml')], env=env, cwd=root))
         binary = str(Path(metadata['target_directory']) / 'release/incremental_modules')
         if 'CUDA_OXIDE_MODULE_FILES_ONLY' not in env:
-            subprocess.run([binary], env=env, check=True)
-        subprocess.run([binary, '--files'], env=env, check=True)
+            subprocess.run([binary, *arguments], env=env, check=True)
+        subprocess.run([binary, '--files', *arguments], env=env, check=True)
 
     source = root / 'src/lib.rs'
     original = source.read_text()
@@ -90,6 +90,20 @@ def main():
         assert units['incremental_modules::second']['nvvm_hit']
         for name in baseline['modules']:
             assert helper['modules'][name]['sha256'] != baseline['modules'][name]['sha256']
+        source.write_text(original.replace('value + 777', f'value + {777 + delta}', 1))
+        selective = build('one_consumer_helper_edit')
+        run([f'--second-delta={delta}'])
+        units = {unit['module']: unit for unit in selective['compilation_units']}
+        assert not units['incremental_modules::shared']['nvvm_hit']
+        assert units['incremental_modules::first']['nvvm_hit']
+        assert units['incremental_modules::second']['nvvm_hit']
+        assert selective['modules']['incremental_modules::first']['link_hit']
+        assert not selective['modules']['incremental_modules::second']['link_hit']
+        assert selective['modules']['incremental_modules::first']['sha256'] == baseline['modules']['incremental_modules::first']['sha256']
+        # Preserve the baseline LTO input ordering while omitting only an
+        # unrelated native relink. The changed helper still reaches the GPU.
+        for name in baseline['modules']:
+            assert selective['modules'][name]['inputs'] == baseline['modules'][name]['inputs']
         source.write_text(original.replace('value + 999', 'value + 998', 1))
         unused = build('unreachable_helper_edit')
         assert all(unit['nvvm_hit'] for unit in unused['compilation_units'])

@@ -370,6 +370,7 @@ pub struct CudaCodegenBackend {
 struct CudaOngoingCodegen {
     host: Option<Box<dyn Any>>,
     reused_host: Option<CompiledModules>,
+    reused_work_products: WorkProductMap,
     host_cache: Option<host_cache::Request>,
     artifact_objects: Vec<PathBuf>,
 }
@@ -545,7 +546,7 @@ impl CodegenBackend for CudaCodegenBackend {
                 !matches!(value.as_str(), "0" | "false" | "off")
             });
             let early_proof_started = std::time::Instant::now();
-            let mut early_host = if !kernels_only
+            let mut early_request = if !kernels_only
                 && native
                 && self.config.allows_device_codegen_for(crate_name.as_str())
                 && std::env::var_os("CUDA_OXIDE_REUSE_HOST_FOR_KERNEL_EDITS").is_some()
@@ -562,11 +563,13 @@ impl CodegenBackend for CudaCodegenBackend {
                         .join("oxide")
                 });
                 host_cache::request(tcx, &[], &output)
-                    .and_then(|request| host_cache::read_for_contract(&request))
             } else {
                 None
             };
-            let mut shader_collection = (kernels_only || early_host.is_some())
+            let mut early_host = early_request
+                .as_ref()
+                .and_then(host_cache::read_for_contract);
+            let mut shader_collection = (kernels_only || early_request.is_some())
                 .then(|| collector::collect_local_kernel_functions(tcx));
             if !kernels_only
                 && shader_collection.as_ref().is_some_and(|collection| {
@@ -578,6 +581,7 @@ impl CodegenBackend for CudaCodegenBackend {
                 })
             {
                 early_host = None;
+                early_request = None;
                 shader_collection = None;
             }
             if early_host.is_some() {
@@ -586,7 +590,9 @@ impl CodegenBackend for CudaCodegenBackend {
                     early_proof_started.elapsed().as_secs_f64()
                 );
             }
-            let mono_partitions = (!kernels_only && early_host.is_none())
+            let deferred_host_mono =
+                !kernels_only && early_host.is_none() && shader_collection.is_some();
+            let mono_partitions = (!kernels_only && early_host.is_none() && !deferred_host_mono)
                 .then(|| tcx.collect_and_partition_mono_items(()));
             let cgus = mono_partitions
                 .as_ref()
@@ -690,52 +696,87 @@ impl CodegenBackend for CudaCodegenBackend {
                 );
             }
 
-            let host_proof_started = std::time::Instant::now();
-            let host_cache = early_host
-                .as_ref()
-                .map(|(request, _)| request.clone())
-                .or_else(|| {
-                    has_device_code
-                        .then(|| {
-                            host_cache::request(
-                                tcx,
-                                cgus,
-                                &self.config.ptx_output_dir.clone().unwrap_or_else(|| {
-                                    tcx.sess
-                                        .io
-                                        .output_dir
-                                        .clone()
-                                        .unwrap_or_else(|| Path::new("target").to_owned())
-                                        .join("oxide")
-                                }),
-                            )
-                        })
-                        .flatten()
-                });
-            if has_device_code {
-                eprintln!(
-                    "[device-modules] host proof: {:.3}s",
-                    host_proof_started.elapsed().as_secs_f64()
-                );
-            }
-            let reused_host = if kernels_only {
-                if host_cache
+            // Host queries stay on this rustc thread. Native link workers use
+            // only immutable LTOIR, so host proof and LLVM codegen can proceed
+            // while those workers finalize device images.
+            let mut host_state = None;
+            let mut generate_host = || {
+                // Building CPU mono items is independent of the kernel-root
+                // collector and can wait until native workers are running.
+                let deferred_partitions =
+                    deferred_host_mono.then(|| tcx.collect_and_partition_mono_items(()));
+                let host_cgus = deferred_partitions
                     .as_ref()
-                    .and_then(host_cache::read_contract)
-                    .is_none()
-                {
-                    tcx.dcx().fatal("kernel-only update cannot prove unchanged host MIR/ABI; run a full native build with debug=0 and CUDA_OXIDE_REUSE_HOST_FOR_KERNEL_EDITS=1 first");
+                    .map(|partitions| partitions.codegen_units)
+                    .unwrap_or(cgus);
+                let host_proof_started = std::time::Instant::now();
+                let host_cache = early_host
+                    .as_ref()
+                    .map(|(request, _)| request.clone())
+                    .or_else(|| early_request.clone())
+                    .or_else(|| {
+                        has_device_code
+                            .then(|| {
+                                host_cache::request(
+                                    tcx,
+                                    host_cgus,
+                                    &self.config.ptx_output_dir.clone().unwrap_or_else(|| {
+                                        tcx.sess
+                                            .io
+                                            .output_dir
+                                            .clone()
+                                            .unwrap_or_else(|| Path::new("target").to_owned())
+                                            .join("oxide")
+                                    }),
+                                )
+                            })
+                            .flatten()
+                    });
+                if has_device_code {
+                    eprintln!(
+                        "[device-modules] host proof: {:.3}s",
+                        host_proof_started.elapsed().as_secs_f64()
+                    );
                 }
-                Some(CompiledModules {
-                    modules: Vec::new(),
-                    allocator_module: None,
-                })
-            } else {
-                early_host
-                    .take()
-                    .map(|(_, modules)| modules)
-                    .or_else(|| host_cache.as_ref().and_then(host_cache::read))
+                let reused_host = if kernels_only {
+                    if host_cache
+                        .as_ref()
+                        .and_then(host_cache::read_contract)
+                        .is_none()
+                    {
+                        tcx.dcx().fatal("kernel-only update cannot prove unchanged host MIR/ABI; run a full native build with debug=0 and CUDA_OXIDE_REUSE_HOST_FOR_KERNEL_EDITS=1 first");
+                    }
+                    Some(CompiledModules {
+                        modules: Vec::new(),
+                        allocator_module: None,
+                    })
+                } else {
+                    early_host
+                        .take()
+                        .map(|(_, modules)| modules)
+                        .or_else(|| host_cache.as_ref().and_then(host_cache::read))
+                };
+                // Step 3: Delegate ALL host codegen to LLVM backend
+                // (No logging here - it fires for every crate including dependencies)
+                let host_result = if reused_host.is_some() {
+                    eprintln!(
+                        "[device-modules] host objects reused: host MIR and kernel ABI unchanged"
+                    );
+                    None
+                } else {
+                    Some(self.llvm_backend.codegen_crate(tcx))
+                };
+
+                let reused_work_products = if reused_host.is_some() && !kernels_only {
+                    host_cache::retained_work_products(tcx)
+                } else {
+                    WorkProductMap::default()
+                };
+                host_state = Some((host_cache, reused_host, host_result, reused_work_products));
             };
+            if !has_device_code || !native {
+                generate_host();
+            }
             // Step 2: If device code exists, compile via cuda-oxide
             let _device_result = if has_device_code && native {
                 let collection = shader_collection
@@ -757,7 +798,7 @@ impl CodegenBackend for CudaCodegenBackend {
                     dump_mir_dialect: self.config.dump_mir_dialect,
                     dump_llvm_dialect: self.config.dump_llvm_dialect,
                 };
-                match incremental::compile(tcx, &collection, &config) {
+                match incremental::compile(tcx, &collection, &config, &mut generate_host) {
                     Ok(path) => artifact_objects.push(path),
                     Err(error) => tcx.dcx().fatal(format!(
                         "[rustc_codegen_cuda] Incremental device compilation failed: {error}"
@@ -971,21 +1012,15 @@ impl CodegenBackend for CudaCodegenBackend {
                 None
             };
 
-            // Step 3: Delegate ALL host codegen to LLVM backend
-            // (No logging here - it fires for every crate including dependencies)
-            let host_result = if reused_host.is_some() {
-                eprintln!(
-                    "[device-modules] host objects reused: host MIR and kernel ABI unchanged"
-                );
-                None
-            } else {
-                Some(self.llvm_backend.codegen_crate(tcx))
-            };
+            drop(generate_host);
+            let (host_cache, reused_host, host_result, reused_work_products) =
+                host_state.expect("host codegen must run before device publication");
 
             // Return the LLVM backend's result
             Box::new(CudaOngoingCodegen {
                 host: host_result,
                 reused_host,
+                reused_work_products,
                 host_cache,
                 artifact_objects,
             })
@@ -1016,7 +1051,7 @@ impl CodegenBackend for CudaCodegenBackend {
         } else {
             (
                 ongoing.reused_host.expect("missing cached host objects"),
-                WorkProductMap::default(),
+                ongoing.reused_work_products,
             )
         };
         if !host_cache::kernels_only(crate_info.local_crate_name.as_str()) {
