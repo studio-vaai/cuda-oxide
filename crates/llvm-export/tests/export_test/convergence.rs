@@ -50,33 +50,13 @@ fn definition_is_convergent(ir: &str, name: &str) -> bool {
 fn intrinsic_seeds_containing_function_and_entire_wrapper_chain() {
     let mut ctx = Context::new();
     let module = ModuleOp::new(&mut ctx, "convergence_chain".try_into().unwrap());
+    let inner = reserved_oxide_symbols::device_symbol("inner");
     // Emit callers before their callees to exercise the prepass rather than
     // relying on textual order. Device prefix normalization must also agree.
-    function(
-        &mut ctx,
-        &module,
-        "outer",
-        &["cuda_oxide_codegen_v1_cuda_oxide_device_246e25db_inner"],
-        true,
-    );
-    function(
-        &mut ctx,
-        &module,
-        "cuda_oxide_codegen_v1_cuda_oxide_device_246e25db_inner",
-        &["llvm_nvvm_barrier0"],
-        true,
-    );
+    function(&mut ctx, &module, "outer", &[&inner], true);
+    function(&mut ctx, &module, &inner, &["llvm_nvvm_barrier0"], true);
     function(&mut ctx, &module, "arithmetic", &[], true);
-    function(
-        &mut ctx,
-        &module,
-        "mixed",
-        &[
-            "cuda_oxide_codegen_v1_cuda_oxide_device_246e25db_inner",
-            "arithmetic",
-        ],
-        true,
-    );
+    function(&mut ctx, &module, "mixed", &[&inner, "arithmetic"], true);
     function(
         &mut ctx,
         &module,

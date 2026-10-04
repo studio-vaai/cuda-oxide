@@ -106,7 +106,7 @@ fn link_cached_unit(
         .linker()
         .artifact_digest(
             &[NamedInput::new("reachable-kernel-v1", &identity)],
-            &options,
+            options,
             FinalizerOutput::Cubin,
         )
         .ok_or("nvJitLink provenance is unavailable; cannot safely cache")?;
@@ -114,7 +114,7 @@ fn link_cached_unit(
     let digest_seconds = link_started.elapsed().as_secs_f64();
     let cache_started = Instant::now();
     let mut migrated = false;
-    let (stored_cubin, hit) = cached(&cache, "cubin-v4-reachable-functions", &link_key, || {
+    let (stored_cubin, hit) = cached(cache, "cubin-v4-reachable-functions", &link_key, || {
         // Migrate only an image whose exact current LTOIR inputs are verified.
         let digested_inputs: Vec<_> = deps
             .iter()
@@ -122,7 +122,7 @@ fn link_cached_unit(
             .collect();
         let old_key = finalizer
             .linker()
-            .artifact_digest(&digested_inputs, &options, FinalizerOutput::Cubin)
+            .artifact_digest(&digested_inputs, options, FinalizerOutput::Cubin)
             .ok_or("nvJitLink provenance changed")?;
         let exact_inputs_cache = cache
             .join("cubin-v3-digested-inputs")
@@ -133,13 +133,13 @@ fn link_cached_unit(
         }
         let old_key = finalizer
             .linker()
-            .artifact_digest(&inputs, &options, FinalizerOutput::Cubin)
+            .artifact_digest(&inputs, options, FinalizerOutput::Cubin)
             .ok_or("nvJitLink provenance changed")?;
         if let Some(bytes) = read_cache(&cache.join("cubin-v2").join(digest(&old_key))) {
             migrated = true;
             return Ok(bytes);
         }
-        let report = finalizer.link_ltoir_with_report(&inputs, &options, FinalizerOutput::Cubin)?;
+        let report = finalizer.link_ltoir_with_report(&inputs, options, FinalizerOutput::Cubin)?;
         let usage: Vec<_> = report
             .resource_usage
             .iter()
@@ -749,7 +749,7 @@ pub(crate) fn compile<'tcx>(
         let hit = linked.hit;
         let digest_seconds = linked.digest_seconds;
         let cache_seconds = linked.cache_seconds;
-        let (usage, cubin) = unpack(&stored_cubin)?;
+        let (usage, cubin) = unpack(stored_cubin)?;
         let usage: Vec<(String, Option<u32>, u64, u64, u64)> = serde_json::from_value(usage)?;
         let usage: Vec<_> = usage
             .into_iter()
