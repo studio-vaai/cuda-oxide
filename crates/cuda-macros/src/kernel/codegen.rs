@@ -24,52 +24,36 @@ use quote::{format_ident, quote};
 use reserved_oxide_symbols::{INSTANTIATE_PREFIX, KERNEL_PREFIX};
 use syn::{FnArg, GenericParam, Ident, ItemFn, Pat, Type};
 
-/// CPU executables need collector entry identities, not executable GPU bodies.
-/// Keep ordinary generic implementations intact for legitimate Rust callers.
-/// Device compilations retain the original tokens, including their hygiene.
-pub(crate) fn stub_host_kernel_entries(tokens: TokenStream2, enabled: bool) -> TokenStream2 {
-    if !enabled {
-        return tokens;
-    }
-    let mut file = match syn::parse2::<syn::File>(tokens) {
-        Ok(file) => file,
-        Err(error) => return error.to_compile_error(),
-    };
-    for item in &mut file.items {
-        if let syn::Item::Fn(function) = item
-            && function.sig.ident.to_string().starts_with(KERNEL_PREFIX)
-        {
-            function
-                .attrs
-                .push(syn::parse_quote!(#[allow(unused_variables)]));
-            let marker = reserved_oxide_symbols::HOST_KERNEL_STUB_DOC;
-            function.attrs.push(syn::parse_quote!(#[doc = #marker]));
-            function.block =
-                syn::parse_quote!({ panic!("CUDA kernel entries cannot execute on the CPU") });
-        }
-    }
-    quote!(#file)
-}
-
-fn host_entry_tokens(tokens: TokenStream2) -> TokenStream2 {
+/// Determine the entry-body policy before constructing tokens. Ordinary
+/// generic implementation helpers keep their CPU semantics.
+fn host_entries_stubbed() -> Result<bool, TokenStream2> {
     if !proc_macro::is_available() {
-        return tokens;
+        return Ok(false);
     }
     let device_build = std::env::var_os(reserved_oxide_symbols::CODEGEN_FINGERPRINT_ENV).is_some();
     let setting = std::env::var(reserved_oxide_symbols::HOST_KERNEL_STUBS_ENV).ok();
-    let enabled = match reserved_oxide_symbols::host_kernel_stubs(setting.as_deref(), device_build)
-    {
-        Ok(enabled) => enabled,
-        Err(message) => {
-            return syn::Error::new(proc_macro2::Span::call_site(), message).to_compile_error();
-        }
-    };
+    let enabled = reserved_oxide_symbols::host_kernel_stubs(setting.as_deref(), device_build)
+        .map_err(|message| {
+            syn::Error::new(proc_macro2::Span::call_site(), message).to_compile_error()
+        })?;
     if enabled && device_build {
-        return syn::Error::new(proc_macro2::Span::call_site(),
+        return Err(syn::Error::new(proc_macro2::Span::call_site(),
             "host kernel stubs require a standard Rust host build, separate from cargo oxide's device build")
-            .to_compile_error();
+            .to_compile_error());
     }
-    stub_host_kernel_entries(tokens, enabled)
+    Ok(enabled)
+}
+
+fn host_stub_attrs(enabled: bool) -> TokenStream2 {
+    if !enabled {
+        return TokenStream2::new();
+    }
+    let marker = reserved_oxide_symbols::HOST_KERNEL_STUB_DOC;
+    quote! { #[allow(unused_variables)] #[doc = #marker] }
+}
+
+fn host_stub_body() -> TokenStream2 {
+    quote! { { panic!("CUDA kernel entries cannot execute on the CPU") } }
 }
 
 /// Generate a generic kernel that will be instantiated from call sites (nvcc-style)
@@ -77,19 +61,28 @@ pub(super) fn generate_generic_kernel_no_instantiation(
     input: ItemFn,
     explicit_scope: Option<Ident>,
 ) -> TokenStream {
-    host_entry_tokens(generic_kernel_no_instantiation_tokens(
-        input,
-        explicit_scope,
-    ))
-    .into()
+    let stub = match host_entries_stubbed() {
+        Ok(stub) => stub,
+        Err(error) => return error.into(),
+    };
+    generic_kernel_no_instantiation_tokens_with_host_stubs(input, explicit_scope, stub).into()
 }
 
 /// Expansion body of [`generate_generic_kernel_no_instantiation`], split out
 /// so unit tests can inspect the generated items without a live proc-macro
 /// bridge.
+#[cfg(test)]
 pub(crate) fn generic_kernel_no_instantiation_tokens(
+    input: ItemFn,
+    explicit_scope: Option<Ident>,
+) -> TokenStream2 {
+    generic_kernel_no_instantiation_tokens_with_host_stubs(input, explicit_scope, false)
+}
+
+pub(crate) fn generic_kernel_no_instantiation_tokens_with_host_stubs(
     mut input: ItemFn,
     explicit_scope: Option<Ident>,
+    stub: bool,
 ) -> TokenStream2 {
     let entry_inputs = input.sig.inputs.clone();
     // A routed `#[launch_contract]` expands later on the generated entry
@@ -254,6 +247,13 @@ pub(crate) fn generic_kernel_no_instantiation_tokens(
         implementation_call
     };
 
+    let host_attrs = host_stub_attrs(stub);
+    let entry_body = if stub {
+        host_stub_body()
+    } else {
+        quote! { { #(#entry_config_markers)* #(#scope_bindings)* #implementation_call } }
+    };
+
     quote! {
         // Original generic kernel implementation
         #(#implementation_attrs)*
@@ -270,11 +270,8 @@ pub(crate) fn generic_kernel_no_instantiation_tokens(
         // pattern forwardable without carrying local binding `mut`.
         #(#entry_attrs)*
         #[inline(never)]
-        #vis #constness #unsafety #abi fn #kernel_name #generics (#(#wrapper_inputs),*) #output #where_clause {
-            #(#entry_config_markers)*
-            #(#scope_bindings)*
-            #implementation_call
-        }
+        #host_attrs
+        #vis #constness #unsafety #abi fn #kernel_name #generics (#(#wrapper_inputs),*) #output #where_clause #entry_body
 
         #instantiate_helper
 
@@ -368,23 +365,28 @@ pub(super) fn generate_simple_kernel(
     let fn_name = input.sig.ident.clone();
     let new_name = format_ident!("{}{}", KERNEL_PREFIX, fn_name);
 
-    // Clone the original function for the CudaKernel impl
-    let original_fn = input.clone();
-    input.sig.ident = new_name;
-
     // PTX entry name is the unprefixed user name; the collector strips
     // KERNEL_PREFIX when generating PTX.
     let ptx_entry_name = fn_name.to_string();
 
     // Generate the CudaKernel trait implementation (host-side only)
     // This provides the PTX name for cuda_launch! to look up
-    let cuda_kernel_impl = generate_cuda_kernel_impl(
-        &fn_name,
-        &ptx_entry_name,
-        &original_fn,
-        cfg!(feature = "host"),
-    );
+    let cuda_kernel_impl =
+        generate_cuda_kernel_impl(&fn_name, &ptx_entry_name, &input, cfg!(feature = "host"));
 
+    input.sig.ident = new_name;
+    let stub = match host_entries_stubbed() {
+        Ok(stub) => stub,
+        Err(error) => return error.into(),
+    };
+    if stub {
+        input
+            .attrs
+            .push(syn::parse_quote!(#[allow(unused_variables)]));
+        let marker = reserved_oxide_symbols::HOST_KERNEL_STUB_DOC;
+        input.attrs.push(syn::parse_quote!(#[doc = #marker]));
+        input.block = syn::parse2(host_stub_body()).expect("valid generated host stub");
+    }
     let expanded = quote! {
         #[unsafe(no_mangle)]
         #input
@@ -392,7 +394,7 @@ pub(super) fn generate_simple_kernel(
         #cuda_kernel_impl
     };
 
-    TokenStream::from(host_entry_tokens(expanded))
+    TokenStream::from(expanded)
 }
 
 /// Generate the GenericCudaKernel trait implementation for a generic kernel.
@@ -534,21 +536,41 @@ pub(super) fn generate_generic_kernel(
     instantiate_types: Vec<Type>,
     explicit_scope: Option<Ident>,
 ) -> TokenStream {
-    host_entry_tokens(generic_kernel_instantiation_tokens(
+    let stub = match host_entries_stubbed() {
+        Ok(stub) => stub,
+        Err(error) => return error.into(),
+    };
+    generic_kernel_instantiation_tokens_with_host_stubs(
         input,
         instantiate_types,
         explicit_scope,
-    ))
+        stub,
+    )
     .into()
 }
 
 /// Expansion body of [`generate_generic_kernel`] (legacy `#[kernel(Type, ...)]`
 /// instantiation), split out so unit tests can inspect the generated items
 /// without a live proc-macro bridge.
+#[cfg(test)]
 pub(crate) fn generic_kernel_instantiation_tokens(
+    input: ItemFn,
+    instantiate_types: Vec<Type>,
+    explicit_scope: Option<Ident>,
+) -> TokenStream2 {
+    generic_kernel_instantiation_tokens_with_host_stubs(
+        input,
+        instantiate_types,
+        explicit_scope,
+        false,
+    )
+}
+
+pub(crate) fn generic_kernel_instantiation_tokens_with_host_stubs(
     mut input: ItemFn,
     instantiate_types: Vec<Type>,
     explicit_scope: Option<Ident>,
+    stub: bool,
 ) -> TokenStream2 {
     let entry_inputs = input.sig.inputs.clone();
     // Same as the no-instantiation path: `requires` relations of a routed
@@ -677,15 +699,16 @@ pub(crate) fn generic_kernel_instantiation_tokens(
                 })
                 .collect();
 
+            let host_attrs = host_stub_attrs(stub);
+            let entry_body = if stub { host_stub_body() } else {
+                quote! { { #(#entry_config_markers)* #(#scope_bindings)* #implementation_target::<#inst_type>(#(#implementation_args),*); } }
+            };
             quote! {
                 #(#entry_attrs)*
                 #[unsafe(no_mangle)]
                 #[unsafe(export_name = #export_name_str)]
-                #vis fn #wrapper_name(#(#wrapper_args),*) {
-                    #(#entry_config_markers)*
-                    #(#scope_bindings)*
-                    #implementation_target::<#inst_type>(#(#implementation_args),*);
-                }
+                #host_attrs
+                #vis fn #wrapper_name(#(#wrapper_args),*) #entry_body
             }
         })
         .collect();
