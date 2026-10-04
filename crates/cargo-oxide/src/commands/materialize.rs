@@ -219,10 +219,17 @@ fn prepare_materialization_result_with_env(
 fn discover_materializer_handshake(
     ctx: &Context,
 ) -> Result<cuda_artifact_finalizer::MaterializerHandshakeV1, String> {
+    discover_materializer_handshake_at(ctx, &materializer_handshake_cache_path(ctx))
+}
+
+fn discover_materializer_handshake_at(
+    ctx: &Context,
+    cache: &Path,
+) -> Result<cuda_artifact_finalizer::MaterializerHandshakeV1, String> {
     let executable = std::env::current_exe()
         .map_err(|error| format!("could not locate cargo-oxide executable: {error}"))?;
     let mut command = materializer_discovery_command(ctx, &executable);
-    if let Some(cached) = read_materializer_handshake_cache(ctx) {
+    if let Some(cached) = read_materializer_handshake_cache_at(cache) {
         command.env(MATERIALIZER_HANDSHAKE_ENV, cached);
     }
     let output = command
@@ -247,8 +254,39 @@ fn discover_materializer_handshake(
             handshake.version
         ));
     }
-    write_materializer_handshake_cache(ctx, &handshake);
+    write_materializer_handshake_cache_at(cache, &handshake);
     Ok(handshake)
+}
+
+/// Native modules use the same verified compiler identity as embedded cubins.
+/// Macros already track EXPECTED_PROVENANCE_ENV, so switching a linker (or
+/// replacing its file) invalidates device owners even when source is unchanged.
+/// Keep the descriptor hint in Cargo's selected artifact cache; it is not a
+/// semantic identity and does not invalidate host-only dependencies.
+pub(super) fn apply_native_tool_identity(cmd: &mut Command, ctx: &Context) -> Result<(), String> {
+    if !native_modules_enabled() {
+        return Ok(());
+    }
+    let output = cmd
+        .get_envs()
+        .find_map(|(key, value)| (key == "CUDA_OXIDE_PTX_DIR").then_some(value).flatten())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("CUDA_OXIDE_PTX_DIR").map(PathBuf::from))
+        .ok_or("native artifact directory was not configured")?;
+    let handshake = discover_materializer_handshake_at(
+        ctx,
+        &output.join("cache/materializer-handshake/v1.json"),
+    )?;
+    cmd.env(
+        EXPECTED_PROVENANCE_ENV,
+        digest_hex(&handshake.provenance_sha256),
+    )
+    .env(
+        MATERIALIZER_HANDSHAKE_ENV,
+        serde_json::to_string(&handshake)
+            .map_err(|error| format!("could not encode native tool handshake: {error}"))?,
+    );
+    Ok(())
 }
 
 pub(super) fn materializer_discovery_command(ctx: &Context, executable: &Path) -> Command {
@@ -266,18 +304,31 @@ pub(super) fn materializer_handshake_cache_path(ctx: &Context) -> PathBuf {
     ctx.workspace_root.join(MATERIALIZER_HANDSHAKE_CACHE)
 }
 
+#[cfg(test)]
 pub(super) fn read_materializer_handshake_cache(ctx: &Context) -> Option<String> {
-    let json = fs::read_to_string(materializer_handshake_cache_path(ctx)).ok()?;
+    read_materializer_handshake_cache_at(&materializer_handshake_cache_path(ctx))
+}
+
+fn read_materializer_handshake_cache_at(path: &Path) -> Option<String> {
+    let json = fs::read_to_string(path).ok()?;
     let handshake: cuda_artifact_finalizer::MaterializerHandshakeV1 =
         serde_json::from_str(json.trim()).ok()?;
     handshake.has_consistent_provenance().then_some(json)
 }
 
+#[cfg(test)]
 pub(super) fn write_materializer_handshake_cache(
     ctx: &Context,
     handshake: &cuda_artifact_finalizer::MaterializerHandshakeV1,
 ) {
     let path = materializer_handshake_cache_path(ctx);
+    write_materializer_handshake_cache_at(&path, handshake);
+}
+
+fn write_materializer_handshake_cache_at(
+    path: &Path,
+    handshake: &cuda_artifact_finalizer::MaterializerHandshakeV1,
+) {
     let Some(parent) = path.parent() else {
         return;
     };
@@ -289,7 +340,7 @@ pub(super) fn write_materializer_handshake_cache(
     };
     let temporary = parent.join(format!("v1.{}.tmp", std::process::id()));
     if fs::write(&temporary, json).is_ok() {
-        let _ = fs::rename(&temporary, &path);
+        let _ = fs::rename(&temporary, path);
     }
 }
 

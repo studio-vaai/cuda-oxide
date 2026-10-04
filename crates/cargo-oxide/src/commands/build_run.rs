@@ -186,6 +186,10 @@ pub fn codegen_run(
     {
         cmd.env("CUDA_OXIDE_PTX_DIR", &example_dir);
     }
+    apply_native_tool_identity(&mut cmd, ctx).unwrap_or_else(|error| {
+        eprintln!("Error: {error}");
+        std::process::exit(2);
+    });
     let status = cmd.status().expect("Failed to run cargo");
     if !status.success() {
         eprintln!("\nFailed with exit code: {:?}", status.code());
@@ -426,6 +430,10 @@ pub fn codegen_build(
     {
         cmd.env("CUDA_OXIDE_PTX_DIR", &example_dir);
     }
+    apply_native_tool_identity(&mut cmd, ctx).unwrap_or_else(|error| {
+        eprintln!("Error: {error}");
+        std::process::exit(2);
+    });
     let status = cmd.status().expect("Failed to run cargo");
     if !status.success() {
         eprintln!("\nBuild failed with exit code: {:?}", status.code());

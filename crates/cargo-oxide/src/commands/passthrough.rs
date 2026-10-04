@@ -289,6 +289,10 @@ pub fn codegen_cargo_passthrough(
         eprintln!("Error: {error}");
         std::process::exit(2);
     });
+    apply_native_tool_identity(&mut cmd, ctx).unwrap_or_else(|error| {
+        eprintln!("Error: {error}");
+        std::process::exit(2);
+    });
 
     let displayed_args: Vec<_> = cmd
         .get_args()
