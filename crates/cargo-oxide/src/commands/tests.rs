@@ -1876,7 +1876,7 @@ fn build_passthrough_retains_release_profile_and_required_flags() {
     assert!(flags.contains(&"-Copt-level=0"));
     assert!(flags.contains(&"-Zcodegen-backend=llvm"));
     assert_eq!(
-        &flags[flags.len() - 7..],
+        &flags[flags.len() - 6..],
         [
             "-Zcodegen-backend=/tmp/librustc_codegen_cuda.so",
             "-Copt-level=3",
@@ -1884,10 +1884,24 @@ fn build_passthrough_retains_release_profile_and_required_flags() {
             "-Zmir-enable-passes=-JumpThreading",
             "-Zalways-encode-mir",
             "-Csymbol-mangling-version=v0",
-            "-Zinline-mir=yes",
         ]
     );
     assert!(!flags.contains(&"native=/nix/store/cuda-cudart/lib"));
+}
+
+#[test]
+fn package_pipeline_preserves_explicit_mir_inlining_policy() {
+    let rustflags = build_encoded_rustflags_with_existing(
+        Path::new("/tmp/librustc_codegen_cuda.so"),
+        CodegenProfilePolicy::ReleaseLike,
+        &["-Zinline-mir=no".to_string()],
+        &[],
+        None,
+        None,
+    );
+    let flags = decoded_rustflags(&rustflags);
+    assert!(flags.contains(&"-Zinline-mir=no"));
+    assert!(!flags.contains(&"-Zinline-mir=yes"));
 }
 
 #[test]
@@ -1909,7 +1923,7 @@ fn encoded_rustflags_preserve_configured_flag_boundaries_and_spaces() {
     );
     assert_eq!(&flags[2..4], ["-L", "native=/nix/store/cuda-cudart/lib"]);
     assert_eq!(
-        flags[flags.len() - 7],
+        flags[flags.len() - 6],
         "-Zcodegen-backend=/tmp/backend path/librustc_codegen_cuda.so"
     );
 }
