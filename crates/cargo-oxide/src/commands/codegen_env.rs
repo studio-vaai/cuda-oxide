@@ -116,14 +116,6 @@ pub(super) fn build_encoded_rustflags_with_existing(
     if profile == CodegenProfilePolicy::ReleaseLikeWithDebugInfo {
         flags.push("-Cdebuginfo=2".to_string());
     }
-    if matches!(
-        profile,
-        CodegenProfilePolicy::ReleaseLike | CodegenProfilePolicy::ReleaseLikeWithDebugInfo
-    ) {
-        // At MIR opt level 2 rustc disables inlining when Cargo enables host
-        // incrementality. Preserve the existing release device pipeline.
-        flags.push("-Zinline-mir=yes".to_string());
-    }
     flags.join(&ENCODED_RUSTFLAGS_SEPARATOR.to_string())
 }
 
@@ -237,9 +229,10 @@ fn apply_codegen_rustflags(
     device_cfgs: &[String],
 ) {
     let mut encoded = build_encoded_rustflags(ctx, profile, device_cfgs);
-    if profile == CodegenProfilePolicy::CargoSelected && native_modules_enabled() {
-        // `test -- --release` keeps Cargo's profile, but needs the same MIR
-        // inlining when host incrementality is enabled by the native workflow.
+    if native_modules_enabled() {
+        // Native builds enable host incrementality, which otherwise disables
+        // release MIR inlining. The package pipeline keeps Cargo's own policy,
+        // including package-scoped flags used by lowering regression examples.
         encoded.push(ENCODED_RUSTFLAGS_SEPARATOR);
         encoded.push_str("-Zinline-mir=yes");
     }
