@@ -7,6 +7,9 @@
 #[cfg(not(feature = "async"))]
 #[test]
 fn policy_constants_remain_typed_and_fail_closed() {
+    // Validate policy checks inside complete device bodies. This binary has
+    // one test, and sets the opt-out before trybuild spawns child processes.
+    unsafe { std::env::set_var(reserved_oxide_symbols::HOST_KERNEL_STUBS_ENV, "0") };
     let t = trybuild::TestCases::new();
     t.pass("tests/pass/policy_config_expressions.rs");
     t.compile_fail("tests/compile_fail/policy_config_unresolved.rs");

@@ -59,6 +59,40 @@ use alloc::string::String;
 /// Cargo invalidates those crates without invalidating unrelated host crates.
 pub const CODEGEN_FINGERPRINT_ENV: &str = "CUDA_OXIDE_INTERNAL_CODEGEN_FINGERPRINT";
 
+/// Ordinary Rust builds only need kernel entry identities for GPU launchers.
+/// Set this to `0` to retain their executable CPU bodies.
+pub const HOST_KERNEL_STUBS_ENV: &str = "CUDA_OXIDE_HOST_KERNEL_STUBS";
+
+/// Cross-crate marker allowing the device collector to reject host-only MIR.
+pub const HOST_KERNEL_STUB_DOC: &str = "cuda_oxide_internal_host_kernel_stub_v1";
+
+/// Default to lightweight entries in ordinary Rust builds. Device builds keep
+/// full bodies; explicitly forcing stubs there is rejected by the caller.
+pub fn host_kernel_stubs(setting: Option<&str>, device_build: bool) -> Result<bool, &'static str> {
+    match setting {
+        None => Ok(!device_build),
+        Some("0" | "false" | "off") => Ok(false),
+        Some("1" | "true" | "on") => Ok(true),
+        Some(_) => Err("CUDA_OXIDE_HOST_KERNEL_STUBS must be 0/false/off or 1/true/on"),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn host_entry_policy_defaults_and_opt_out() {
+    assert_eq!(host_kernel_stubs(None, false), Ok(true));
+    assert_eq!(host_kernel_stubs(None, true), Ok(false));
+    for setting in ["0", "false", "off"] {
+        assert_eq!(host_kernel_stubs(Some(setting), false), Ok(false));
+        assert_eq!(host_kernel_stubs(Some(setting), true), Ok(false));
+    }
+    for setting in ["1", "true", "on"] {
+        assert_eq!(host_kernel_stubs(Some(setting), false), Ok(true));
+        assert_eq!(host_kernel_stubs(Some(setting), true), Ok(true));
+    }
+    assert!(host_kernel_stubs(Some("typo"), false).is_err());
+}
+
 /// Internal cargo-oxide/backend opt-in for build-time cubin materialization.
 pub const MATERIALIZE_CUBIN_ENV: &str = "CUDA_OXIDE_MATERIALIZE_CUBIN";
 

@@ -650,3 +650,73 @@ fn hygiene_fixtures_still_collide_with_the_generated_scope_names() {
              forced down its rename path"
     );
 }
+
+#[test]
+fn host_stubs_preserve_entry_identity_and_ordinary_helper_semantics() {
+    use crate::kernel::codegen::stub_host_kernel_entries;
+    use quote::ToTokens;
+    let tokens = generic_kernel_no_instantiation_tokens(
+        parse_quote! {
+            #[launch_bounds(128)]
+            pub fn host_stub_probe<T: Copy, const N: usize>(values: *mut T) {
+                let index = ::cuda_device::thread::thread_idx_x();
+                unsafe { *values.add(index as usize) = *values; }
+            }
+        },
+        None,
+    );
+    assert_eq!(
+        stub_host_kernel_entries(tokens.clone(), false).to_string(),
+        tokens.to_string()
+    );
+    let original: syn::File = syn::parse2(tokens.clone()).unwrap();
+    let stubbed: syn::File = syn::parse2(stub_host_kernel_entries(tokens, true)).unwrap();
+    assert_eq!(original.items.len(), stubbed.items.len());
+    let mut entries = 0;
+    for (before, after) in original.items.iter().zip(&stubbed.items) {
+        match (before, after) {
+            (syn::Item::Fn(before), syn::Item::Fn(after))
+                if before.sig.ident.to_string().starts_with(KERNEL_PREFIX) =>
+            {
+                assert_eq!(
+                    before.sig.to_token_stream().to_string(),
+                    after.sig.to_token_stream().to_string()
+                );
+                assert_eq!(
+                    before.vis.to_token_stream().to_string(),
+                    after.vis.to_token_stream().to_string()
+                );
+                assert_eq!(
+                    after.attrs[..before.attrs.len()]
+                        .iter()
+                        .map(|a| a.to_token_stream().to_string())
+                        .collect::<Vec<_>>(),
+                    before
+                        .attrs
+                        .iter()
+                        .map(|a| a.to_token_stream().to_string())
+                        .collect::<Vec<_>>()
+                );
+                assert!(
+                    after
+                        .block
+                        .to_token_stream()
+                        .to_string()
+                        .contains("cannot execute on the CPU")
+                );
+                assert!(after.attrs.iter().any(|attribute| {
+                    attribute
+                        .to_token_stream()
+                        .to_string()
+                        .contains(reserved_oxide_symbols::HOST_KERNEL_STUB_DOC)
+                }));
+                entries += 1;
+            }
+            _ => assert_eq!(
+                before.to_token_stream().to_string(),
+                after.to_token_stream().to_string()
+            ),
+        }
+    }
+    assert_eq!(entries, 1);
+}

@@ -24,12 +24,64 @@ use quote::{format_ident, quote};
 use reserved_oxide_symbols::{INSTANTIATE_PREFIX, KERNEL_PREFIX};
 use syn::{FnArg, GenericParam, Ident, ItemFn, Pat, Type};
 
+/// CPU executables need collector entry identities, not executable GPU bodies.
+/// Keep ordinary generic implementations intact for legitimate Rust callers.
+/// Device compilations retain the original tokens, including their hygiene.
+pub(crate) fn stub_host_kernel_entries(tokens: TokenStream2, enabled: bool) -> TokenStream2 {
+    if !enabled {
+        return tokens;
+    }
+    let mut file = match syn::parse2::<syn::File>(tokens) {
+        Ok(file) => file,
+        Err(error) => return error.to_compile_error(),
+    };
+    for item in &mut file.items {
+        if let syn::Item::Fn(function) = item
+            && function.sig.ident.to_string().starts_with(KERNEL_PREFIX)
+        {
+            function
+                .attrs
+                .push(syn::parse_quote!(#[allow(unused_variables)]));
+            let marker = reserved_oxide_symbols::HOST_KERNEL_STUB_DOC;
+            function.attrs.push(syn::parse_quote!(#[doc = #marker]));
+            function.block =
+                syn::parse_quote!({ panic!("CUDA kernel entries cannot execute on the CPU") });
+        }
+    }
+    quote!(#file)
+}
+
+fn host_entry_tokens(tokens: TokenStream2) -> TokenStream2 {
+    if !proc_macro::is_available() {
+        return tokens;
+    }
+    let device_build = std::env::var_os(reserved_oxide_symbols::CODEGEN_FINGERPRINT_ENV).is_some();
+    let setting = std::env::var(reserved_oxide_symbols::HOST_KERNEL_STUBS_ENV).ok();
+    let enabled = match reserved_oxide_symbols::host_kernel_stubs(setting.as_deref(), device_build)
+    {
+        Ok(enabled) => enabled,
+        Err(message) => {
+            return syn::Error::new(proc_macro2::Span::call_site(), message).to_compile_error();
+        }
+    };
+    if enabled && device_build {
+        return syn::Error::new(proc_macro2::Span::call_site(),
+            "host kernel stubs require a standard Rust host build, separate from cargo oxide's device build")
+            .to_compile_error();
+    }
+    stub_host_kernel_entries(tokens, enabled)
+}
+
 /// Generate a generic kernel that will be instantiated from call sites (nvcc-style)
 pub(super) fn generate_generic_kernel_no_instantiation(
     input: ItemFn,
     explicit_scope: Option<Ident>,
 ) -> TokenStream {
-    generic_kernel_no_instantiation_tokens(input, explicit_scope).into()
+    host_entry_tokens(generic_kernel_no_instantiation_tokens(
+        input,
+        explicit_scope,
+    ))
+    .into()
 }
 
 /// Expansion body of [`generate_generic_kernel_no_instantiation`], split out
@@ -340,7 +392,7 @@ pub(super) fn generate_simple_kernel(
         #cuda_kernel_impl
     };
 
-    TokenStream::from(expanded)
+    TokenStream::from(host_entry_tokens(expanded))
 }
 
 /// Generate the GenericCudaKernel trait implementation for a generic kernel.
@@ -482,7 +534,12 @@ pub(super) fn generate_generic_kernel(
     instantiate_types: Vec<Type>,
     explicit_scope: Option<Ident>,
 ) -> TokenStream {
-    generic_kernel_instantiation_tokens(input, instantiate_types, explicit_scope).into()
+    host_entry_tokens(generic_kernel_instantiation_tokens(
+        input,
+        instantiate_types,
+        explicit_scope,
+    ))
+    .into()
 }
 
 /// Expansion body of [`generate_generic_kernel`] (legacy `#[kernel(Type, ...)]`
