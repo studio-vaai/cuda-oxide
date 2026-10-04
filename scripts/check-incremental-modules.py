@@ -144,6 +144,29 @@ def main():
                 events.append(event)
         assert events and all(event['fresh'] for event in events)
         run()
+        # A wrapper/compiler fence can change while the exact LTOIR stays
+        # unchanged. Retain the native image produced by the fresh kernel edit
+        # instead of asking nvJitLink to optimize that same program again.
+        source.write_text(original.replace('kernel_bias = 10u32', f'kernel_bias = {10 + delta}u32', 1)
+            .replace('i as u32 * 4 + 12', f'i as u32 * 4 + {12 + delta}', 1))
+        old_fence = env.get('CUDA_OXIDE_EXACT_CACHE_TEST_FENCE')
+        try:
+            env['CUDA_OXIDE_EXACT_CACHE_TEST_FENCE'] = 'first'
+            exact_seed = build('exact_input_fence_seed')
+            run()
+            env['CUDA_OXIDE_EXACT_CACHE_TEST_FENCE'] = 'second'
+            exact_reuse = build('exact_input_fence_reuse')
+            assert {u['module']: u['ltoir_cache_key'] for u in exact_seed['compilation_units']} == {
+                u['module']: u['ltoir_cache_key'] for u in exact_reuse['compilation_units']}
+            assert all(m['link_hit'] for m in exact_reuse['modules'].values())
+            assert {n: m['sha256'] for n, m in exact_seed['modules'].items()} == {
+                n: m['sha256'] for n, m in exact_reuse['modules'].items()}
+            run()
+        finally:
+            if old_fence is None:
+                env.pop('CUDA_OXIDE_EXACT_CACHE_TEST_FENCE', None)
+            else:
+                env['CUDA_OXIDE_EXACT_CACHE_TEST_FENCE'] = old_fence
         print('PASS: isolated kernel cache, generic aggregate device ABI, shared static identity, promoted constants, helper invalidation, unreachable pruning')
     finally:
         cargo_manifest.write_bytes(original_cargo_manifest)
