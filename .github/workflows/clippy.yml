@@ -61,6 +61,8 @@ jobs:
 
       - name: Run clippy (rustc-codegen-cuda examples)
         env:
+          # Check complete device bodies, including helper calls omitted by CPU stubs.
+          CUDA_OXIDE_HOST_KERNEL_STUBS: "0"
           CUDA_TOOLKIT_PATH: ${{ steps.cuda-toolkit.outputs.CUDA_PATH }}
           CARGO_TARGET_DIR: ${{ runner.temp }}/clippy-shared-target
         run: |
