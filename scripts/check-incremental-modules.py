@@ -33,11 +33,11 @@ def main():
     command = [args.cargo_oxide, 'build', '--emit-nvvm-ir', '--', '--release', '--manifest-path', str(root / 'Cargo.toml')]
     report = []
 
-    def build(label):
+    def build(label, extra_args=()):
         start = time.perf_counter()
         log = output / (label + '.log')
         with log.open('w') as stream:
-            code = subprocess.call(command, env=env, cwd=root, stdout=stream, stderr=subprocess.STDOUT)
+            code = subprocess.call(command + list(extra_args), env=env, cwd=root, stdout=stream, stderr=subprocess.STDOUT)
         entry = {'label': label, 'seconds': time.perf_counter() - start, 'exit_code': code}
         report.append(entry)
         print(json.dumps(entry), flush=True)
@@ -59,6 +59,8 @@ def main():
 
     source = root / 'src/lib.rs'
     original = source.read_text()
+    cargo_manifest = root / "Cargo.toml"
+    original_cargo_manifest = cargo_manifest.read_bytes()
     # Fresh semantic values distinguish a rebuild from an earlier valid cache hit.
     delta = 100 + time.time_ns() % 1000000
     try:
@@ -124,8 +126,27 @@ def main():
         assert image.read_bytes() == expected
         assert all(m['link_hit'] for m in repaired['modules'].values())
         run()
+        # Cargo may select an older Rust library without invoking the backend.
+        # Its GPU manifest must follow that exact cached feature configuration.
+        cargo_manifest.write_bytes(original_cargo_manifest + b'\n[features]\nmanifest_switch = []\n')
+        selected = build('manifest_default_seed')
+        alternate = build('manifest_feature_seed', ['--features', 'manifest_switch'])
+        assert alternate != selected
+        restored = build('manifest_default_fresh', ['--message-format=json-render-diagnostics'])
+        assert restored == selected
+        events = []
+        for line in (output / 'manifest_default_fresh.log').read_text().splitlines():
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(event, dict) and event.get('reason') == 'compiler-artifact' and event['target']['name'] == 'incremental_modules':
+                events.append(event)
+        assert events and all(event['fresh'] for event in events)
+        run()
         print('PASS: isolated kernel cache, generic aggregate device ABI, shared static identity, promoted constants, helper invalidation, unreachable pruning')
     finally:
+        cargo_manifest.write_bytes(original_cargo_manifest)
         source.write_text(original)
         build('final_restore')
         (output / 'measurements.json').write_text(json.dumps(report, indent=2))

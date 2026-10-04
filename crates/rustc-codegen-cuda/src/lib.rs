@@ -373,6 +373,7 @@ struct CudaOngoingCodegen {
     reused_work_products: WorkProductMap,
     host_cache: Option<host_cache::Request>,
     artifact_objects: Vec<PathBuf>,
+    module_manifest: Option<Vec<u8>>,
 }
 
 static ARTIFACT_OBJECT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1012,6 +1013,28 @@ impl CodegenBackend for CudaCodegenBackend {
                 None
             };
 
+            // Preserve the manifest belonging to this exact Cargo compilation
+            // unit. The profile-wide alias can be overwritten by another
+            // feature/target build while Cargo still caches this host library.
+            let module_manifest = if has_device_code && native && kernel_count > 0 {
+                let output = self.config.ptx_output_dir.clone().unwrap_or_else(|| {
+                    tcx.sess
+                        .io
+                        .output_dir
+                        .clone()
+                        .unwrap_or_else(|| "target".into())
+                        .join("oxide")
+                });
+                Some(
+                    std::fs::read(output.join(format!("{crate_name}.modules.json")))
+                        .unwrap_or_else(|error| {
+                            tcx.dcx()
+                                .fatal(format!("cannot snapshot module manifest: {error}"))
+                        }),
+                )
+            } else {
+                None
+            };
             drop(generate_host);
             let (host_cache, reused_host, host_result, reused_work_products) =
                 host_state.expect("host codegen must run before device publication");
@@ -1023,6 +1046,7 @@ impl CodegenBackend for CudaCodegenBackend {
                 reused_work_products,
                 host_cache,
                 artifact_objects,
+                module_manifest,
             })
         })
     }
@@ -1069,6 +1093,25 @@ impl CodegenBackend for CudaCodegenBackend {
                 global_asm_object: None,
                 links_from_incr_cache: Vec::new(),
             });
+        }
+        if crate_info
+            .crate_types
+            .contains(&rustc_structures::CrateType::Rlib)
+        {
+            let snapshot = serde_json::json!({
+                "version": 1,
+                "crate": crate_info.local_crate_name.as_str(),
+                "manifest": ongoing.module_manifest.map(|bytes| String::from_utf8(bytes).expect("JSON manifest is UTF-8")),
+            });
+            let path = outputs
+                .path(rustc_session::config::OutputType::Metadata)
+                .as_path()
+                .with_extension("cuda-modules");
+            let bytes = serde_json::to_vec(&snapshot).expect("cannot encode module snapshot");
+            if let Err(error) = incremental::write_cache(&path, &bytes) {
+                sess.dcx()
+                    .fatal(format!("cannot save module snapshot: {error}"));
+            }
         }
         (compiled_modules, work_products)
     }

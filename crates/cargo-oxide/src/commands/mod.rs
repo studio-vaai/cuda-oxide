@@ -22,6 +22,7 @@ mod host_cargo;
 mod interop;
 mod ltoir;
 mod materialize;
+mod module_snapshots;
 mod passthrough;
 mod pipeline_debug;
 mod scaffold;
