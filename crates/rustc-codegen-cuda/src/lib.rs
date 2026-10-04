@@ -477,7 +477,8 @@ impl CodegenBackend for CudaCodegenBackend {
             sess.dcx()
                 .fatal("host kernel stubs cannot be used with the CUDA codegen backend");
         }
-        if host_cache::kernels_only(sess.opts.crate_name.as_deref().unwrap_or(""))
+        if (host_cache::kernels_only(sess.opts.crate_name.as_deref().unwrap_or(""))
+            || device_artifacts_only(sess.opts.crate_name.as_deref().unwrap_or("")))
             && (sess.opts.crate_types != [rustc_structures::CrateType::StaticLib]
                 || sess.opts.output_types.should_link()
                 || sess
@@ -485,7 +486,7 @@ impl CodegenBackend for CudaCodegenBackend {
                     .output_types
                     .contains_key(&rustc_session::config::OutputType::Metadata))
         {
-            sess.dcx().fatal("kernel-only compilation must emit only objects as staticlib; use cargo oxide --kernels-only");
+            sess.dcx().fatal("device-file compilation must emit only objects as staticlib; use cargo oxide --kernels-only or --device-only");
         }
         // Note: Don't log here - init() is called for ALL crates including dependencies.
         // We log in codegen_crate() only when there are kernels to compile.
@@ -550,11 +551,13 @@ impl CodegenBackend for CudaCodegenBackend {
             // Step 1: Analyze for device code
             let crate_name = tcx.crate_name(rustc_hir::def_id::LOCAL_CRATE);
             let kernels_only = host_cache::kernels_only(crate_name.as_str());
+            let device_only = device_artifacts_only(crate_name.as_str());
+            let objects_only = kernels_only || device_only;
             let native = std::env::var("CUDA_OXIDE_INCREMENTAL_MODULES").map_or(true, |value| {
                 !matches!(value.as_str(), "0" | "false" | "off")
             });
             let early_proof_started = std::time::Instant::now();
-            let mut early_request = if !kernels_only
+            let mut early_request = if !objects_only
                 && native
                 && self.config.allows_device_codegen_for(crate_name.as_str())
                 && std::env::var_os("CUDA_OXIDE_REUSE_HOST_FOR_KERNEL_EDITS").is_some()
@@ -577,9 +580,9 @@ impl CodegenBackend for CudaCodegenBackend {
             let mut early_host = early_request
                 .as_ref()
                 .and_then(host_cache::read_for_contract);
-            let mut shader_collection = (kernels_only || early_request.is_some())
+            let mut shader_collection = (objects_only || early_request.is_some())
                 .then(|| collector::collect_local_kernel_functions(tcx));
-            if !kernels_only
+            if !objects_only
                 && shader_collection.as_ref().is_some_and(|collection| {
                     collection.requires_ptx_bundle_merge
                         || !collection
@@ -599,8 +602,8 @@ impl CodegenBackend for CudaCodegenBackend {
                 );
             }
             let deferred_host_mono =
-                !kernels_only && early_host.is_none() && shader_collection.is_some();
-            let mono_partitions = (!kernels_only && early_host.is_none() && !deferred_host_mono)
+                !objects_only && early_host.is_none() && shader_collection.is_some();
+            let mono_partitions = (!objects_only && early_host.is_none() && !deferred_host_mono)
                 .then(|| tcx.collect_and_partition_mono_items(()));
             let cgus = mono_partitions
                 .as_ref()
@@ -623,8 +626,8 @@ impl CodegenBackend for CudaCodegenBackend {
             };
             let unsupported_protocol_root =
                 collector::unsupported_codegen_protocol_root_in_cgus(tcx, cgus);
-            if kernels_only && kernel_count == 0 {
-                tcx.dcx().fatal("kernel-only update requires local non-generic kernel entries; run a full build");
+            if objects_only && kernel_count == 0 {
+                tcx.dcx().fatal("device-file compilation requires local non-generic kernel entries; run a full build");
             }
             if reject_unsupported_codegen_protocol(
                 std::env::var_os(reserved_oxide_symbols::CODEGEN_FINGERPRINT_ENV).is_some(),
@@ -637,6 +640,11 @@ impl CodegenBackend for CudaCodegenBackend {
             }
             let owner_selected = self.config.allows_device_codegen_for(crate_name.as_str());
             let contains_device_code = kernel_count > 0 || device_fn_count > 0;
+            if device_only && (!native || !owner_selected) {
+                tcx.dcx().fatal(
+                    "device-only compilation requires native modules and a selected device owner",
+                );
+            }
 
             // Kernel MIR is produced by this session for `--target`, so its
             // pointer width and endianness flow into device code unchanged.
@@ -709,6 +717,21 @@ impl CodegenBackend for CudaCodegenBackend {
             // while those workers finalize device images.
             let mut host_state = None;
             let mut generate_host = || {
+                if device_only {
+                    eprintln!(
+                        "[device-modules] device-only files: CPU codegen omitted; rebuild host separately"
+                    );
+                    host_state = Some((
+                        None,
+                        Some(CompiledModules {
+                            modules: Vec::new(),
+                            allocator_module: None,
+                        }),
+                        None,
+                        WorkProductMap::default(),
+                    ));
+                    return;
+                }
                 // Building CPU mono items is independent of the kernel-root
                 // collector and can wait until native workers are running.
                 let deferred_partitions =
@@ -1085,7 +1108,9 @@ impl CodegenBackend for CudaCodegenBackend {
                 ongoing.reused_work_products,
             )
         };
-        if !host_cache::kernels_only(crate_info.local_crate_name.as_str()) {
+        if !host_cache::kernels_only(crate_info.local_crate_name.as_str())
+            && !device_artifacts_only(crate_info.local_crate_name.as_str())
+        {
             *self.pending_contract.lock().unwrap() = ongoing.host_cache;
         }
         for (index, object) in ongoing.artifact_objects.into_iter().enumerate() {
@@ -1131,7 +1156,9 @@ impl CodegenBackend for CudaCodegenBackend {
         metadata: EncodedMetadata,
         outputs: &OutputFilenames,
     ) {
-        if host_cache::kernels_only(crate_info.local_crate_name.as_str()) {
+        if host_cache::kernels_only(crate_info.local_crate_name.as_str())
+            || device_artifacts_only(crate_info.local_crate_name.as_str())
+        {
             let object = compiled_modules
                 .modules
                 .first()
@@ -1155,6 +1182,10 @@ impl CodegenBackend for CudaCodegenBackend {
             eprintln!("[device-modules] kernel-only contract unavailable: {error}");
         }
     }
+}
+
+fn device_artifacts_only(crate_name: &str) -> bool {
+    std::env::var("CUDA_OXIDE_DEVICE_ONLY").is_ok_and(|selected| selected == crate_name)
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -28,6 +28,15 @@ package compilation, including programs with ordinary shared device globals or
 cross-crate generic kernel bundle merging. `inspect`, `pipeline`, `emit-ltoir`
 and debugging commands retain their explicit output formats.
 
+When host code is built separately, use
+`cargo oxide --device-only my_crate build -- --release --lib` to compile only
+native device files. It preserves ordinary host artifacts and keeps its Cargo
+cache under `target/oxide-device-only/`; generated modules still use the normal
+artifact directory. This mode emits no linkable host library. Rebuild the host
+from the same source, including after helper, signature or layout changes.
+`--kernels-only` instead updates an existing host binary only after proving its
+host contract is unchanged.
+
 ## Usage
 
 ```bash
@@ -61,6 +70,7 @@ cargo oxide update --force          # inside the workspace, run setup via update
 | Flag                         | Applies to                       | Description                                     |
 |------------------------------|----------------------------------|-------------------------------------------------|
 | `--no-incremental-modules` | build, run, test, sanitize | Opt out of default cached native module compilation |
+| `--device-only <CRATE>` | build with `--release --lib` | Emit native device files when host code is built separately |
 | `--materialize-cubin`        | run, sanitize, build, test, pipeline, debug | Finalize and embed target-specific native GPU code during the host build |
 | `--emit-nvvm-ir`             | run, build, pipeline             | Generate NVVM IR for libNVVM                    |
 | `--arch <sm_XX>`             | run, sanitize, build, test, pipeline, emit-ltoir, inspect, debug | Target architecture override |
