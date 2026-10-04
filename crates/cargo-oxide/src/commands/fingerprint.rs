@@ -77,6 +77,7 @@ pub(super) fn passthrough_codegen_fingerprint_with_env(
     // wrapper's actual compiler arguments remain covered by backend cache keys.
     for key in [
         "CUDA_OXIDE_KERNELS_ONLY",
+        "CUDA_OXIDE_DEVICE_ONLY",
         "CUDA_OXIDE_LINK_JOBS",
         "CUDA_OXIDE_INTERNAL_RUSTC_WRAPPER",
         "CUDA_OXIDE_UPSTREAM_RUSTC_WRAPPER",

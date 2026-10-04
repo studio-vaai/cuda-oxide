@@ -2698,6 +2698,7 @@ fn passthrough_fingerprint_tracks_output_affecting_settings() {
 
     let routing = BTreeMap::from([
         ("CUDA_OXIDE_KERNELS_ONLY".into(), b"gpu_crate".to_vec()),
+        ("CUDA_OXIDE_DEVICE_ONLY".into(), b"gpu_crate".to_vec()),
         ("CUDA_OXIDE_LINK_JOBS".into(), b"8".to_vec()),
         ("CUDA_OXIDE_INTERNAL_RUSTC_WRAPPER".into(), b"1".to_vec()),
         (

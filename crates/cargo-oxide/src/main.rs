@@ -60,12 +60,16 @@ struct Cli {
     #[arg(long, global = true, conflicts_with = "materialize_cubin")]
     incremental_modules: bool,
     /// Use the legacy package compiler instead of cached native modules.
-    #[arg(long, global = true, conflicts_with_all = ["incremental_modules", "kernels_only"])]
+    #[arg(long, global = true, conflicts_with_all = ["incremental_modules", "kernels_only", "device_only"])]
     no_incremental_modules: bool,
     /// Update native kernels while retaining the previous host library/binary.
     /// Requires --lib, file loading, debug=0, and an unchanged host MIR/ABI.
     #[arg(long, global = true, conflicts_with = "materialize_cubin")]
     kernels_only: Option<String>,
+    /// Emit native device files only, without a linkable host library.
+    /// Build host code separately; accepts `build -- --release --lib` only.
+    #[arg(long, global = true, conflicts_with_all = ["materialize_cubin", "kernels_only"])]
+    device_only: Option<String>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -557,7 +561,7 @@ fn native_modules_requested(cli: &Cli, inherited: Option<&str>) -> bool {
     );
     if cli.no_incremental_modules || cli.materialize_cubin {
         false
-    } else if cli.incremental_modules || cli.kernels_only.is_some() {
+    } else if cli.incremental_modules || cli.kernels_only.is_some() || cli.device_only.is_some() {
         true
     } else {
         native_command && inherited.is_none_or(|value| !matches!(value, "0" | "false" | "off"))
@@ -663,6 +667,30 @@ fn fuzz_schedule_disposition(
     }
 }
 
+fn validate_object_only_cli(cli: &Cli) -> Result<(), String> {
+    let Some(name) = cli.kernels_only.as_ref().or(cli.device_only.as_ref()) else {
+        return Ok(());
+    };
+    let option = if cli.device_only.is_some() {
+        "--device-only"
+    } else {
+        "--kernels-only"
+    };
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        || name.as_bytes()[0].is_ascii_digit()
+    {
+        return Err(format!("{option} expects a Cargo crate name"));
+    }
+    if !matches!(&cli.command, Commands::Build { cargo_args, .. } if cargo_args.iter().any(|arg| arg == "--lib") && cargo_args.iter().any(|arg| arg == "--release"))
+    {
+        return Err(format!("{option} requires `build -- --release --lib`"));
+    }
+    Ok(())
+}
+
 fn main() {
     // Handle both invocation methods:
     // 1. Cargo subcommand: `cargo oxide run vecadd` → argv = ["cargo-oxide", "oxide", "run", "vecadd"]
@@ -676,7 +704,9 @@ fn main() {
                 && std::path::Path::new(arg).is_file())
     }) {
         let mut compiler_args = args[2..].to_vec();
-        let selected = std::env::var("CUDA_OXIDE_KERNELS_ONLY").ok();
+        let selected = std::env::var("CUDA_OXIDE_KERNELS_ONLY")
+            .or_else(|_| std::env::var("CUDA_OXIDE_DEVICE_ONLY"))
+            .ok();
         let crate_name = compiler_args
             .windows(2)
             .find(|pair| pair[0] == "--crate-name")
@@ -759,26 +789,27 @@ fn main() {
             std::env::set_var("CUDA_OXIDE_EMIT_NVVM_IR", "1");
         }
     }
-    if let Some(name) = &cli.kernels_only {
-        if name.is_empty()
-            || !name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-            || name.as_bytes()[0].is_ascii_digit()
-        {
+    if let Some(name) = cli.kernels_only.as_ref().or(cli.device_only.as_ref()) {
+        let device_only = cli.device_only.is_some();
+        if let Err(error) = validate_object_only_cli(&cli) {
             Cli::command()
-                .error(
-                    ErrorKind::InvalidValue,
-                    "--kernels-only expects a Cargo crate name",
-                )
+                .error(ErrorKind::ArgumentConflict, error)
                 .exit();
         }
-        if !matches!(&cli.command, Commands::Build { cargo_args, .. } if cargo_args.iter().any(|arg| arg == "--lib") && cargo_args.iter().any(|arg| arg == "--release"))
-        {
-            Cli::command().error(ErrorKind::ArgumentConflict,"--kernels-only requires `build -- --release --lib` after a full native library build").exit();
-        }
         unsafe {
-            std::env::set_var("CUDA_OXIDE_KERNELS_ONLY", name.replace('-', "_"));
+            std::env::remove_var(if device_only {
+                "CUDA_OXIDE_KERNELS_ONLY"
+            } else {
+                "CUDA_OXIDE_DEVICE_ONLY"
+            });
+            std::env::set_var(
+                if device_only {
+                    "CUDA_OXIDE_DEVICE_ONLY"
+                } else {
+                    "CUDA_OXIDE_KERNELS_ONLY"
+                },
+                name.replace('-', "_"),
+            );
             std::env::set_var("CUDA_OXIDE_MODULE_FILES_ONLY", "1");
             std::env::set_var("CUDA_OXIDE_REUSE_HOST_FOR_KERNEL_EDITS", "1");
             std::env::set_var("CUDA_OXIDE_INTERNAL_RUSTC_WRAPPER", "1");
@@ -1861,6 +1892,63 @@ mod native_default_tests {
             .is_err()
         );
     }
+    #[test]
+    fn device_only_requires_a_release_library_build_and_conflicts_with_host_reuse() {
+        let build = Cli::try_parse_from([
+            "cargo-oxide",
+            "--device-only",
+            "toy",
+            "build",
+            "--",
+            "--release",
+            "--lib",
+        ])
+        .unwrap();
+        assert!(validate_object_only_cli(&build).is_ok());
+        assert!(native_modules_requested(&build, Some("0")));
+        for argv in [
+            vec!["cargo-oxide", "--device-only", "toy", "run"],
+            vec!["cargo-oxide", "--device-only", "toy", "test"],
+            vec![
+                "cargo-oxide",
+                "--device-only",
+                "toy",
+                "build",
+                "--",
+                "--release",
+            ],
+            vec![
+                "cargo-oxide",
+                "--device-only",
+                "1bad",
+                "build",
+                "--",
+                "--release",
+                "--lib",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(argv).unwrap();
+            assert!(validate_object_only_cli(&cli).is_err());
+        }
+        for extra in ["--no-incremental-modules", "--materialize-cubin"] {
+            assert!(
+                Cli::try_parse_from(["cargo-oxide", "--device-only", "toy", extra, "build"])
+                    .is_err()
+            );
+        }
+        assert!(
+            Cli::try_parse_from([
+                "cargo-oxide",
+                "--device-only",
+                "toy",
+                "--kernels-only",
+                "toy",
+                "build"
+            ])
+            .is_err()
+        );
+    }
+
     #[test]
     fn inspection_and_materialization_retain_their_requested_formats() {
         let inspect = Cli::try_parse_from(["cargo-oxide", "inspect", "toy"]).unwrap();
