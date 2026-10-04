@@ -124,11 +124,10 @@ fn link_cached_unit(
             .linker()
             .artifact_digest(&digested_inputs, &options, FinalizerOutput::Cubin)
             .ok_or("nvJitLink provenance changed")?;
-        if let Some(bytes) = read_cache(
-            &cache
-                .join("cubin-v3-digested-inputs")
-                .join(digest(&old_key)),
-        ) {
+        let exact_inputs_cache = cache
+            .join("cubin-v3-digested-inputs")
+            .join(digest(&old_key));
+        if let Some(bytes) = read_cache(&exact_inputs_cache) {
             migrated = true;
             return Ok(bytes);
         }
@@ -154,7 +153,14 @@ fn link_cached_unit(
                 )
             })
             .collect();
-        pack(json!(usage), &report.image)
+        let stored = pack(json!(usage), &report.image)?;
+        // Preserve the exact ordered LTOIR/tool/options identity as well as
+        // the reachable Rust closure. A backend or host-only compiler change
+        // can invalidate the closure's fence while producing identical LTOIR.
+        // Only a fresh native compile populates this key: a semantic cache hit
+        // may have been produced from different, unreachable LTOIR contents.
+        write_cache(&exact_inputs_cache, &stored)?;
+        Ok(stored)
     })?;
     let hit = hit || migrated;
     let cache_seconds = cache_started.elapsed().as_secs_f64();
