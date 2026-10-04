@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Check that GPU-only kernel edits reuse host objects and CPU edits cannot."""
-import argparse,json,os,subprocess,time
+import argparse,json,os,subprocess,time,re
 from pathlib import Path
 
 parser=argparse.ArgumentParser(description=__doc__)
@@ -23,7 +23,7 @@ def build(label):
     start=time.perf_counter();log=args.output/(label+'.log')
     with log.open('w') as stream:
         code=subprocess.call([args.cargo_oxide,'build','--emit-nvvm-ir','--','--release','--manifest-path',str(root/'Cargo.toml')],cwd=root,env=env,stdout=stream,stderr=subprocess.STDOUT)
-    record=dict(label=label,seconds=time.perf_counter()-start,exit_code=code,host_reused='host objects reused:' in log.read_text())
+    retained=re.search(r'retained (\d+) green host work products',log.read_text());record=dict(label=label,seconds=time.perf_counter()-start,exit_code=code,host_reused='host objects reused:' in log.read_text(),retained_work_products=int(retained.group(1)) if retained else 0)
     records.append(record);print(json.dumps(record),flush=True)
     if code:raise RuntimeError(log.read_text()[-6000:])
     return record
@@ -37,9 +37,9 @@ try:
     build('seed');run()
     delta=100+time.time_ns()%1000000
     source.write_text(original.replace('kernel_bias = 10u32',f'kernel_bias = {10+delta}u32',1))
-    record=build('kernel_only_edit');assert record['host_reused'];run(f'--first-delta={delta}')
+    record=build('kernel_only_edit');assert record['host_reused'];assert record['retained_work_products']>0,record;run(f'--first-delta={delta}')
     source.write_text(source.read_text().replace(f'kernel_bias = {10+delta}u32',f'kernel_bias = {11+delta}u32',1))
-    record=build('successive_kernel_edit');assert record['host_reused'];run(f'--first-delta={delta+1}')
+    record=build('successive_kernel_edit');assert record['host_reused'];assert record['retained_work_products']>0,record;run(f'--first-delta={delta+1}')
     source.write_text(source.read_text().replace(f'kernel_bias = {11+delta}u32',f'kernel_bias = {10+delta}u32',1))
     source.write_text(source.read_text().replace('fn host_value() -> u32 {\n    7\n}', f'fn host_value() -> u32 {{\n    {8+delta}\n}}'))
     assert source.read_text()!=original.replace('kernel_bias = 10u32',f'kernel_bias = {10+delta}u32',1)

@@ -89,6 +89,7 @@ fn link_cached_unit(
     cache: &Path,
     units: &BTreeMap<String, CompiledUnit>,
     deps: &BTreeSet<String>,
+    semantic_key: &str,
     finalizer: &Finalizer,
     options: &FinalizationOptions,
 ) -> Result<LinkedUnit, Error> {
@@ -97,22 +98,40 @@ fn link_cached_unit(
         .map(|dep| NamedInput::new(dep, &units[dep].0))
         .collect();
     let link_started = Instant::now();
-    // Hash each immutable LTOIR once. Repeated links reference its digest,
-    // retaining input order, names, tool provenance and all linker options.
-    let digested_inputs: Vec<_> = deps
-        .iter()
-        .map(|dep| NamedInput::new(dep, &units[dep].2))
-        .collect();
+    // Keep the original ordered LTOIR inputs for compilation. Cache reuse is
+    // governed by the complete reachable Rust function closure, rather than
+    // unrelated definitions sharing a helper's LTOIR translation unit.
+    let identity = serde_json::to_vec(&(deps, semantic_key))?;
     let link_key = finalizer
         .linker()
-        .artifact_digest(&digested_inputs, &options, FinalizerOutput::Cubin)
+        .artifact_digest(
+            &[NamedInput::new("reachable-kernel-v1", &identity)],
+            &options,
+            FinalizerOutput::Cubin,
+        )
         .ok_or("nvJitLink provenance is unavailable; cannot safely cache")?;
     let link_key = digest(&link_key);
     let digest_seconds = link_started.elapsed().as_secs_f64();
     let cache_started = Instant::now();
     let mut migrated = false;
-    let (stored_cubin, hit) = cached(&cache, "cubin-v3-digested-inputs", &link_key, || {
-        // Adopt already verified v2 images without paying for a cold link.
+    let (stored_cubin, hit) = cached(&cache, "cubin-v4-reachable-functions", &link_key, || {
+        // Migrate only an image whose exact current LTOIR inputs are verified.
+        let digested_inputs: Vec<_> = deps
+            .iter()
+            .map(|dep| NamedInput::new(dep, &units[dep].2))
+            .collect();
+        let old_key = finalizer
+            .linker()
+            .artifact_digest(&digested_inputs, &options, FinalizerOutput::Cubin)
+            .ok_or("nvJitLink provenance changed")?;
+        if let Some(bytes) = read_cache(
+            &cache
+                .join("cubin-v3-digested-inputs")
+                .join(digest(&old_key)),
+        ) {
+            migrated = true;
+            return Ok(bytes);
+        }
         let old_key = finalizer
             .linker()
             .artifact_digest(&inputs, &options, FinalizerOutput::Cubin)
@@ -153,10 +172,12 @@ fn link_cached_unit(
 /// worker uses this rustc process's existing token while the main thread waits.
 fn link_native_modules(
     jobs: &BTreeMap<String, BTreeSet<String>>,
+    closure_keys: &BTreeMap<String, String>,
     units: &BTreeMap<String, CompiledUnit>,
     cache: &Path,
     finalizer: &Finalizer,
     options: &FinalizationOptions,
+    generate_host: impl FnOnce(),
 ) -> Result<BTreeMap<String, LinkedUnit>, Error> {
     let limit = match std::env::var("CUDA_OXIDE_LINK_JOBS") {
         Ok(value) => value.parse::<std::num::NonZeroUsize>()?.get(),
@@ -187,8 +208,15 @@ fn link_native_modules(
                     let Some(&(name, deps)) = jobs.get(index) else {
                         break;
                     };
-                    let result = link_cached_unit(cache, units, deps, finalizer, options)
-                        .map_err(|error| format!("{name}: {error}"));
+                    let result = link_cached_unit(
+                        cache,
+                        units,
+                        deps,
+                        &closure_keys[name],
+                        finalizer,
+                        options,
+                    )
+                    .map_err(|error| format!("{name}: {error}"));
                     if let Ok(linked) = &result {
                         eprintln!(
                             "[device-modules] {name}: cubin {} ({:.3}s)",
@@ -202,6 +230,9 @@ fn link_native_modules(
             });
         }
         drop(send);
+        // Complete host proof and start ordinary LLVM codegen while native
+        // workers run. The callback never executes on a linker thread.
+        generate_host();
         // Drain every worker even after an error. No manifest is published until
         // all jobs succeed; completed immutable cache entries remain reusable.
         receive.into_iter().collect::<Vec<_>>()
@@ -463,6 +494,7 @@ pub(crate) fn compile<'tcx>(
     tcx: TyCtxt<'tcx>,
     collection: &CollectionResult<'tcx>,
     config: &DeviceCodegenConfig,
+    generate_host: impl FnOnce(),
 ) -> Result<PathBuf, Error> {
     let started = Instant::now();
     if !collection
@@ -470,6 +502,7 @@ pub(crate) fn compile<'tcx>(
         .iter()
         .any(|function| function.is_kernel)
     {
+        generate_host();
         return crate::write_filtered_artifact_anchor_object(
             &config.output_dir,
             &config.output_name,
@@ -542,6 +575,7 @@ pub(crate) fn compile<'tcx>(
     let mut units: BTreeMap<String, CompiledUnit> = BTreeMap::new();
     let mut timings = Vec::new();
     let mut bounds_by_kernel = BTreeMap::new();
+    let mut closure_keys = BTreeMap::new();
     for (name, indices) in &groups {
         let unit_started = Instant::now();
         let mut roots: Vec<_> = indices
@@ -579,6 +613,19 @@ pub(crate) fn compile<'tcx>(
             &metadata,
             name,
         );
+        if roots.iter().any(|root| root.is_kernel) {
+            closure_keys.insert(
+                name.clone(),
+                input_fingerprint(
+                    tcx,
+                    &functions,
+                    &HashSet::new(),
+                    &reachable.device_externs,
+                    &metadata,
+                    name,
+                ),
+            );
+        }
         let ir_started = Instant::now();
         let (stored_ir, ir_hit) = cached(&cache, "nvvm-v2", &key, || {
             let local = DeviceCodegenConfig {
@@ -666,7 +713,15 @@ pub(crate) fn compile<'tcx>(
         }
         link_jobs.insert(name.clone(), deps);
     }
-    let linked_modules = link_native_modules(&link_jobs, &units, &cache, &finalizer, &options)?;
+    let linked_modules = link_native_modules(
+        &link_jobs,
+        &closure_keys,
+        &units,
+        &cache,
+        &finalizer,
+        &options,
+        generate_host,
+    )?;
     let mut blob = Vec::new();
     let mut modules = BTreeMap::new();
     let package = std::env::var("CARGO_PKG_NAME").unwrap_or_else(|_| config.output_name.clone());
@@ -808,7 +863,10 @@ mod tests {
     use super::*;
     #[test]
     fn concurrent_cache_writers_publish_complete_entries() {
-        let dir = std::env::temp_dir().join(format!("oxide-concurrent-cache-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "oxide-concurrent-cache-test-{}",
+            std::process::id()
+        ));
         let path = dir.join("shared-entry");
         let payload = vec![42u8; 65536];
         std::thread::scope(|scope| {
