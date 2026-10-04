@@ -653,24 +653,55 @@ fn hygiene_fixtures_still_collide_with_the_generated_scope_names() {
 
 #[test]
 fn host_stubs_preserve_entry_identity_and_ordinary_helper_semantics() {
-    use crate::kernel::codegen::stub_host_kernel_entries;
-    use quote::ToTokens;
-    let tokens = generic_kernel_no_instantiation_tokens(
-        parse_quote! {
-            #[launch_bounds(128)]
-            pub fn host_stub_probe<T: Copy, const N: usize>(values: *mut T) {
-                let index = ::cuda_device::thread::thread_idx_x();
-                unsafe { *values.add(index as usize) = *values; }
-            }
-        },
-        None,
-    );
+    use crate::kernel::codegen::generic_kernel_no_instantiation_tokens_with_host_stubs;
+    let input: syn::ItemFn = parse_quote! {
+        #[launch_bounds(128)]
+        pub fn host_stub_probe<T: Copy, const N: usize>(values: *mut T) {
+            let index = ::cuda_device::thread::thread_idx_x();
+            unsafe { *values.add(index as usize) = *values; }
+        }
+    };
+    let tokens = generic_kernel_no_instantiation_tokens(input.clone(), None);
     assert_eq!(
-        stub_host_kernel_entries(tokens.clone(), false).to_string(),
+        generic_kernel_no_instantiation_tokens_with_host_stubs(input.clone(), None, false)
+            .to_string(),
         tokens.to_string()
     );
-    let original: syn::File = syn::parse2(tokens.clone()).unwrap();
-    let stubbed: syn::File = syn::parse2(stub_host_kernel_entries(tokens, true)).unwrap();
+    let original: syn::File = syn::parse2(tokens).unwrap();
+    let stubbed: syn::File = syn::parse2(generic_kernel_no_instantiation_tokens_with_host_stubs(
+        input, None, true,
+    ))
+    .unwrap();
+    assert_host_entry_stubs(&original, &stubbed, 1);
+}
+
+#[test]
+fn host_stubs_preserve_legacy_instantiations_and_helper_semantics() {
+    use crate::kernel::codegen::generic_kernel_instantiation_tokens_with_host_stubs;
+    let input: syn::ItemFn = parse_quote! {
+        #[launch_bounds(128)]
+        pub fn host_stub_legacy<T: Copy>(values: *mut T) {
+            let index = ::cuda_device::thread::thread_idx_x();
+            unsafe { *values.add(index as usize) = *values; }
+        }
+    };
+    let types = vec![parse_quote! { f32 }, parse_quote! { u32 }];
+    let original = syn::parse2(generic_kernel_instantiation_tokens_with_host_stubs(
+        input.clone(),
+        types.clone(),
+        None,
+        false,
+    ))
+    .unwrap();
+    let stubbed = syn::parse2(generic_kernel_instantiation_tokens_with_host_stubs(
+        input, types, None, true,
+    ))
+    .unwrap();
+    assert_host_entry_stubs(&original, &stubbed, 2);
+}
+
+fn assert_host_entry_stubs(original: &syn::File, stubbed: &syn::File, expected: usize) {
+    use quote::ToTokens;
     assert_eq!(original.items.len(), stubbed.items.len());
     let mut entries = 0;
     for (before, after) in original.items.iter().zip(&stubbed.items) {
@@ -718,5 +749,5 @@ fn host_stubs_preserve_entry_identity_and_ordinary_helper_semantics() {
             ),
         }
     }
-    assert_eq!(entries, 1);
+    assert_eq!(entries, expected);
 }
