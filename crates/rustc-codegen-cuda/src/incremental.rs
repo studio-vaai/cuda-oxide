@@ -673,13 +673,15 @@ pub(crate) fn compile<'tcx>(
             .compiler()
             .artifact_digest(name, ir, &options)
             .ok_or("libNVVM provenance is unavailable; cannot safely cache")?;
+        let lto_key = digest(&compiler_key);
         let lto_started = Instant::now();
-        let (lto, lto_hit) = cached(&cache, "ltoir", &digest(&compiler_key), || {
+        let (lto, lto_hit) = cached(&cache, "ltoir", &lto_key, || {
             Ok(finalizer
                 .compiler()
                 .compile_nvvm_ir_to_ltoir(name, ir, &options)?)
         })?;
         timings.push(json!({"module":name, "definitions":roots.len(), "declarations":declarations.len(),
+            "nvvm_cache_key":key,"ltoir_cache_key":lto_key,
             "nvvm_hit":ir_hit,"nvvm_seconds":ir_seconds,"ltoir_hit":lto_hit,
             "ltoir_seconds":lto_started.elapsed().as_secs_f64(),"seconds":unit_started.elapsed().as_secs_f64()}));
         eprintln!(
