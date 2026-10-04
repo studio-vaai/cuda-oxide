@@ -470,6 +470,13 @@ impl CodegenBackend for CudaCodegenBackend {
     }
 
     fn init(&self, sess: &Session) {
+        let host_stubs = std::env::var(reserved_oxide_symbols::HOST_KERNEL_STUBS_ENV).ok();
+        if host_stubs.as_deref().is_some_and(|setting| {
+            reserved_oxide_symbols::host_kernel_stubs(Some(setting), true) == Ok(true)
+        }) {
+            sess.dcx()
+                .fatal("host kernel stubs cannot be used with the CUDA codegen backend");
+        }
         if host_cache::kernels_only(sess.opts.crate_name.as_deref().unwrap_or(""))
             && (sess.opts.crate_types != [rustc_structures::CrateType::StaticLib]
                 || sess.opts.output_types.should_link()

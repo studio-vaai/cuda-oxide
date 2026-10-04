@@ -1204,6 +1204,15 @@ impl<'tcx> DeviceCollector<'tcx> {
         while let Some(func) = self.worklist.pop_front() {
             let def_id = func.instance.def_id();
 
+            if rustc_hir::find_attr!(self.tcx, def_id, DocComment { comment, .. }
+                if comment.as_str() == reserved_oxide_symbols::HOST_KERNEL_STUB_DOC)
+            {
+                self.tcx.dcx().span_fatal(
+                    self.tcx.def_span(def_id),
+                    "host kernel stubs cannot be compiled for the GPU; use cargo oxide to compile device code, or set CUDA_OXIDE_HOST_KERNEL_STUBS=0 for a raw backend invocation",
+                );
+            }
+
             // Look up where this function was discovered from. Every
             // enqueued function gets an entry; the fallback only guards
             // against future call paths that forget to record one.
