@@ -19,6 +19,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cargo-oxide', default=shutil.which('cargo-oxide'))
     parser.add_argument('--output', type=Path, default=Path('/tmp/oxide-incremental-modules'))
+    parser.add_argument('--alternate-nvjitlink', type=Path, help='Different nvJitLink library for unchanged-source compiler invalidation checks')
     args = parser.parse_args()
     if not args.cargo_oxide:
         parser.error('cargo-oxide must be built/installed')
@@ -167,6 +168,40 @@ def main():
                 env.pop('CUDA_OXIDE_EXACT_CACHE_TEST_FENCE', None)
             else:
                 env['CUDA_OXIDE_EXACT_CACHE_TEST_FENCE'] = old_fence
+        if args.alternate_nvjitlink:
+            # Only switch the linker. Source, Cargo features and CUDA_* flags
+            # stay identical, so Cargo must track the discovered tool identity.
+            source.write_text(original)
+            selected = build('native_tool_original', ['--message-format=json-render-diagnostics'])
+            old_linker = env.get('LIBNVJITLINK_PATH')
+            try:
+                env['LIBNVJITLINK_PATH'] = str(args.alternate_nvjitlink.resolve(strict=True))
+                alternate = build('native_tool_alternate', ['--message-format=json-render-diagnostics'])
+                assert alternate != selected, 'Cargo reused a manifest from the old native compiler'
+                assert {u['module']: u['nvvm_cache_key'] for u in alternate['compilation_units']} != {
+                    u['module']: u['nvvm_cache_key'] for u in selected['compilation_units']}
+                run()
+                fresh = build('native_tool_alternate_fresh', ['--message-format=json-render-diagnostics'])
+                assert fresh == alternate
+                events = []
+                for line in (output / 'native_tool_alternate_fresh.log').read_text().splitlines():
+                    try:
+                        event = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(event, dict) and event.get('reason') == 'compiler-artifact' and event['target']['name'] == 'incremental_modules':
+                        events.append(event)
+                assert events and all(event['fresh'] for event in events)
+                run()
+            finally:
+                if old_linker is None:
+                    env.pop('LIBNVJITLINK_PATH', None)
+                else:
+                    env['LIBNVJITLINK_PATH'] = old_linker
+            restored = build('native_tool_restore')
+            assert {n: m['sha256'] for n, m in restored['modules'].items()} == {
+                n: m['sha256'] for n, m in selected['modules'].items()}
+            run()
         print('PASS: isolated kernel cache, generic aggregate device ABI, shared static identity, promoted constants, helper invalidation, unreachable pruning')
     finally:
         cargo_manifest.write_bytes(original_cargo_manifest)

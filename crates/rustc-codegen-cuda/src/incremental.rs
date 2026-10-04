@@ -461,6 +461,7 @@ fn input_fingerprint<'tcx>(
                         | "CUDA_OXIDE_INTERNAL_RUSTC_WRAPPER"
                         | "CUDA_OXIDE_UPSTREAM_RUSTC_WRAPPER"
                         | "CUDA_OXIDE_HOST_KEY_TRACE"
+                        | crate::materialize::MATERIALIZER_HANDSHAKE_ENV
                 )
         })
         .map(|(key, value)| {
@@ -556,7 +557,7 @@ pub(crate) fn compile<'tcx>(
         groups.entry(unit).or_default().push(index);
     }
     let cache = config.output_dir.join("cache/modules/v1");
-    let finalizer = Finalizer::discover()?;
+    let finalizer = crate::materialize::native_finalizer_from_env()?;
     let compiler_provenance = finalizer
         .compiler()
         .provenance_digest()
