@@ -25,6 +25,113 @@ use std::num::NonZero;
 use crate::common::module_top_block;
 
 #[test]
+fn loop_unroll_policy_is_exported_with_distinct_metadata_ids() {
+    for factor in [1, 4] {
+        let mut ctx = Context::new();
+        let module = ModuleOp::new(&mut ctx, "rolled_loop".try_into().unwrap());
+        let ty = FuncType::get(&ctx, VoidType::get(&ctx).into(), vec![], false);
+        let func = FuncOp::new(&mut ctx, "rolled".try_into().unwrap(), ty);
+        let entry = func.get_or_create_entry_block(&mut ctx);
+        let branch = BrOp::new(&mut ctx, entry, vec![]).get_operation();
+        llvm_export::ops::set_loop_unroll_policy(&mut ctx, branch, "rolled", factor);
+        branch.insert_at_back(entry, &ctx);
+        let top = module_top_block(&mut ctx, &module);
+        func.get_operation().insert_at_back(top, &ctx);
+        for dialect in [NvvmIrDialect::LegacyLlvm7, NvvmIrDialect::Modern] {
+            let ir =
+                export_module_to_string_with_config(&ctx, &module, &NvvmExportConfig::new(dialect))
+                    .unwrap();
+            let line = ir.lines().find(|line| line.contains("!llvm.loop")).unwrap();
+            let id = line.split("!llvm.loop !").nth(1).unwrap();
+            assert!(
+                ir.contains(&format!("!{id} = distinct !{{!{id}, !")),
+                "{ir}"
+            );
+            if factor == 1 {
+                assert!(ir.contains("llvm.loop.unroll.disable"), "{ir}");
+                assert!(!ir.contains("llvm.loop.unroll.count"), "{ir}");
+            } else {
+                assert!(ir.contains("llvm.loop.unroll.count\", i32 4"), "{ir}");
+                assert!(!ir.contains("llvm.loop.unroll.disable"), "{ir}");
+            }
+            let ids: Vec<_> = ir
+                .lines()
+                .filter_map(|line| {
+                    line.strip_prefix('!')
+                        .and_then(|line| line.split_once(" = "))
+                        .and_then(|(id, _)| id.parse::<usize>().ok())
+                })
+                .collect();
+            let mut unique = ids.clone();
+            unique.sort();
+            unique.dedup();
+            assert_eq!(
+                ids.len(),
+                unique.len(),
+                "metadata namespaces must not overlap: {ir}"
+            );
+        }
+    }
+}
+
+#[test]
+fn loop_unroll_policy_shares_one_node_across_continue_backedges() {
+    for factor in [1, 4] {
+        let mut ctx = Context::new();
+        let module = ModuleOp::new(&mut ctx, "continue_loop".try_into().unwrap());
+        let ty = FuncType::get(&ctx, VoidType::get(&ctx).into(), vec![], false);
+        let func = FuncOp::new(&mut ctx, "rolled".try_into().unwrap(), ty);
+        let header = func.get_or_create_entry_block(&mut ctx);
+        let region = func.get_operation().deref(&ctx).get_region(0);
+        let continue_block = BasicBlock::new(&mut ctx, None, vec![]);
+        continue_block.insert_at_back(region, &ctx);
+        let body = BasicBlock::new(&mut ctx, None, vec![]);
+        body.insert_at_back(region, &ctx);
+        let exit = BasicBlock::new(&mut ctx, None, vec![]);
+        exit.insert_at_back(region, &ctx);
+        let i1 = IntegerType::get(&ctx, 1, Signedness::Signless);
+        let condition = UndefOp::new(&mut ctx, i1.into());
+        condition.get_operation().insert_at_back(header, &ctx);
+        let value = condition.get_operation().deref(&ctx).get_result(0);
+        CondBrOp::new(&mut ctx, value, continue_block, vec![], body, vec![])
+            .get_operation()
+            .insert_at_back(header, &ctx);
+        let a = BrOp::new(&mut ctx, header, vec![]).get_operation();
+        llvm_export::ops::set_loop_unroll_policy(&mut ctx, a, "shared-loop", factor);
+        a.insert_at_back(continue_block, &ctx);
+        let b = CondBrOp::new(&mut ctx, value, header, vec![], exit, vec![]).get_operation();
+        llvm_export::ops::set_loop_unroll_policy(&mut ctx, b, "shared-loop", factor);
+        b.insert_at_back(body, &ctx);
+        ReturnOp::new(&mut ctx, None)
+            .get_operation()
+            .insert_at_back(exit, &ctx);
+        let top = module_top_block(&mut ctx, &module);
+        func.get_operation().insert_at_back(top, &ctx);
+        let ir = export_module_to_string_with_config(
+            &ctx,
+            &module,
+            &NvvmExportConfig::new(NvvmIrDialect::Modern),
+        )
+        .unwrap();
+        let ids: Vec<_> = ir
+            .lines()
+            .filter_map(|line| line.split("!llvm.loop !").nth(1))
+            .collect();
+        assert_eq!(ids.len(), 2, "{ir}");
+        assert_eq!(
+            ids[0], ids[1],
+            "all latches must share the same loop node: {ir}"
+        );
+        let policy = if factor == 1 {
+            "llvm.loop.unroll.disable"
+        } else {
+            "llvm.loop.unroll.count"
+        };
+        assert_eq!(ir.matches(policy).count(), 1);
+    }
+}
+
+#[test]
 fn exporter_rejects_extra_predecessor_values_before_emitting_phis() {
     let mut ctx = Context::new();
     let module = ModuleOp::new(&mut ctx, "invalid_branch_arity".try_into().unwrap());

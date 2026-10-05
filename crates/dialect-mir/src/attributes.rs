@@ -16,6 +16,66 @@ use pliron::utils::apfloat::{self, Float, GetSemantics};
 
 use crate::types::MirFP16Type;
 
+/// Carry an explicit native loop policy on every back-edge of one loop.
+/// A factor of one disables unrolling; larger factors request partial unrolling.
+pub fn set_loop_unroll_policy(
+    ctx: &mut Context,
+    op: pliron::context::Ptr<pliron::operation::Operation>,
+    group: &str,
+    factor: u32,
+) {
+    assert!(factor > 0);
+    op.deref_mut(ctx).attributes.set(
+        "mir_loop_unroll_group".try_into().unwrap(),
+        pliron::builtin::attributes::StringAttr::new(group.to_string()),
+    );
+    op.deref_mut(ctx).attributes.set(
+        "mir_loop_unroll_factor".try_into().unwrap(),
+        UnrollAttr(factor),
+    );
+}
+
+/// Keep a natural loop rolled through downstream device optimization.
+pub fn set_loop_unroll_disabled(
+    ctx: &mut Context,
+    op: pliron::context::Ptr<pliron::operation::Operation>,
+    group: &str,
+) {
+    set_loop_unroll_policy(ctx, op, group, 1);
+}
+
+/// Group identifying the latches of one explicitly annotated loop.
+pub fn loop_unroll_group(
+    ctx: &Context,
+    op: pliron::context::Ptr<pliron::operation::Operation>,
+) -> Option<String> {
+    op.deref(ctx)
+        .attributes
+        .get::<pliron::builtin::attributes::StringAttr>(
+            &"mir_loop_unroll_group".try_into().unwrap(),
+        )
+        .map(|value| value.as_str().to_owned())
+}
+
+/// Explicit native factor attached to a loop latch.
+pub fn loop_unroll_factor(
+    ctx: &Context,
+    op: pliron::context::Ptr<pliron::operation::Operation>,
+) -> Option<u32> {
+    op.deref(ctx)
+        .attributes
+        .get::<UnrollAttr>(&"mir_loop_unroll_factor".try_into().unwrap())
+        .map(|value| value.0)
+}
+
+/// Whether a loop latch carries an explicit no-unroll request.
+pub fn loop_unroll_disabled(
+    ctx: &Context,
+    op: pliron::context::Ptr<pliron::operation::Operation>,
+) -> bool {
+    loop_unroll_factor(ctx, op) == Some(1)
+}
+
 /// MIR cast kind — preserves the semantic intent of the cast from Rust MIR.
 ///
 /// The lowering dispatches on this to pick the correct LLVM instruction,
@@ -99,6 +159,7 @@ pub struct VariantIndexAttr(pub u32);
 ///   constant, unroll it completely, so the induction variable becomes a literal
 ///   in each copy (this is what lets index arithmetic such as `i & 3` fold to a
 ///   constant).
+/// * `1` -- **keep rolled**: disable downstream native unrolling.
 /// * `n >= 2` -- **unroll by `n`**: do `n` copies of the body per trip, leaving
 ///   a remainder loop when `n` does not divide the trip count.
 #[pliron_attr(name = "mir.unroll", format = "$0", verifier = "succ")]

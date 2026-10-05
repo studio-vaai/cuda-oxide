@@ -1092,11 +1092,11 @@ fn translate_call(
                 )
             );
         };
-        if factor == 1 || factor > 1024 {
+        if factor > 1024 {
             return input_err!(
                 loc,
                 TranslationErr::invalid_op(format!(
-                    "partial unroll factor must be in 2..=1024, or 0 for full unrolling; got {factor}"
+                    "unroll factor must be in 1..=1024, or 0 for full unrolling; got {factor}"
                 ))
             );
         }

@@ -666,7 +666,7 @@ impl<'a> ModuleExportState<'a> {
     }
 
     fn emit_br(
-        &self,
+        &mut self,
         op: &ops::BrOp,
         block_labels: &FxHashMap<Ptr<BasicBlock>, String>,
         output: &mut String,
@@ -674,7 +674,9 @@ impl<'a> ModuleExportState<'a> {
         let op_ref = op.get_operation().deref(self.ctx);
         let dest = op_ref.successors().next().unwrap();
         let label = block_labels.get(&dest).ok_or("Missing block label")?;
-        writeln!(output, "  br label %{label}").unwrap();
+        write!(output, "  br label %{label}").unwrap();
+        self.emit_loop_unroll_policy(op.get_operation(), output);
+        writeln!(output).unwrap();
         Ok(())
     }
 
@@ -695,8 +697,28 @@ impl<'a> ModuleExportState<'a> {
 
         write!(output, "  br i1 ").unwrap();
         self.export_value(cond, value_names, output)?;
-        writeln!(output, ", label %{true_label}, label %{false_label}").unwrap();
+        write!(output, ", label %{true_label}, label %{false_label}").unwrap();
+        self.emit_loop_unroll_policy(op.get_operation(), output);
+        writeln!(output).unwrap();
         Ok(())
+    }
+
+    fn emit_loop_unroll_policy(&mut self, op: Ptr<Operation>, output: &mut String) {
+        if let Some(group) = crate::ops::loop_unroll_group(self.ctx, op) {
+            let factor = crate::ops::loop_unroll_factor(self.ctx, op)
+                .expect("loop policy group requires a factor");
+            let group = (group, factor);
+            let id = if let Some(&id) = self.loop_unroll_ids.get(&group) {
+                id
+            } else {
+                let id = self.alloc_metadata_id();
+                let policy = self.alloc_metadata_id();
+                self.loop_unroll_nodes.push((id, policy, factor));
+                self.loop_unroll_ids.insert(group, id);
+                id
+            };
+            write!(output, ", !llvm.loop !{id}").unwrap();
+        }
     }
 
     fn emit_load(

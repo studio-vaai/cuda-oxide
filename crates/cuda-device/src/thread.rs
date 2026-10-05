@@ -1279,7 +1279,8 @@ pub fn __unchecked_indexing_config<const ENABLED: bool>() {
 /// # Usage
 ///
 /// Put the annotation directly on the loop. Bare `#[unroll]` requests full
-/// unrolling; `#[unroll(N)]` requests `N` copies per trip:
+/// unrolling; `#[unroll(1)]` disables native unrolling; `#[unroll(N)]` for
+/// `N >= 2` requests `N` copies per trip:
 ///
 /// ```rust,ignore
 /// #[kernel]
@@ -1305,13 +1306,15 @@ pub fn __unchecked_indexing_config<const ENABLED: bool>() {
 /// ```
 ///
 /// The pass currently recognizes explicit counted `while` loops. Range-based
-/// `for` loops are not yet recognized.
+/// `for` loops are supported by `#[unroll(1)]`, which needs no counter analysis.
+/// Frontend full/partial unrolling does not yet recognize range-based loops.
+/// Partial loops with early exits instead carry a native LLVM unroll count.
 ///
 /// Loops with several `continue` paths are supported. Full `#[unroll]` also
 /// preserves `break` paths and multiple exit targets. Partial `#[unroll(N)]`
-/// requires a positive counter step, a `<` or `<=` test, an unchanging limit,
-/// and no exit besides the normal header test. Unsupported requests warn and
-/// are not unrolled.
+/// delegates loops with early exits to native LLVM. Other partial loops require
+/// a positive counter step, a `<` or `<=` test, and an unchanging limit.
+/// Unsupported requests warn and are not unrolled.
 ///
 /// One annotation may create at most 1,024 body copies, 8,192 cloned basic
 /// blocks, and 65,536 cloned operations. A partial factor above 1,024 is
@@ -1321,6 +1324,7 @@ pub fn __unchecked_indexing_config<const ENABLED: bool>() {
 ///
 /// - `FACTOR = 0` requests full unrolling of this loop and requires a
 ///   compile-time-known trip count.
+/// - `FACTOR = 1` keeps the loop rolled, including during native optimization.
 /// - `FACTOR >= 2` requests partial unrolling of this loop by that factor.
 ///   It groups that many iterations; it does not limit the loop to that many
 ///   total iterations, and a remainder still runs.
@@ -1334,7 +1338,7 @@ pub fn __unroll_config<const FACTOR: u32>() {
 
 const fn validate_unroll_factor(factor: u32) {
     assert!(
-        factor == 0 || (factor >= 2 && factor <= 1024),
-        "partial unroll factor must be in 2..=1024, or 0 for full unrolling"
+        factor <= 1024,
+        "unroll factor must be in 1..=1024, or 0 for full unrolling"
     );
 }
