@@ -185,7 +185,14 @@ fn link_native_modules(
     options: &FinalizationOptions,
     generate_host: impl FnOnce(),
 ) -> Result<BTreeMap<String, LinkedUnit>, Error> {
-    let jobs: Vec<_> = jobs.iter().collect();
+    let mut jobs: Vec<_> = jobs.iter().collect();
+    // Start the largest closures first so expensive links do not sit behind
+    // short jobs and extend the final tail. This stable ordering keeps module
+    // names as the tie breaker; input order, cache keys, and publication remain
+    // unchanged.
+    jobs.sort_by_cached_key(|(_, deps)| {
+        std::cmp::Reverse(deps.iter().map(|name| units[name].0.len()).sum::<usize>())
+    });
     parallel_finalization(
         jobs.len(),
         "native",
