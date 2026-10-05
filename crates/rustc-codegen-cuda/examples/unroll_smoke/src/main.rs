@@ -26,6 +26,89 @@ use cuda_host::cuda_module;
 mod kernels {
     use super::*;
 
+    /// A logical slice bound must still trap under an explicit loop policy,
+    /// even when the backing array is large enough for the invalid index.
+    #[kernel]
+    pub fn guarded_unroll_bounds(out: *mut u32, index: u32) {
+        let values = [7_u32; 16];
+        let view = &values[..2];
+        let mut sum = 0;
+        let mut i = 0;
+        #[unroll(1)]
+        while i < 2 {
+            sum += view[index as usize];
+            i += 1;
+        }
+        // SAFETY: the test driver provides one initialized output allocation.
+        unsafe { *out = sum };
+    }
+
+    /// Keep a range loop rolled while preserving early break and continue paths.
+    #[kernel]
+    pub fn rolled_range(mut out: DisjointSlice<u32>, n: u32) {
+        let tid = thread::index_1d();
+        let base = tid.get() as u32;
+        if let Some(out_elem) = out.get_mut(tid) {
+            let mut acc = base;
+            #[unroll(1)]
+            for i in 0..n {
+                if i == 5 {
+                    break;
+                }
+                if i & 1 == 0 {
+                    continue;
+                }
+                acc = acc.wrapping_add(i);
+            }
+            *out_elem = acc;
+        }
+    }
+
+    /// Native partial unrolling preserves range-loop break and continue paths.
+    #[kernel]
+    pub fn native_partial_range(mut out: DisjointSlice<u32>, n: u32) {
+        let tid = thread::index_1d();
+        let base = tid.get() as u32;
+        if let Some(out_elem) = out.get_mut(tid) {
+            let mut acc = base;
+            #[unroll(4)]
+            for i in 0..n {
+                if i == 5 {
+                    break;
+                }
+                if i & 1 == 0 {
+                    continue;
+                }
+                acc = acc.wrapping_add(i);
+            }
+            *out_elem = acc;
+        }
+    }
+
+    /// Native partial unrolling preserves a counted loop's early exit.
+    #[kernel]
+    pub fn native_partial_break(mut out: DisjointSlice<u32>, n: u32) {
+        let tid = thread::index_1d();
+        let base = tid.get() as u32;
+        if let Some(out_elem) = out.get_mut(tid) {
+            let mut acc = base;
+            let mut i = 0u32;
+            #[unroll(4)]
+            while i < n {
+                if i == 5 {
+                    break;
+                }
+                if i & 1 == 0 {
+                    i += 1;
+                    continue;
+                }
+                acc = acc.wrapping_add(i);
+                i += 1;
+            }
+            *out_elem = acc;
+        }
+    }
+
     /// Full unroll of a constant-trip-count loop. `acc` starts at the thread
     /// index and adds `i & 3` for `i` in `0..8` (= 0+1+2+3+0+1+2+3 = 12), so
     /// `out[tid] == tid + 12`.
@@ -381,6 +464,53 @@ fn main() {
     let got_full = d_full.to_host_vec(&stream).unwrap();
 
     let trip: u32 = 10;
+    let mut d_rolled = DeviceBuffer::<u32>::zeroed(&stream, N).unwrap();
+    // SAFETY: launch shape/resources match the kernel; buffers cover its accesses.
+    unsafe { module.rolled_range(stream.as_ref(), cfg, &mut d_rolled, trip) }
+        .expect("launch rolled_range");
+    for (tid, value) in d_rolled
+        .to_host_vec(&stream)
+        .unwrap()
+        .into_iter()
+        .enumerate()
+    {
+        assert_eq!(value, tid as u32 + 4, "rolled_range tid={tid}");
+    }
+
+    for trip in 0..18 {
+        let want: u32 = (0..trip.min(5)).filter(|i| i & 1 != 0).sum();
+        // SAFETY: the launch and buffer cover one output per thread.
+        unsafe { module.native_partial_range(stream.as_ref(), cfg, &mut d_rolled, trip) }
+            .expect("launch native_partial_range");
+        for (tid, value) in d_rolled
+            .to_host_vec(&stream)
+            .unwrap()
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(
+                value,
+                tid as u32 + want,
+                "native partial range trip={trip} tid={tid}"
+            );
+        }
+        // SAFETY: the launch and buffer cover one output per thread.
+        unsafe { module.native_partial_break(stream.as_ref(), cfg, &mut d_rolled, trip) }
+            .expect("launch native_partial_break");
+        for (tid, value) in d_rolled
+            .to_host_vec(&stream)
+            .unwrap()
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(
+                value,
+                tid as u32 + want,
+                "native partial break trip={trip} tid={tid}"
+            );
+        }
+    }
+
     let mut d_part = DeviceBuffer::<u32>::zeroed(&stream, N).unwrap();
     // SAFETY: launch shape/resources match the kernel; buffers cover its accesses.
     unsafe { module.partial_unroll(stream.as_ref(), cfg, &mut d_part, trip) }

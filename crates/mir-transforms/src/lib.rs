@@ -14,6 +14,7 @@
 
 pub mod analyses;
 mod canonicalize;
+mod cfg_cleanup;
 pub mod forward_compiler_result_bundles;
 pub mod scalarize_borrowed_aggregate_reads;
 pub mod unroll;
