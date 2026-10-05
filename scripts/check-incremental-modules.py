@@ -67,6 +67,8 @@ def main():
     try:
         baseline = build('baseline')
         run()
+        assert 'incremental_modules::second_dependency' not in baseline['modules']['incremental_modules::first']['inputs']
+        assert 'incremental_modules::second_dependency' in baseline['modules']['incremental_modules::second']['inputs']
         assert original.count('kernel_bias = 10u32') == 1
         source.write_text(original.replace('kernel_bias = 10u32', f'kernel_bias = {10 + delta}u32', 1)
             .replace('i as u32 * 4 + 12', f'i as u32 * 4 + {12 + delta}', 1))
@@ -93,7 +95,8 @@ def main():
         assert units['incremental_modules::second']['nvvm_hit']
         for name in baseline['modules']:
             assert helper['modules'][name]['sha256'] != baseline['modules'][name]['sha256']
-        source.write_text(original.replace('value + 777', f'value + {777 + delta}', 1))
+        assert original.count('identity(value) + 777') == 1
+        source.write_text(original.replace('identity(value) + 777', f'identity(value) + {777 + delta}', 1))
         selective = build('one_consumer_helper_edit')
         run([f'--second-delta={delta}'])
         units = {unit['module']: unit for unit in selective['compilation_units']}

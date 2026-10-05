@@ -803,17 +803,10 @@ pub(crate) fn compile<'tcx>(
         {
             continue;
         }
-        let mut deps = units[name].1.clone();
-        loop {
-            let previous = deps.len();
-            for dependency in deps.clone() {
-                deps.extend(units[&dependency].1.iter().cloned());
-            }
-            if deps.len() == previous {
-                break;
-            }
-        }
-        link_jobs.insert(name.clone(), deps);
+        // collect_from_roots already visits every transitive function callee.
+        // Expanding whole helper units here would add dependencies of their
+        // unrelated definitions, often pulling most of the crate into a link.
+        link_jobs.insert(name.clone(), units[name].1.clone());
     }
     let linked_modules = link_native_modules(
         &link_jobs,
