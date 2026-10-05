@@ -363,7 +363,7 @@ pub(crate) fn add_launch_bounds_evaluatability_from_attrs(input: &mut ItemFn) ->
 /// Arguments for the `#[unroll]` / `#[unroll(N)]` attribute.
 ///
 /// Bare `#[unroll]` parses to factor `0` (full unroll); `#[unroll(N)]` requires
-/// `N >= 2`.
+/// `N >= 1`; factor `1` disables compiler unrolling.
 pub(crate) struct UnrollArgs {
     pub(crate) factor: ConstU32Expr,
 }
@@ -387,9 +387,9 @@ impl Parse for UnrollArgs {
             1 => {
                 let factor = values.pop().unwrap();
                 match factor.literal_value {
-                    Some(0 | 1) => Err(syn::Error::new_spanned(
+                    Some(0) => Err(syn::Error::new_spanned(
                         &factor.expr,
-                        "partial unroll factor must be at least 2; use #[unroll] for full unrolling",
+                        "unroll factor must be at least 1; use #[unroll] for full unrolling",
                     )),
                     Some(value) if value > 1024 => Err(syn::Error::new_spanned(
                         &factor.expr,

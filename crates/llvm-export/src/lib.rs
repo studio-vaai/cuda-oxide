@@ -448,6 +448,50 @@ pub mod ops {
     /// Op-attribute key marking a function declaration or call as non-returning.
     const OP_NORETURN_KEY: &str = "cuda_oxide_op_noreturn";
 
+    /// Carry an explicit native loop policy on every back-edge of one loop.
+    /// A factor of one disables unrolling; larger factors request partial unrolling.
+    pub fn set_loop_unroll_policy(ctx: &mut Context, op: Ptr<Operation>, group: &str, factor: u32) {
+        use pliron::builtin::attributes::IntegerAttr;
+        use pliron::builtin::types::{IntegerType, Signedness};
+        use pliron::utils::apint::APInt;
+        use std::num::NonZero;
+
+        assert!(factor > 0);
+        let ty = IntegerType::get(ctx, 32, Signedness::Unsigned);
+        let value = APInt::from_u64(u64::from(factor), NonZero::new(32).unwrap());
+        op.deref_mut(ctx).attributes.set(
+            "llvm_loop_unroll_group".try_into().unwrap(),
+            StringAttr::new(group.to_string()),
+        );
+        op.deref_mut(ctx).attributes.set(
+            "llvm_loop_unroll_factor".try_into().unwrap(),
+            IntegerAttr::new(ty, value),
+        );
+    }
+
+    /// Stamp a loop latch so textual export preserves its no-unroll policy.
+    pub fn set_loop_unroll_disabled(ctx: &mut Context, op: Ptr<Operation>, group: &str) {
+        set_loop_unroll_policy(ctx, op, group, 1);
+    }
+
+    /// Group identifying the latches of one explicitly annotated loop.
+    pub fn loop_unroll_group(ctx: &Context, op: Ptr<Operation>) -> Option<String> {
+        op.deref(ctx)
+            .attributes
+            .get::<StringAttr>(&"llvm_loop_unroll_group".try_into().unwrap())
+            .map(|value| value.as_str().to_owned())
+    }
+
+    /// Explicit native factor attached to a loop latch.
+    pub fn loop_unroll_factor(ctx: &Context, op: Ptr<Operation>) -> Option<u32> {
+        op.deref(ctx)
+            .attributes
+            .get::<pliron::builtin::attributes::IntegerAttr>(
+                &"llvm_loop_unroll_factor".try_into().unwrap(),
+            )
+            .map(|value| value.value().to_u64() as u32)
+    }
+
     /// Mark an LLVM function declaration or call as non-returning.
     pub fn set_op_noreturn(ctx: &mut Context, op: Ptr<Operation>) {
         let key = Identifier::try_new(OP_NORETURN_KEY.to_string()).expect("valid identifier");

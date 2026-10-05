@@ -184,6 +184,11 @@ pub(crate) fn convert_cond_branch(
     let false_args = operands[1 + num_true_args..].to_vec();
 
     let llvm_br = llvm::CondBrOp::new(ctx, cond, true_block, true_args, false_block, false_args);
+    if let Some(group) = dialect_mir::attributes::loop_unroll_group(ctx, op) {
+        let factor = dialect_mir::attributes::loop_unroll_factor(ctx, op)
+            .expect("loop policy group requires a factor");
+        llvm::set_loop_unroll_policy(ctx, llvm_br.get_operation(), &group, factor);
+    }
     crate::convert::preserve_location(ctx, op, llvm_br.get_operation());
     rewriter.insert_operation(ctx, llvm_br.get_operation());
     rewriter.erase_operation(ctx, op);
@@ -307,6 +312,11 @@ pub(crate) fn convert_goto(
     }
 
     let llvm_br = llvm::BrOp::new(ctx, dest, final_args);
+    if let Some(group) = dialect_mir::attributes::loop_unroll_group(ctx, op) {
+        let factor = dialect_mir::attributes::loop_unroll_factor(ctx, op)
+            .expect("loop policy group requires a factor");
+        llvm::set_loop_unroll_policy(ctx, llvm_br.get_operation(), &group, factor);
+    }
     crate::convert::preserve_location(ctx, op, llvm_br.get_operation());
     rewriter.insert_operation(ctx, llvm_br.get_operation());
     rewriter.erase_operation(ctx, op);

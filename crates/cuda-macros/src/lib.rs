@@ -364,7 +364,9 @@ pub fn cuda_module(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// Put `#[unroll]` on a loop with a compile-time-known trip count to request full
 /// unrolling. Use `#[unroll(N)]`, where `N >= 2`, to request `N` iterations of
-/// work per trip; a remainder loop handles any leftovers.
+/// work per trip; a remainder loop handles any leftovers. `#[unroll(1)]` keeps
+/// the loop rolled through NVIDIA optimization, including range-based `for`
+/// loops and loops with early exits.
 ///
 /// ```ignore
 /// #[kernel]
@@ -385,16 +387,17 @@ pub fn cuda_module(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// invalid specialization fails compilation instead of becoming a no-op.
 ///
 /// The pass currently recognizes explicit counted `while` loops. Range-based
-/// `for` loops are not yet recognized.
+/// `for` loops are supported by `#[unroll(1)]`, which needs no counter analysis.
+/// Frontend full/partial unrolling does not yet recognize range-based loops.
+/// Partial loops with early exits instead carry a native LLVM unroll count.
 ///
 /// Only the annotated loop is unrolled. Inner loops are copied intact unless
 /// they carry their own annotation. Several `continue` paths (multiple
 /// back-edges) are supported.
 ///
 /// Full `#[unroll]` preserves `break` paths and multiple exit targets. Partial
-/// `#[unroll(N)]` currently requires the loop condition to be the only exit. If
-/// the loop has a `break` or another extra exit, the compiler warns and skips
-/// partial unrolling for that loop.
+/// `#[unroll(N)]` delegates loops with a `break` or another extra exit to native
+/// LLVM, preserving the original loop and all exit values in the frontend.
 ///
 /// Partial unrolling also requires a positive counter step, a `<` or `<=` test,
 /// and a limit that does not change inside the loop. One annotation may create
@@ -783,11 +786,13 @@ pub fn cooperative_launch(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// # Loop unrolling
 ///
 /// Loop annotations work the same way in device function definitions as they do
-/// in kernels. Use an explicit counted `while` loop; range-based `for` loops are
-/// not yet recognized. Partial factors must be `N >= 2`. Multiple `continue`
+/// in kernels. Use an explicit counted `while` loop for frontend unrolling;
+/// partial loops with early exits also support range-based `for` loops through
+/// native LLVM. `#[unroll(1)]` keeps either form rolled. Multiple `continue`
 /// paths are supported; full unrolling preserves `break` and multiple exit
-/// targets. Partial unrolling requires a positive counter step, a `<` or `<=`
-/// test, an unchanging limit, and no exit besides the normal header test.
+/// targets. Partial unrolling delegates loops with early exits to native LLVM.
+/// Other partial loops require a positive counter step, a `<` or `<=` test,
+/// and an unchanging limit.
 ///
 /// One annotation may create at most 1,024 body copies, 8,192 cloned basic
 /// blocks, and 65,536 cloned operations. Factors above 1,024 are rejected;

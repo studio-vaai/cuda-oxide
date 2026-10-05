@@ -737,6 +737,22 @@ pub(super) fn export_module_with_externs_impl(
         state.emit_debug_metadata(&mut output);
     }
 
+    for &(id, policy, factor) in &state.loop_unroll_nodes {
+        writeln!(&mut output, "!{id} = distinct !{{!{id}, !{policy}}}").unwrap();
+        if factor == 1 {
+            writeln!(
+                &mut output,
+                "!{policy} = !{{!\"llvm.loop.unroll.disable\"}}"
+            )
+            .unwrap();
+        } else {
+            writeln!(
+                &mut output,
+                "!{policy} = !{{!\"llvm.loop.unroll.count\", i32 {factor}}}"
+            )
+            .unwrap();
+        }
+    }
     verify_legacy_text(&output, &state)?;
     Ok(ExportedModule {
         llvm_ir: output,
@@ -886,6 +902,22 @@ pub(super) fn export_module_to_string_with_config(
         state.emit_debug_metadata(&mut output);
     }
 
+    for &(id, policy, factor) in &state.loop_unroll_nodes {
+        writeln!(&mut output, "!{id} = distinct !{{!{id}, !{policy}}}").unwrap();
+        if factor == 1 {
+            writeln!(
+                &mut output,
+                "!{policy} = !{{!\"llvm.loop.unroll.disable\"}}"
+            )
+            .unwrap();
+        } else {
+            writeln!(
+                &mut output,
+                "!{policy} = !{{!\"llvm.loop.unroll.count\", i32 {factor}}}"
+            )
+            .unwrap();
+        }
+    }
     verify_legacy_text(&output, &state)?;
     Ok(output)
 }

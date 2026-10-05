@@ -342,9 +342,15 @@ fn malformed_unroll_attr_records_error() {
 }
 
 #[test]
-fn partial_unroll_factor_must_be_at_least_two() {
+fn unroll_factor_one_disables_unrolling() {
     assert!(syn::parse_str::<UnrollArgs>("0").is_err());
-    assert!(syn::parse_str::<UnrollArgs>("1").is_err());
+    assert_eq!(
+        syn::parse_str::<UnrollArgs>("1")
+            .unwrap()
+            .factor
+            .literal_value,
+        Some(1)
+    );
     assert_eq!(
         syn::parse_str::<UnrollArgs>("2")
             .unwrap()
