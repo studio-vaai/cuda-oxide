@@ -52,12 +52,23 @@ mod shared {
     #[device]
     #[inline(never)]
     pub fn only_second(value: u32) -> u32 {
-        value + 777
+        super::second_dependency::identity(value) + 777
     }
     #[device]
     #[inline(never)]
     pub fn unused(value: u32) -> u32 {
         value + 999
+    }
+}
+// The first kernel reaches `shared`, whose unrelated helper reaches this unit.
+// It must appear only in the second kernel's native dependency closure.
+#[cuda_module]
+mod second_dependency {
+    use super::*;
+    #[device]
+    #[inline(never)]
+    pub fn identity(value: u32) -> u32 {
+        value
     }
 }
 #[cuda_module]

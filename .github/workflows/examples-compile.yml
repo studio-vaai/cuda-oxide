@@ -244,6 +244,8 @@ jobs:
           root = Path(os.environ["CARGO_TARGET_DIR"]) / "release/oxide"
           manifest = json.loads((root / "incremental_modules.modules.json").read_text())
           assert len(manifest["modules"]) == 2  # device-only helpers have no cubin
+          assert "incremental_modules::second_dependency" not in manifest["modules"]["incremental_modules::first"]["inputs"]
+          assert "incremental_modules::second_dependency" in manifest["modules"]["incremental_modules::second"]["inputs"]
           for module in manifest["modules"].values():
               assert (root / module["path"]).read_bytes().startswith(b"\x7fELF")
           print("PASS: default native build, Cargo artifact paths, helper-only pruning")
