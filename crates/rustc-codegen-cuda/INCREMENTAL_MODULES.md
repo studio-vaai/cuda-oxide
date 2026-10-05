@@ -9,8 +9,9 @@ Use `--no-incremental-modules` (or `CUDA_OXIDE_INCREMENTAL_MODULES=0`) to opt ou
 The old `--incremental-modules` switch remains accepted.
 
 Independent native links run concurrently by default, bounded by Cargo jobserver
-tokens and eight workers. `CUDA_OXIDE_LINK_JOBS=1` selects serial linking; changing
-this scheduling limit preserves compiler settings and device cache identity.
+tokens and the available CPU count, up to sixteen workers.
+`CUDA_OXIDE_LINK_JOBS=1` selects serial linking; changing this scheduling limit
+preserves compiler settings and device cache identity.
 The manifest is published only after every link succeeds.
 
 Keep Cargo's target directory between builds. Device files and caches live in

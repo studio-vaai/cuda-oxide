@@ -228,7 +228,10 @@ fn parallel_finalization<T: Send>(
     }
     let limit = match std::env::var("CUDA_OXIDE_LINK_JOBS") {
         Ok(value) => value.parse::<std::num::NonZeroUsize>()?.get(),
-        Err(_) => 8,
+        // Large GPU crates benefit from more than eight independent links.
+        // Cargo tokens remain the hard resource limit; cap the automatic
+        // budget so each nvJitLink instance can also parallelize internally.
+        Err(_) => std::thread::available_parallelism().map_or(8, |cpus| cpus.get().min(16)),
     }
     .min(count);
     let client = rustc_data_structures::jobserver::client();
