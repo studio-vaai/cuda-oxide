@@ -185,11 +185,45 @@ fn link_native_modules(
     options: &FinalizationOptions,
     generate_host: impl FnOnce(),
 ) -> Result<BTreeMap<String, LinkedUnit>, Error> {
+    let jobs: Vec<_> = jobs.iter().collect();
+    parallel_finalization(
+        jobs.len(),
+        "native",
+        |index| {
+            let (name, deps) = jobs[index];
+            let result =
+                link_cached_unit(cache, units, deps, &closure_keys[name], finalizer, options)
+                    .map_err(|error| format!("{name}: {error}"))?;
+            eprintln!(
+                "[device-modules] {name}: cubin {} ({:.3}s)",
+                if result.hit { "hit" } else { "linked" },
+                result.seconds
+            );
+            Ok((name.clone(), result))
+        },
+        generate_host,
+    )
+    .map(|results| results.into_iter().collect())
+}
+
+/// Immutable compiler inputs can run off the rustc thread. The callback remains
+/// on that thread, and each extra worker holds a Cargo jobserver token. Drain all
+/// started jobs before returning an error or publishing any module selector.
+fn parallel_finalization<T: Send>(
+    count: usize,
+    stage: &str,
+    finalize: impl Fn(usize) -> Result<T, String> + Sync,
+    main_thread: impl FnOnce(),
+) -> Result<Vec<T>, Error> {
+    if count == 0 {
+        main_thread();
+        return Ok(Vec::new());
+    }
     let limit = match std::env::var("CUDA_OXIDE_LINK_JOBS") {
         Ok(value) => value.parse::<std::num::NonZeroUsize>()?.get(),
         Err(_) => 8,
     }
-    .min(jobs.len().max(1));
+    .min(count);
     let client = rustc_data_structures::jobserver::client();
     let mut tokens = Vec::new();
     for _ in 1..limit {
@@ -199,57 +233,92 @@ fn link_native_modules(
         }
     }
     let workers = tokens.len() + 1;
-    let jobs: Vec<_> = jobs.iter().collect();
+    eprintln!("[device-modules] {stage} finalization: {workers} worker(s)");
+    finalization_workers(count, workers, finalize, main_thread)
+}
+
+fn finalization_workers<T: Send>(
+    count: usize,
+    workers: usize,
+    finalize: impl Fn(usize) -> Result<T, String> + Sync,
+    main_thread: impl FnOnce(),
+) -> Result<Vec<T>, Error> {
+    debug_assert!(workers != 0);
     let next = std::sync::atomic::AtomicUsize::new(0);
     let (send, receive) = std::sync::mpsc::channel();
-    eprintln!("[device-modules] native finalization: {workers} worker(s)");
-    std::thread::scope(|scope| {
+    let completed = std::thread::scope(|scope| {
         for _ in 0..workers {
             let send = send.clone();
-            let jobs = &jobs;
+            let finalize = &finalize;
             let next = &next;
             scope.spawn(move || {
                 loop {
                     let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let Some(&(name, deps)) = jobs.get(index) else {
+                    if index >= count {
                         break;
-                    };
-                    let result = link_cached_unit(
-                        cache,
-                        units,
-                        deps,
-                        &closure_keys[name],
-                        finalizer,
-                        options,
-                    )
-                    .map_err(|error| format!("{name}: {error}"));
-                    if let Ok(linked) = &result {
-                        eprintln!(
-                            "[device-modules] {name}: cubin {} ({:.3}s)",
-                            if linked.hit { "hit" } else { "linked" },
-                            linked.seconds
-                        );
                     }
-                    send.send((name.clone(), result))
-                        .expect("native link receiver exists");
+                    send.send((index, finalize(index)))
+                        .expect("finalization receiver exists");
                 }
             });
         }
         drop(send);
-        // Complete host proof and start ordinary LLVM codegen while native
-        // workers run. The callback never executes on a linker thread.
-        generate_host();
-        // Drain every worker even after an error. No manifest is published until
-        // all jobs succeed; completed immutable cache entries remain reusable.
+        main_thread();
         receive.into_iter().collect::<Vec<_>>()
-    })
-    .into_iter()
-    .map(|(name, result)| {
-        result
-            .map(|linked| (name, linked))
-            .map_err(|error| error.into())
-    })
-    .collect()
+    });
+    // Restore source order for deterministic manifests and input ordering even
+    // when workers complete in another order.
+    let mut ordered: Vec<_> = (0..count).map(|_| None).collect();
+    for (index, result) in completed {
+        ordered[index] = Some(result);
+    }
+    ordered
+        .into_iter()
+        .map(|result| {
+            result
+                .ok_or("missing finalization result")?
+                .map_err(|error| error.into())
+        })
+        .collect()
+}
+
+struct PendingLtoUnit {
+    name: String,
+    ir: Vec<u8>,
+    lto_key: String,
+    dependencies: BTreeSet<String>,
+    timing: serde_json::Value,
+    frontend_seconds: f64,
+}
+
+fn compile_lto_unit(
+    job: &PendingLtoUnit,
+    cache: &Path,
+    finalizer: &Finalizer,
+    options: &FinalizationOptions,
+) -> Result<(String, CompiledUnit, serde_json::Value), Error> {
+    let started = Instant::now();
+    let (lto, hit) = cached(cache, "ltoir", &job.lto_key, || {
+        Ok(finalizer
+            .compiler()
+            .compile_nvvm_ir_to_ltoir(&job.name, &job.ir, options)?)
+    })?;
+    let seconds = started.elapsed().as_secs_f64();
+    let mut timing = job.timing.clone();
+    timing["ltoir_hit"] = json!(hit);
+    timing["ltoir_seconds"] = json!(seconds);
+    timing["seconds"] = json!(job.frontend_seconds + seconds);
+    eprintln!(
+        "[device-modules] {}: LTOIR {} ({seconds:.3}s)",
+        job.name,
+        if hit { "hit" } else { "compiled" }
+    );
+    let digest = Sha256::digest(&lto).into();
+    Ok((
+        job.name.clone(),
+        (lto, job.dependencies.clone(), digest),
+        timing,
+    ))
 }
 
 fn qualified_module(tcx: TyCtxt<'_>, id: DefId) -> String {
@@ -581,6 +650,7 @@ pub(crate) fn compile<'tcx>(
         .with_debug_policy(policy);
     let mut units: BTreeMap<String, CompiledUnit> = BTreeMap::new();
     let mut timings = Vec::new();
+    let mut pending_lto = Vec::new();
     let mut bounds_by_kernel = BTreeMap::new();
     let mut closure_keys = BTreeMap::new();
     for (name, indices) in &groups {
@@ -682,23 +752,46 @@ pub(crate) fn compile<'tcx>(
             .ok_or("libNVVM provenance is unavailable; cannot safely cache")?;
         let lto_key = digest(&compiler_key);
         let lto_started = Instant::now();
-        let (lto, lto_hit) = cached(&cache, "ltoir", &lto_key, || {
-            Ok(finalizer
-                .compiler()
-                .compile_nvvm_ir_to_ltoir(name, ir, &options)?)
-        })?;
-        timings.push(json!({"module":name, "definitions":roots.len(), "declarations":declarations.len(),
+        let mut timing = json!({"module":name, "definitions":roots.len(), "declarations":declarations.len(),
             "nvvm_cache_key":key,"ltoir_cache_key":lto_key,
-            "nvvm_hit":ir_hit,"nvvm_seconds":ir_seconds,"ltoir_hit":lto_hit,
-            "ltoir_seconds":lto_started.elapsed().as_secs_f64(),"seconds":unit_started.elapsed().as_secs_f64()}));
+            "nvvm_hit":ir_hit,"nvvm_seconds":ir_seconds});
+        if let Some(lto) = read_cache(&cache.join("ltoir").join(&lto_key)) {
+            timing["ltoir_hit"] = json!(true);
+            timing["ltoir_seconds"] = json!(lto_started.elapsed().as_secs_f64());
+            timing["seconds"] = json!(unit_started.elapsed().as_secs_f64());
+            timings.push(timing);
+            let digest = Sha256::digest(&lto).into();
+            units.insert(name.clone(), (lto, dependencies, digest));
+        } else {
+            pending_lto.push(PendingLtoUnit {
+                name: name.clone(),
+                ir: ir.to_vec(),
+                lto_key,
+                dependencies,
+                timing,
+                frontend_seconds: unit_started.elapsed().as_secs_f64(),
+            });
+        }
         eprintln!(
-            "[device-modules] {name}: NVVM {} ({ir_seconds:.3}s), LTOIR {}",
-            if ir_hit { "hit" } else { "compiled" },
-            if lto_hit { "hit" } else { "compiled" }
+            "[device-modules] {name}: NVVM {} ({ir_seconds:.3}s)",
+            if ir_hit { "hit" } else { "compiled" }
         );
-        let lto_digest: [u8; 32] = Sha256::digest(&lto).into();
-        units.insert(name.clone(), (lto, dependencies, lto_digest));
     }
+    let compiled = parallel_finalization(
+        pending_lto.len(),
+        "LTOIR",
+        |index| {
+            let job = &pending_lto[index];
+            compile_lto_unit(job, &cache, &finalizer, &options)
+                .map_err(|error| format!("{}: {error}", job.name))
+        },
+        || {},
+    )?;
+    for (name, unit, timing) in compiled {
+        units.insert(name, unit);
+        timings.push(timing);
+    }
+    timings.sort_by(|a, b| a["module"].as_str().cmp(&b["module"].as_str()));
     // File loaders already consume the manifest. Omitting embedded payloads
     // avoids copying every cached cubin into a new host object on each edit.
     let files_only = std::env::var_os("CUDA_OXIDE_MODULE_FILES_ONLY").is_some();
@@ -870,6 +963,56 @@ pub(crate) fn compile<'tcx>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn parallel_finalization_preserves_input_order_and_callback_thread() {
+        let caller = std::thread::current().id();
+        let result = finalization_workers(
+            32,
+            4,
+            |index| {
+                std::thread::sleep(std::time::Duration::from_micros((32 - index) as u64));
+                Ok(index)
+            },
+            || assert_eq!(std::thread::current().id(), caller),
+        )
+        .unwrap();
+        assert_eq!(result, (0..32).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn parallel_finalization_drains_jobs_after_failure() {
+        let completed = std::sync::atomic::AtomicUsize::new(0);
+        let result = finalization_workers(
+            32,
+            4,
+            |index| {
+                completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if index == 0 {
+                    Err("compiler failure".into())
+                } else {
+                    Ok(index)
+                }
+            },
+            || {},
+        );
+        assert_eq!(result.unwrap_err().to_string(), "compiler failure");
+        assert_eq!(completed.load(std::sync::atomic::Ordering::Relaxed), 32);
+    }
+
+    #[test]
+    fn cached_finalization_runs_callback_without_workers() {
+        let mut called = 0;
+        let result = parallel_finalization::<()>(
+            0,
+            "test",
+            |_| panic!("cached jobs must not compile"),
+            || called += 1,
+        )
+        .unwrap();
+        assert!(result.is_empty());
+        assert_eq!(called, 1);
+    }
+
     #[test]
     fn concurrent_cache_writers_publish_complete_entries() {
         let dir = std::env::temp_dir().join(format!(
