@@ -106,7 +106,7 @@ impl FinalizationOptions {
         if output == FinalizerOutput::Ptx {
             options.push("-ptx".to_string());
         }
-        self.append_nvjitlink_codegen_options(&mut options);
+        self.append_nvjitlink_codegen_options(&mut options, output);
         options
     }
 
@@ -124,7 +124,7 @@ impl FinalizationOptions {
     /// and digested so a future toolkit that honors it stays cache-correct.
     pub(crate) fn nvjitlink_ptx_options(&self) -> Vec<String> {
         let mut options = vec![format!("-arch={}", self.target.sm())];
-        self.append_nvjitlink_codegen_options(&mut options);
+        self.append_nvjitlink_codegen_options(&mut options, FinalizerOutput::Cubin);
         options
     }
 
@@ -143,9 +143,14 @@ impl FinalizationOptions {
         options
     }
 
-    fn append_nvjitlink_codegen_options(&self, options: &mut Vec<String>) {
+    fn append_nvjitlink_codegen_options(&self, options: &mut Vec<String>, output: FinalizerOutput) {
         // Let nvJitLink choose the available CPU parallelism for this artifact.
         options.push("-split-compile=0".to_string());
+        if output == FinalizerOutput::Cubin {
+            // The LTO split option does not parallelize the assembler. Apply
+            // the same regular ptxas parallelism as standalone PTX assembly.
+            options.push("-Xptxas=--split-compile=0".to_string());
+        }
         options.push(self.fma_option().to_string());
         match self.debug {
             DebugPolicy::None => {}
@@ -254,7 +259,13 @@ mod tests {
         );
         assert_eq!(
             base.nvjitlink_ltoir_options(FinalizerOutput::Cubin),
-            ["-arch=sm_90a", "-lto", "-split-compile=0", "-fma=0"]
+            [
+                "-arch=sm_90a",
+                "-lto",
+                "-split-compile=0",
+                "-Xptxas=--split-compile=0",
+                "-fma=0"
+            ]
         );
         assert_eq!(
             base.clone()
@@ -273,7 +284,13 @@ mod tests {
             base.clone()
                 .with_debug_policy(DebugPolicy::LineTables)
                 .nvjitlink_ptx_options(),
-            ["-arch=sm_90a", "-split-compile=0", "-fma=0", "-lineinfo"]
+            [
+                "-arch=sm_90a",
+                "-split-compile=0",
+                "-Xptxas=--split-compile=0",
+                "-fma=0",
+                "-lineinfo"
+            ]
         );
         assert_eq!(
             base.clone()
@@ -290,7 +307,14 @@ mod tests {
         assert_eq!(
             base.with_debug_policy(DebugPolicy::Full)
                 .nvjitlink_ltoir_options(FinalizerOutput::Cubin),
-            ["-arch=sm_90a", "-lto", "-split-compile=0", "-fma=0", "-g"]
+            [
+                "-arch=sm_90a",
+                "-lto",
+                "-split-compile=0",
+                "-Xptxas=--split-compile=0",
+                "-fma=0",
+                "-g"
+            ]
         );
 
         let base = FinalizationOptions::new("sm_90a".parse().unwrap()).with_fma_contraction(false);
