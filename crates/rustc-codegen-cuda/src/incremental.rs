@@ -177,7 +177,7 @@ fn link_cached_unit(
 /// Reserve Cargo jobserver tokens before starting extra workers; the first
 /// worker uses this rustc process's existing token while the main thread waits.
 fn link_native_modules(
-    jobs: &BTreeMap<String, BTreeSet<String>>,
+    jobs: &[(&String, &BTreeSet<String>)],
     closure_keys: &BTreeMap<String, String>,
     units: &BTreeMap<String, CompiledUnit>,
     cache: &Path,
@@ -185,14 +185,6 @@ fn link_native_modules(
     options: &FinalizationOptions,
     generate_host: impl FnOnce(),
 ) -> Result<BTreeMap<String, LinkedUnit>, Error> {
-    let mut jobs: Vec<_> = jobs.iter().collect();
-    // Start the largest closures first so expensive links do not sit behind
-    // short jobs and extend the final tail. This stable ordering keeps module
-    // names as the tie breaker; input order, cache keys, and publication remain
-    // unchanged.
-    jobs.sort_by_cached_key(|(_, deps)| {
-        std::cmp::Reverse(deps.iter().map(|name| units[name].0.len()).sum::<usize>())
-    });
     parallel_finalization(
         jobs.len(),
         "native",
@@ -537,6 +529,7 @@ fn input_fingerprint<'tcx>(
                     key.as_ref(),
                     "CUDA_OXIDE_KERNELS_ONLY"
                         | "CUDA_OXIDE_LINK_JOBS"
+                        | "CUDA_OXIDE_NATIVE_LINK_ORDER"
                         | "CUDA_OXIDE_INTERNAL_RUSTC_WRAPPER"
                         | "CUDA_OXIDE_UPSTREAM_RUSTC_WRAPPER"
                         | "CUDA_OXIDE_HOST_KEY_TRACE"
@@ -663,6 +656,13 @@ pub(crate) fn compile<'tcx>(
     let mut pending_lto = Vec::new();
     let mut bounds_by_kernel = BTreeMap::new();
     let mut closure_keys = BTreeMap::new();
+    let mut unit_costs = BTreeMap::new();
+    let estimate_costs = match std::env::var("CUDA_OXIDE_NATIVE_LINK_ORDER").as_deref() {
+        Err(std::env::VarError::NotPresent) | Ok("instructions") => true,
+        Ok("bytes") => false,
+        _ => return Err("CUDA_OXIDE_NATIVE_LINK_ORDER must be instructions or bytes".into()),
+    };
+    let mut priority_seconds = 0.0;
     for (name, indices) in &groups {
         let unit_started = Instant::now();
         let mut roots: Vec<_> = indices
@@ -745,6 +745,11 @@ pub(crate) fn compile<'tcx>(
             )
         })?;
         let (bounds, ir) = unpack(&stored_ir)?;
+        if estimate_costs {
+            let priority_started = Instant::now();
+            unit_costs.insert(name.clone(), crate::native_link_priority::Unit::from_ir(ir));
+            priority_seconds += priority_started.elapsed().as_secs_f64();
+        }
         let bounds: BTreeMap<String, (u32, Option<u32>)> = serde_json::from_value(bounds)?;
         bounds_by_kernel.extend(bounds.into_iter().map(|(name, (max_threads, min_blocks))| {
             (
@@ -818,8 +823,44 @@ pub(crate) fn compile<'tcx>(
         // unrelated definitions, often pulling most of the crate into a link.
         link_jobs.insert(name.clone(), units[name].1.clone());
     }
+    let mut priorities = BTreeMap::new();
+    let priority_started = Instant::now();
+    for (name, deps) in &link_jobs {
+        if !estimate_costs {
+            break;
+        }
+        let kernels: Vec<_> = groups[name]
+            .iter()
+            .map(|&index| &collection.functions[index])
+            .filter(|function| function.is_kernel)
+            .map(|function| function.export_name.clone())
+            .collect();
+        if let Some(cost) = crate::native_link_priority::estimate(
+            deps.iter().map(|name| &unit_costs[name]),
+            &kernels,
+        ) {
+            priorities.insert(name.clone(), cost);
+        }
+    }
+    // Shared units include unrelated helpers. Estimate reachable instructions
+    // and repeated inlining to start expensive links before short kernels.
+    // Input ordering, cache identity, and publication remain unchanged.
+    let mut ordered_jobs: Vec<_> = link_jobs.iter().collect();
+    ordered_jobs.sort_by_cached_key(|(name, deps)| {
+        std::cmp::Reverse(
+            priorities
+                .get(*name)
+                .copied()
+                .unwrap_or_else(|| deps.iter().map(|name| units[name].0.len() as u64).sum()),
+        )
+    });
+    eprintln!(
+        "[device-modules] native scheduling: {} estimated module(s) ({:.3}s)",
+        priorities.len(),
+        priority_seconds + priority_started.elapsed().as_secs_f64()
+    );
     let linked_modules = link_native_modules(
-        &link_jobs,
+        &ordered_jobs,
         &closure_keys,
         &units,
         &cache,
