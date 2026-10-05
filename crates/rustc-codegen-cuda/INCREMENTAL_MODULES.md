@@ -12,6 +12,10 @@ Independent native links run concurrently by default, bounded by Cargo jobserver
 tokens and the available CPU count, up to sixteen workers.
 `CUDA_OXIDE_LINK_JOBS=1` selects serial linking; changing this scheduling limit
 preserves compiler settings and device cache identity.
+Native links start with the most expensive estimated kernel closures, using
+reachable instructions and repeated helper calls from the generated NVVM IR.
+`CUDA_OXIDE_NATIVE_LINK_ORDER=bytes` restores input-size ordering. This option
+changes scheduling only and preserves device cache identity and compiler inputs.
 The manifest is published only after every link succeeds.
 
 Keep Cargo's target directory between builds. Device files and caches live in
