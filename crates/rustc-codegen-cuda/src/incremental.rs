@@ -173,6 +173,64 @@ fn link_cached_unit(
     })
 }
 
+// Timing records only advise queue order. They never enter cache identity or
+// compiler options, and invalid/missing/unwritable records are ignored.
+fn native_cost_path(
+    cache: &Path,
+    name: &str,
+    finalizer: &Finalizer,
+    options: &FinalizationOptions,
+) -> Option<PathBuf> {
+    let key = finalizer.linker().artifact_digest(
+        &[NamedInput::new("native-cost-v1", name.as_bytes())],
+        options,
+        FinalizerOutput::Cubin,
+    )?;
+    Some(cache.join("native-link-cost-v1").join(digest(&key)))
+}
+
+fn recorded_native_cost(
+    cache: &Path,
+    name: &str,
+    finalizer: &Finalizer,
+    options: &FinalizationOptions,
+) -> Option<f64> {
+    let bytes = read_cache(&native_cost_path(cache, name, finalizer, options)?)?;
+    decode_native_cost(&bytes)
+}
+
+fn decode_native_cost(bytes: &[u8]) -> Option<f64> {
+    let seconds: f64 = serde_json::from_slice(bytes).ok()?;
+    (seconds.is_finite() && seconds > 0.0 && seconds <= 3600.0).then_some(seconds)
+}
+
+fn timing_priorities(
+    estimates: &BTreeMap<String, u64>,
+    costs: &BTreeMap<String, f64>,
+) -> BTreeMap<String, u64> {
+    let mut ratios: Vec<_> = costs
+        .iter()
+        .filter_map(|(name, seconds)| {
+            estimates
+                .get(name)
+                .filter(|cost| **cost != 0)
+                .map(|estimate| seconds / *estimate as f64)
+        })
+        .collect();
+    if ratios.is_empty() {
+        return estimates.clone();
+    }
+    ratios.sort_by(f64::total_cmp);
+    let scale = ratios[ratios.len() / 2];
+    estimates
+        .iter()
+        .map(|(name, estimate)| {
+            let seconds = costs.get(name).copied().unwrap_or(*estimate as f64 * scale);
+            (name.clone(), (seconds * 1_000_000.0).ceil() as u64)
+        })
+        .collect()
+}
+
 /// Finalization operates on immutable LTOIR and cannot access the Rust session.
 /// Reserve Cargo jobserver tokens before starting extra workers; the first
 /// worker uses this rustc process's existing token while the main thread waits.
@@ -193,6 +251,14 @@ fn link_native_modules(
             let result =
                 link_cached_unit(cache, units, deps, &closure_keys[name], finalizer, options)
                     .map_err(|error| format!("{name}: {error}"))?;
+            if !result.hit
+                && result.seconds > 0.0
+                && let Some(path) = native_cost_path(cache, name, finalizer, options)
+                && let Ok(bytes) = serde_json::to_vec(&result.seconds)
+            {
+                // Advisory metadata must not turn a successful native link into a failure.
+                let _ = write_cache(&path, &bytes);
+            }
             eprintln!(
                 "[device-modules] {name}: cubin {} ({:.3}s)",
                 if result.hit { "hit" } else { "linked" },
@@ -657,10 +723,16 @@ pub(crate) fn compile<'tcx>(
     let mut bounds_by_kernel = BTreeMap::new();
     let mut closure_keys = BTreeMap::new();
     let mut unit_costs = BTreeMap::new();
-    let estimate_costs = match std::env::var("CUDA_OXIDE_NATIVE_LINK_ORDER").as_deref() {
-        Err(std::env::VarError::NotPresent) | Ok("instructions") => true,
-        Ok("bytes") => false,
-        _ => return Err("CUDA_OXIDE_NATIVE_LINK_ORDER must be instructions or bytes".into()),
+    let order = std::env::var("CUDA_OXIDE_NATIVE_LINK_ORDER");
+    let (estimate_costs, use_history) = match order.as_deref() {
+        Err(std::env::VarError::NotPresent) | Ok("history") => (true, true),
+        Ok("instructions") => (true, false),
+        Ok("bytes") => (false, false),
+        _ => {
+            return Err(
+                "CUDA_OXIDE_NATIVE_LINK_ORDER must be history, instructions or bytes".into(),
+            );
+        }
     };
     let mut priority_seconds = 0.0;
     for (name, indices) in &groups {
@@ -842,6 +914,24 @@ pub(crate) fn compile<'tcx>(
             priorities.insert(name.clone(), cost);
         }
     }
+    let recorded_costs: BTreeMap<_, _> = if use_history {
+        link_jobs
+            .keys()
+            .filter_map(|name| {
+                recorded_native_cost(&cache, name, &finalizer, &options)
+                    .map(|seconds| (name.clone(), seconds))
+            })
+            .collect()
+    } else {
+        BTreeMap::new()
+    };
+    if !recorded_costs.is_empty() {
+        priorities = timing_priorities(&priorities, &recorded_costs);
+        eprintln!(
+            "[device-modules] native scheduling: {} recorded module cost(s)",
+            recorded_costs.len()
+        );
+    }
     // Shared units include unrelated helpers. Estimate reachable instructions
     // and repeated inlining to start expensive links before short kernels.
     // Input ordering, cache identity, and publication remain unchanged.
@@ -1007,6 +1097,51 @@ pub(crate) fn compile<'tcx>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn no_history_keeps_cold_estimates() {
+        let estimates = BTreeMap::from([("large".into(), 900), ("small".into(), 10)]);
+        assert_eq!(timing_priorities(&estimates, &BTreeMap::new()), estimates);
+    }
+    #[test]
+    fn recorded_slow_kernel_precedes_larger_ir() {
+        let estimates = BTreeMap::from([("complex".into(), 100), ("simple".into(), 1000)]);
+        let costs = BTreeMap::from([("complex".into(), 9.0), ("simple".into(), 0.3)]);
+        let scores = timing_priorities(&estimates, &costs);
+        assert!(scores["complex"] > scores["simple"]);
+    }
+    #[test]
+    fn unseen_kernels_keep_estimated_relative_order() {
+        let estimates = BTreeMap::from([
+            ("seen".into(), 100),
+            ("large".into(), 900),
+            ("small".into(), 10),
+        ]);
+        let costs = BTreeMap::from([("seen".into(), 2.0)]);
+        let scores = timing_priorities(&estimates, &costs);
+        assert!(scores["large"] > scores["seen"] && scores["seen"] > scores["small"]);
+    }
+
+    #[test]
+    fn invalid_native_costs_are_ignored() {
+        for bytes in [
+            b"0".as_slice(),
+            b"-1",
+            b"3600.1",
+            b"null",
+            b"NaN",
+            b"broken",
+        ] {
+            assert_eq!(decode_native_cost(bytes), None);
+        }
+        assert_eq!(decode_native_cost(b"0.25"), Some(0.25));
+        assert_eq!(decode_native_cost(b"3600"), Some(3600.0));
+    }
+    #[test]
+    fn unrelated_history_does_not_rescale_new_modules() {
+        let estimates = BTreeMap::from([("new".into(), 42)]);
+        let costs = BTreeMap::from([("old".into(), 10.0)]);
+        assert_eq!(timing_priorities(&estimates, &costs), estimates);
+    }
     #[test]
     fn parallel_finalization_preserves_input_order_and_callback_thread() {
         let caller = std::thread::current().id();
