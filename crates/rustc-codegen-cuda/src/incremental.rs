@@ -617,9 +617,9 @@ fn input_fingerprint<'tcx>(
     options.output_types = rustc_session::config::OutputTypes::new(&[]);
     digest(
         json!([
-            // Entry-block stack allocation changes emitted device IR even when
-            // source MIR is unchanged.
-            "device-module-input-v4-entry-allocas",
+            // Entry-block allocas and unnamed local slots change emitted device
+            // IR even when source MIR is unchanged.
+            "device-module-input-v5-unnamed-locals",
             llvm_export::export::CONVERGENCE_POLICY_VERSION,
             name,
             metadata,
