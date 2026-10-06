@@ -36,6 +36,15 @@ fn one(ctx: &mut Context, block: Ptr<BasicBlock>) -> Value {
     op.get_operation().deref(ctx).get_result(0)
 }
 
+fn entry_and_body(ir: &str) -> (&str, &str) {
+    let target = ir
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("br label %"))
+        .expect("entry branches to the body");
+    ir.split_once(&format!("{target}:\n"))
+        .expect("body label exists")
+}
+
 #[test]
 fn fixed_slot_precedes_body_phis_but_initialization_stays_in_body() {
     let mut ctx = Context::new();
@@ -74,7 +83,7 @@ fn fixed_slot_precedes_body_phis_but_initialization_stays_in_body() {
         let ir =
             export_module_to_string_with_config(&ctx, &module, &NvvmExportConfig::new(dialect))
                 .unwrap();
-        let (entry, body) = ir.split_once("bb0:\n").unwrap();
+        let (entry, body) = entry_and_body(&ir);
         assert_eq!(ir.matches(" = alloca ").count(), 1, "{ir}");
         assert!(entry.contains(" = alloca i32, align 4"), "{ir}");
         assert!(
@@ -120,9 +129,9 @@ fn dynamic_alloca_count_stays_in_its_original_block() {
         &NvvmExportConfig::new(NvvmIrDialect::Modern),
     )
     .unwrap();
-    let (entry, body) = ir.split_once("bb0:\n").unwrap();
+    let (entry, body) = entry_and_body(&ir);
     assert!(!entry.contains(" = alloca "), "{ir}");
-    assert!(body.contains(" = alloca i32, i32 %v0"), "{ir}");
+    assert!(body.contains(" = alloca i32, i32 %0"), "{ir}");
 }
 
 #[test]
@@ -190,7 +199,7 @@ fn loop_scratch_hoists_only_when_its_address_does_not_escape() {
             &NvvmExportConfig::new(NvvmIrDialect::Modern),
         )
         .unwrap();
-        let (entry, body) = ir.split_once("bb0:\n").unwrap();
+        let (entry, body) = entry_and_body(&ir);
         assert_eq!(entry.contains(" = alloca "), !escapes, "{ir}");
         assert_eq!(body.contains(" = alloca "), escapes, "{ir}");
         assert!(
