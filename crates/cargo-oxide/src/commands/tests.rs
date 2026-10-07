@@ -2686,6 +2686,27 @@ fn passthrough_fingerprint_tracks_output_affecting_settings() {
         materialize_cubin: false,
         device_debug: DeviceDebug::Off,
     };
+    let hash_with = |env| {
+        passthrough_codegen_fingerprint_with_env(
+            &ctx,
+            &base,
+            None,
+            Some("sm_80"),
+            &MaterializationMode::default(),
+            &env,
+        )
+    };
+    let routing_only = BTreeMap::from([
+        (
+            reserved_oxide_symbols::SOURCE_COMPILER_HANDSHAKE_ENV.to_string(),
+            b"descriptor hint".to_vec(),
+        ),
+        (
+            reserved_oxide_symbols::SOURCE_COMPILER_PROVENANCE_ENV.to_string(),
+            b"stale ambient identity".to_vec(),
+        ),
+    ]);
+    assert_eq!(hash_with(BTreeMap::new()), hash_with(routing_only));
     let inherited_env = BTreeMap::new();
     let base_hash = passthrough_codegen_fingerprint_with_env(
         &ctx,

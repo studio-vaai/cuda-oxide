@@ -77,6 +77,12 @@ impl NvvmCompiler {
         self.libdevice_digest
     }
 
+    /// Exact retained libdevice bytes for the source-IR compilation route.
+    #[cfg(feature = "llvm-nvptx")]
+    pub fn libdevice_bytes(&self) -> &[u8] {
+        &self.libdevice
+    }
+
     /// Exact route provenance, or `None` when the loaded DSO is unidentifiable.
     pub fn provenance_digest(&self) -> Option<[u8; 32]> {
         self.libnvvm_digest()

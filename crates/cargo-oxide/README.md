@@ -18,10 +18,17 @@ cargo +nightly-2026-08-28 install --git https://github.com/NVlabs/cuda-oxide.git
 
 On first run, `cargo-oxide` will automatically fetch and build the codegen backend if it's not already available.
 
-Normal build, run and test commands cache native modules and compile them with
-nvJitLink during the build. Artifacts and caches reuse Cargo's target directory
-(`target/<profile>/oxide/`). The GPU target is detected locally; use `--arch` for
-cross-compilation. Embedded binaries need no runtime toolkit or artifact path.
+Normal build, run and test commands cache native modules and emit SASS during
+the build. Optimized builds for `sm_100` and newer use the Rust toolchain's
+LLVM compiler followed by toolkit `ptxas` when LLVM 23 and CUDA 13 or newer are
+available. Other targets and debug builds retain NVIDIA's NVVM/nvJitLink route.
+Set `CUDA_OXIDE_NATIVE_COMPILER=nvvm` to opt out, or add
+`#[cuda_module(compiler = "nvvm")]` to retain NVIDIA compilation for kernels in
+one module and its descendants. Helpers compile with their caller's policy.
+
+Artifacts and caches reuse Cargo's target directory (`target/<profile>/oxide/`).
+The GPU target is detected locally; use `--arch` for cross-compilation. Embedded
+binaries need no runtime toolkit or artifact path.
 
 Use `--no-incremental-modules` or `CUDA_OXIDE_INCREMENTAL_MODULES=0` for legacy
 package compilation, including programs with ordinary shared device globals or

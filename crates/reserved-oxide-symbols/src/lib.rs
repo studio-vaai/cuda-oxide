@@ -105,6 +105,11 @@ pub const MATERIALIZER_PROVENANCE_ENV: &str = "CUDA_OXIDE_INTERNAL_MATERIALIZER_
 /// code remains keyed by the content-derived provenance digest.
 pub const MATERIALIZER_HANDSHAKE_ENV: &str = "CUDA_OXIDE_INTERNAL_MATERIALIZER_HANDSHAKE";
 
+/// Content identity of the selected LLVM source compiler and PTX assembler.
+pub const SOURCE_COMPILER_PROVENANCE_ENV: &str = "CUDA_OXIDE_INTERNAL_SOURCE_COMPILER_PROVENANCE";
+/// Descriptor hint for verifying source compiler identity in the backend.
+pub const SOURCE_COMPILER_HANDSHAKE_ENV: &str = "CUDA_OXIDE_INTERNAL_SOURCE_COMPILER_HANDSHAKE";
+
 /// Optional comma-separated filter selecting crates that may own device code.
 pub const DEVICE_CODEGEN_CRATE_ENV: &str = "CUDA_OXIDE_DEVICE_CODEGEN_CRATE";
 
