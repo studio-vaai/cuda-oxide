@@ -14,14 +14,15 @@
 //! ```
 //!
 //! `#[unroll]` requests full unrolling when the iteration count is known at
-//! compile time. `#[unroll(1)]` keeps the loop rolled, including in downstream
+//! compile time. If MIR cannot infer the count, the native compiler receives
+//! the full-unroll request and can infer it after inlining. `#[unroll(1)]` keeps the loop rolled, including in downstream
 //! NVIDIA optimization. `#[unroll(N)]` for `N >= 2` requests `N` body copies per
 //! trip and leaves a small remainder loop for leftover iterations. The frontend records the
 //! request as a `mir.unroll_hint` operation inside that loop.
 //!
 //! The current analysis recognizes explicit counted `while` loops. Range-based
-//! `for` loops are supported by `#[unroll(1)]`, which needs no counter analysis.
-//! Frontend full/partial unrolling does not yet recognize range-based loops.
+//! `for` loops use native metadata for `#[unroll]` and `#[unroll(1)]`; the
+//! frontend does not yet recognize their induction variables.
 //! Partial loops with early exits instead carry a native LLVM unroll count.
 //!
 //! Several `continue` paths are supported: the pass joins their back-edges
@@ -172,7 +173,8 @@ fn check_clone_budget(
 /// elimination clean only that function: constant index expressions fold, dead
 /// branches disappear, and unreachable original loop blocks are removed.
 ///
-/// Unsupported loop shapes produce a warning and are not unrolled.
+/// Full requests with an unknown trip count are preserved as native metadata.
+/// Other unsupported shapes and known over-budget requests warn and stay rolled.
 pub fn unroll_annotated_loops(
     module: Ptr<Operation>,
     ctx: &mut Context,
@@ -405,7 +407,21 @@ pub fn unroll_annotated_loops(
                 // Requested but unsupported shape: report exactly why, loudly, so
                 // it is never a silent no-op.
                 UnrollOutcome::Skipped(reason) => {
-                    eprintln!("warning: {kind} requested but the loop was not unrolled: {reason}");
+                    if factor == 0 && rec.trip_count.is_none() {
+                        // Inlining and scalar replacement can expose a constant
+                        // trip count later. Preserve the request for native LLVM
+                        // instead of dropping it with the consumed MIR marker.
+                        for &latch in &info.loops()[loop_id].latches {
+                            let terminator = latch.deref(ctx).get_terminator(ctx).unwrap();
+                            dialect_mir::attributes::set_loop_unroll_policy(
+                                ctx, terminator, "pending", 0,
+                            );
+                        }
+                    } else {
+                        eprintln!(
+                            "warning: {kind} requested but the loop was not unrolled: {reason}"
+                        );
+                    }
                 }
             }
         }

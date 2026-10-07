@@ -802,3 +802,52 @@ fn native_partial_policy_is_renumbered_after_outer_cloning() {
         "cloned loops need independent native policies"
     );
 }
+
+#[test]
+fn full_unroll_unknown_bound_is_forwarded_to_native_optimizer() {
+    let mut ctx = mir_ctx();
+    let lp = counted_loop(&mut ctx, 4);
+    let compare = operations(&ctx, lp.region)
+        .into_iter()
+        .find(|&op| Operation::get_op::<MirLtOp>(op, &ctx).is_some())
+        .unwrap();
+    let old_bound = compare.deref(&ctx).get_operand(1);
+    let ty = common::u32t(&mut ctx);
+    let call = Operation::new(
+        &mut ctx,
+        MirCallOp::get_concrete_op_info(),
+        vec![ty.into()],
+        vec![],
+        vec![],
+        0,
+    );
+    let call = MirCallOp::new(call);
+    call.set_attr_callee(&ctx, StringAttr::new("bound_after_inlining".into()));
+    let signature = FunctionType::get(&ctx, vec![], vec![ty.into()]);
+    call.set_external_callee_signature(&mut ctx, signature.into());
+    let terminator = lp.preheader.deref(&ctx).get_terminator(&ctx).unwrap();
+    call.get_operation().insert_before(&ctx, terminator);
+    let bound = call.get_operation().deref(&ctx).get_result(0);
+    old_bound.replace_all_uses_with(&ctx, &bound);
+    MirUnrollHintOp::new(&mut ctx, 0)
+        .get_operation()
+        .insert_at_front(lp.latch, &ctx);
+
+    unroll_annotated_loops(lp.module, &mut ctx, &mut AnalysisManager::default()).unwrap();
+    pliron::operation::verify_operation(lp.module, &ctx).unwrap();
+    assert_eq!(hint_count(&ctx, lp.region), 0);
+    let info = loop_info(&ctx, lp.region);
+    assert_eq!(
+        info.loops().len(),
+        1,
+        "MIR must not guess the unknown trip count"
+    );
+    for &latch in &info.loops()[0].latches {
+        let branch = latch.deref(&ctx).get_terminator(&ctx).unwrap();
+        assert_eq!(
+            dialect_mir::attributes::loop_unroll_factor(&ctx, branch),
+            Some(0)
+        );
+        assert!(dialect_mir::attributes::loop_unroll_group(&ctx, branch).is_some());
+    }
+}

@@ -17,14 +17,13 @@ use pliron::utils::apfloat::{self, Float, GetSemantics};
 use crate::types::MirFP16Type;
 
 /// Carry an explicit native loop policy on every back-edge of one loop.
-/// A factor of one disables unrolling; larger factors request partial unrolling.
+/// Zero requests full unrolling, one disables it, and larger factors request partial unrolling.
 pub fn set_loop_unroll_policy(
     ctx: &mut Context,
     op: pliron::context::Ptr<pliron::operation::Operation>,
     group: &str,
     factor: u32,
 ) {
-    assert!(factor > 0);
     op.deref_mut(ctx).attributes.set(
         "mir_loop_unroll_group".try_into().unwrap(),
         pliron::builtin::attributes::StringAttr::new(group.to_string()),
