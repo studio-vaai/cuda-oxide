@@ -739,7 +739,9 @@ pub(super) fn export_module_with_externs_impl(
 
     for &(id, policy, factor) in &state.loop_unroll_nodes {
         writeln!(&mut output, "!{id} = distinct !{{!{id}, !{policy}}}").unwrap();
-        if factor == 1 {
+        if factor == 0 {
+            writeln!(&mut output, "!{policy} = !{{!\"llvm.loop.unroll.full\"}}").unwrap();
+        } else if factor == 1 {
             writeln!(
                 &mut output,
                 "!{policy} = !{{!\"llvm.loop.unroll.disable\"}}"
@@ -904,7 +906,9 @@ pub(super) fn export_module_to_string_with_config(
 
     for &(id, policy, factor) in &state.loop_unroll_nodes {
         writeln!(&mut output, "!{id} = distinct !{{!{id}, !{policy}}}").unwrap();
-        if factor == 1 {
+        if factor == 0 {
+            writeln!(&mut output, "!{policy} = !{{!\"llvm.loop.unroll.full\"}}").unwrap();
+        } else if factor == 1 {
             writeln!(
                 &mut output,
                 "!{policy} = !{{!\"llvm.loop.unroll.disable\"}}"

@@ -26,7 +26,7 @@ use crate::common::module_top_block;
 
 #[test]
 fn loop_unroll_policy_is_exported_with_distinct_metadata_ids() {
-    for factor in [1, 4] {
+    for factor in [0, 1, 4] {
         let mut ctx = Context::new();
         let module = ModuleOp::new(&mut ctx, "rolled_loop".try_into().unwrap());
         let ty = FuncType::get(&ctx, VoidType::get(&ctx).into(), vec![], false);
@@ -47,7 +47,11 @@ fn loop_unroll_policy_is_exported_with_distinct_metadata_ids() {
                 ir.contains(&format!("!{id} = distinct !{{!{id}, !")),
                 "{ir}"
             );
-            if factor == 1 {
+            if factor == 0 {
+                assert!(ir.contains("llvm.loop.unroll.full"), "{ir}");
+                assert!(!ir.contains("llvm.loop.unroll.count"), "{ir}");
+                assert!(!ir.contains("llvm.loop.unroll.disable"), "{ir}");
+            } else if factor == 1 {
                 assert!(ir.contains("llvm.loop.unroll.disable"), "{ir}");
                 assert!(!ir.contains("llvm.loop.unroll.count"), "{ir}");
             } else {
