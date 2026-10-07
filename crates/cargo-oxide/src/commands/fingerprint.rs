@@ -90,6 +90,8 @@ pub(super) fn passthrough_codegen_fingerprint_with_env(
     // Descriptor identity only accelerates verification; artifact identity is
     // already represented by the content-derived provenance above.
     effective_env.remove(MATERIALIZER_HANDSHAKE_ENV);
+    effective_env.remove(reserved_oxide_symbols::SOURCE_COMPILER_HANDSHAKE_ENV);
+    effective_env.remove(reserved_oxide_symbols::SOURCE_COMPILER_PROVENANCE_ENV);
 
     if opts.verbose {
         effective_env.insert("CUDA_OXIDE_VERBOSE".to_string(), b"1".to_vec());

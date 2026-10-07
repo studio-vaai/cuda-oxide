@@ -81,6 +81,9 @@ enum Commands {
     /// startup environment that will be given to Cargo/rustc.
     #[command(name = "__materializer-handshake", hide = true)]
     MaterializerHandshake,
+    /// Internal helper: discover the native source compiler in Cargo's environment.
+    #[command(name = "__native-compiler-handshake", hide = true)]
+    NativeCompilerHandshake,
     /// Build and run an example or project
     Run {
         /// Example name (required in workspace, optional for standalone projects)
@@ -635,7 +638,7 @@ fn validate_materialization_cli(cli: &Cli) -> Result<(), String> {
             "--materialize-cubin cannot be used with update because update only refreshes the codegen backend"
                 .to_string(),
         ),
-        Commands::MaterializerHandshake => Err(
+        Commands::MaterializerHandshake | Commands::NativeCompilerHandshake => Err(
             "--materialize-cubin cannot be passed to the internal materializer discovery helper"
                 .to_string(),
         ),
@@ -835,6 +838,9 @@ fn main() {
     match cli.command {
         Commands::MaterializerHandshake => {
             commands::print_materializer_handshake();
+        }
+        Commands::NativeCompilerHandshake => {
+            commands::print_source_compiler_handshake();
         }
         Commands::Run {
             example,

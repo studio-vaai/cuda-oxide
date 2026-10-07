@@ -90,6 +90,7 @@ pub(crate) fn track_codegen_environment() {
     let _ = proc_macro::tracked::env_var(CODEGEN_FINGERPRINT_ENV);
     let _ = proc_macro::tracked::env_var(MATERIALIZE_CUBIN_ENV);
     let _ = proc_macro::tracked::env_var(MATERIALIZER_PROVENANCE_ENV);
+    let _ = proc_macro::tracked::env_var(reserved_oxide_symbols::SOURCE_COMPILER_PROVENANCE_ENV);
     let _ = proc_macro::tracked::env_var(reserved_oxide_symbols::HOST_KERNEL_STUBS_ENV);
 }
 

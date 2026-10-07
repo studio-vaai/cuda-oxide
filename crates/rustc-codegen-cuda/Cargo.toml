@@ -27,7 +27,7 @@ reserved-oxide-symbols = { path = "../reserved-oxide-symbols" }
 oxide-artifacts = { version = "0.2.1", features = ["object-write"] }
 # Shared driver-independent libNVVM + nvJitLink finalization policy. This
 # crate loads CUDA compiler libraries at run time and never links libcuda.
-cuda-artifact-finalizer = { path = "../cuda-artifact-finalizer" }
+cuda-artifact-finalizer = { path = "../cuda-artifact-finalizer", features = ["llvm-nvptx"] }
 
 # IMPORTANT: This crate is isolated from the main workspace, so we cannot use
 # `{ workspace = true }`. Keep these versions synchronized with root Cargo.toml

@@ -286,6 +286,7 @@ pub(super) fn apply_native_tool_identity(cmd: &mut Command, ctx: &Context) -> Re
         serde_json::to_string(&handshake)
             .map_err(|error| format!("could not encode native tool handshake: {error}"))?,
     );
+    apply_source_compiler_identity(cmd, ctx, &output)?;
     Ok(())
 }
 
@@ -381,5 +382,160 @@ pub(super) fn parse_strict_bool(name: &str, value: &str) -> Result<bool, String>
         _ => Err(format!(
             "{name} must be a boolean (accepted true values: 1, true, yes, on; false values: 0, false, no, off), got {value:?}"
         )),
+    }
+}
+
+/// Prepare the source tools before Cargo checks freshness. Macros track the
+/// content identity, independently of descriptor hints and output paths.
+fn apply_source_compiler_identity(
+    cmd: &mut Command,
+    ctx: &Context,
+    output: &Path,
+) -> Result<(), String> {
+    use reserved_oxide_symbols::{SOURCE_COMPILER_HANDSHAKE_ENV, SOURCE_COMPILER_PROVENANCE_ENV};
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let mut helper = Command::new(executable);
+    helper.arg("__native-compiler-handshake");
+    apply_config_env(&mut helper, ctx);
+    apply_ld_library_path(&mut helper, ctx);
+    helper
+        .env_remove(SOURCE_COMPILER_HANDSHAKE_ENV)
+        .env_remove(SOURCE_COMPILER_PROVENANCE_ENV);
+    for key in [
+        "CUDA_OXIDE_NATIVE_COMPILER",
+        "CUDA_OXIDE_DEBUG",
+        "CUDA_OXIDE_TARGET",
+        MATERIALIZER_HANDSHAKE_ENV,
+    ] {
+        if let Some((_, value)) = cmd.get_envs().find(|(name, _)| *name == key) {
+            match value {
+                Some(value) => {
+                    helper.env(key, value);
+                }
+                None => {
+                    helper.env_remove(key);
+                }
+            }
+        }
+    }
+    let cache = output.join("cache/source-compiler-handshake/v1.json");
+    if let Ok(json) = fs::read_to_string(&cache) {
+        helper.env(SOURCE_COMPILER_HANDSHAKE_ENV, json);
+    }
+    let discovered = helper
+        .output()
+        .map_err(|error| format!("could not start source compiler discovery: {error}"))?;
+    if !discovered.status.success() {
+        return Err(format!(
+            "native source compiler discovery failed: {}",
+            String::from_utf8_lossy(&discovered.stderr).trim()
+        ));
+    }
+    let handshake: Option<cuda_artifact_finalizer::SourceCompilerHandshakeV1> =
+        serde_json::from_slice(&discovered.stdout)
+            .map_err(|error| format!("invalid source compiler handshake: {error}"))?;
+    match handshake {
+        Some(handshake) if handshake.has_consistent_provenance() => {
+            let json = serde_json::to_string(&handshake).map_err(|error| error.to_string())?;
+            if let Some(parent) = cache.parent() {
+                let _ = fs::create_dir_all(parent);
+                let temp = cache.with_extension(format!("tmp.{}", std::process::id()));
+                if fs::write(&temp, &json).is_ok() {
+                    let _ = fs::rename(temp, &cache);
+                }
+            }
+            cmd.env("CUDA_OXIDE_NATIVE_COMPILER", "llvm")
+                .env(
+                    SOURCE_COMPILER_PROVENANCE_ENV,
+                    digest_hex(&handshake.provenance_sha256),
+                )
+                .env(SOURCE_COMPILER_HANDSHAKE_ENV, json);
+        }
+        Some(_) => return Err("inconsistent source compiler handshake".into()),
+        None => {
+            cmd.env("CUDA_OXIDE_NATIVE_COMPILER", "nvvm")
+                .env(SOURCE_COMPILER_PROVENANCE_ENV, "nvvm")
+                .env_remove(SOURCE_COMPILER_HANDSHAKE_ENV);
+        }
+    }
+    Ok(())
+}
+
+pub fn print_source_compiler_handshake() {
+    let result = discover_source_compiler_handshake();
+    match result {
+        Ok(handshake) => println!(
+            "{}",
+            serde_json::to_string(&handshake).expect("serializable source compiler handshake")
+        ),
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn discover_source_compiler_handshake()
+-> Result<Option<cuda_artifact_finalizer::SourceCompilerHandshakeV1>, String> {
+    use cuda_artifact_finalizer::{
+        DebugPolicy, LlvmNvptxCompiler, NativeCompilerPreference, PtxAssembler,
+        SourceCompilerHandshakeV1, rust_llvm_library,
+    };
+    use reserved_oxide_symbols::SOURCE_COMPILER_HANDSHAKE_ENV;
+    let requested = std::env::var("CUDA_OXIDE_NATIVE_COMPILER").ok();
+    let preference =
+        NativeCompilerPreference::parse(requested.as_deref()).map_err(|error| error.to_string())?;
+    if preference == NativeCompilerPreference::Nvvm {
+        return Ok(None);
+    }
+    let discovered = (|| -> Result<SourceCompilerHandshakeV1, String> {
+        let target = std::env::var("CUDA_OXIDE_TARGET")
+            .map_err(|_| "native source compilation needs a configured target")?;
+        let target = target
+            .parse::<cuda_artifact_finalizer::CudaArch>()
+            .map_err(|error| error.to_string())?;
+        if target.uses_legacy_llvm() {
+            return Err(
+                "LLVM native compilation requires a modern NVVM source dialect (sm_100 or newer)"
+                    .into(),
+            );
+        }
+        let debug = std::env::var("CUDA_OXIDE_DEBUG").ok();
+        if debug
+            .as_deref()
+            .is_some_and(|value| DebugPolicy::parse_env_override(value) != Some(DebugPolicy::None))
+        {
+            return Err(
+                "LLVM source compilation requires optimized device code without debug info".into(),
+            );
+        }
+        let cached = std::env::var(SOURCE_COMPILER_HANDSHAKE_ENV)
+            .ok()
+            .and_then(|json| serde_json::from_str::<SourceCompilerHandshakeV1>(&json).ok())
+            .filter(SourceCompilerHandshakeV1::has_consistent_provenance);
+        let sysroot = crate::backend::get_rustc_sysroot()
+            .ok_or("could not locate the Rust toolchain sysroot")?;
+        let libdevice_path =
+            cuda_artifact_finalizer::find_libdevice().map_err(|error| error.to_string())?;
+        let libdevice = fs::read(&libdevice_path).map_err(|error| error.to_string())?;
+        let llvm = LlvmNvptxCompiler::from_path_with_provenance(
+            &rust_llvm_library(Path::new(&sysroot)).map_err(|error| error.to_string())?,
+            &libdevice,
+            cached.as_ref().map(|hint| &hint.llvm),
+        )
+        .map_err(|error| error.to_string())?;
+        let assembler =
+            PtxAssembler::discover_with_provenance(cached.as_ref().map(|hint| &hint.ptxas))
+                .map_err(|error| error.to_string())?;
+        if !assembler.supports_ptx90() {
+            return Err("LLVM native compilation requires CUDA 13 or newer ptxas".into());
+        }
+        llvm.handshake(&assembler)
+            .ok_or_else(|| "source compiler provenance changed".into())
+    })();
+    match discovered {
+        Ok(handshake) => Ok(Some(handshake)),
+        Err(_) if preference == NativeCompilerPreference::Auto => Ok(None),
+        Err(error) => Err(error),
     }
 }

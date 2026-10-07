@@ -47,24 +47,51 @@ use syn::{
 
 pub(crate) fn cuda_module_entry(attr: TokenStream, item: TokenStream) -> TokenStream {
     track_codegen_environment();
-    if !attr.is_empty() {
-        return syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "cuda_module does not take arguments yet",
-        )
-        .to_compile_error()
-        .into();
-    }
-
+    let options = parse_macro_input!(attr as CudaModuleOptions);
     let input = parse_macro_input!(item as ItemMod);
-    match expand_cuda_module(input) {
+    match expand_cuda_module_with_options(input, cfg!(feature = "host"), options) {
         Ok(tokens) => tokens.into(),
         Err(error) => error.to_compile_error().into(),
     }
 }
 
+/// Native compiler policy applies to kernels in this namespace, including
+/// inline descendants. Helpers are always compiled with their caller's policy.
+#[derive(Default)]
+pub(crate) struct CudaModuleOptions {
+    nvvm: bool,
+}
+
+impl syn::parse::Parse for CudaModuleOptions {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+        if input.is_empty() {
+            return Ok(Self::default());
+        }
+        let key: Ident = input.parse()?;
+        if key != "compiler" {
+            return Err(syn::Error::new_spanned(key, "expected compiler = \"nvvm\""));
+        }
+        input.parse::<Token![=]>()?;
+        let value: LitStr = input.parse()?;
+        if value.value() != "nvvm" {
+            return Err(syn::Error::new_spanned(
+                value,
+                "the module compiler override must be \"nvvm\"",
+            ));
+        }
+        if input.peek(Token![,]) {
+            input.parse::<Token![,]>()?;
+        }
+        if !input.is_empty() {
+            return Err(input.error("only one compiler override is allowed"));
+        }
+        Ok(Self { nvvm: true })
+    }
+}
+
 /// Expands `#[cuda_module]`, emitting the host surface when the `host`
 /// feature is on.
+#[cfg(test)]
 pub(crate) fn expand_cuda_module(module: ItemMod) -> syn::Result<TokenStream2> {
     expand_cuda_module_inner(module, cfg!(feature = "host"))
 }
@@ -76,13 +103,29 @@ pub(crate) fn expand_cuda_module(module: ItemMod) -> syn::Result<TokenStream2> {
 /// could not: this crate dev-depends on `cuda-host`, which turns the `host`
 /// feature back on under feature unification even for
 /// `cargo test --no-default-features`.
+#[cfg(test)]
 pub(crate) fn expand_cuda_module_inner(
     module: ItemMod,
     emit_host: bool,
 ) -> syn::Result<TokenStream2> {
+    expand_cuda_module_with_options(module, emit_host, CudaModuleOptions::default())
+}
+
+pub(crate) fn expand_cuda_module_with_options(
+    module: ItemMod,
+    emit_host: bool,
+    options: CudaModuleOptions,
+) -> syn::Result<TokenStream2> {
     let module_attrs = &module.attrs;
     let vis = &module.vis;
     let ident = &module.ident;
+    let compiler_marker = options.nvvm.then(|| {
+        quote! {
+            #[doc(hidden)]
+            #[used]
+            static __cuda_oxide_module_nvvm_v1: u8 = 0;
+        }
+    });
     let Some((_brace, items)) = &module.content else {
         return Err(syn::Error::new_spanned(
             &module.ident,
@@ -104,6 +147,7 @@ pub(crate) fn expand_cuda_module_inner(
                 #[doc(hidden)]
                 #[used]
                 static __cuda_oxide_module_v1: u8 = 0;
+                #compiler_marker
                 #(#items)*
             }
         });
@@ -440,6 +484,7 @@ pub(crate) fn expand_cuda_module_inner(
             #[doc(hidden)]
             #[used]
             static __cuda_oxide_module_v1: u8 = 0;
+            #compiler_marker
             #(#module_items)*
             #(#ptx_merge_required_markers)*
             #host_items
