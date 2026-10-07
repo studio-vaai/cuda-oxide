@@ -20,15 +20,6 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 type Error = Box<dyn std::error::Error>;
 const MODULE_MARKER: &str = "__cuda_oxide_module_v1";
-const NVVM_MODULE_MARKER: &str = "__cuda_oxide_module_nvvm_v1";
-
-fn module_in_namespace(module: &str, namespace: &str) -> bool {
-    module == namespace
-        || module
-            .strip_prefix(namespace)
-            .is_some_and(|suffix| suffix.starts_with("::"))
-}
-
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -95,11 +86,10 @@ struct LinkedUnit {
     seconds: f64,
 }
 
-// Native source-IR compilation, with NVIDIA overrides for selected namespaces.
+// Native source-IR compilation for every kernel module in a build.
 struct SourceCompiler {
     llvm: LlvmNvptxCompiler,
     assembler: PtxAssembler,
-    nvvm_modules: BTreeSet<String>,
 }
 
 struct NativeSourceUnit<'a> {
@@ -114,7 +104,6 @@ impl SourceCompiler {
         tcx: TyCtxt<'_>,
         finalizer: &Finalizer,
         options: &FinalizationOptions,
-        nvvm_modules: BTreeSet<String>,
     ) -> Result<Option<Self>, Error> {
         use cuda_artifact_finalizer::{
             NativeCompilerPreference, SourceCompilerHandshakeV1, rust_llvm_library,
@@ -168,11 +157,7 @@ impl SourceCompiler {
             {
                 return Err("source compiler differs from Cargo's native compiler identity".into());
             }
-            Ok(Self {
-                llvm,
-                assembler,
-                nvvm_modules,
-            })
+            Ok(Self { llvm, assembler })
         })();
         match discovered {
             Ok(compiler) => Ok(Some(compiler)),
@@ -472,9 +457,7 @@ fn link_native_modules(
         "native",
         |index| {
             let (name, deps) = jobs[index];
-            let result = if let Some(compiler) =
-                source_compiler.filter(|compiler| !compiler.nvvm_modules.contains(name))
-            {
+            let result = if let Some(compiler) = source_compiler {
                 compiler.link_cached(
                     cache,
                     sources,
@@ -912,30 +895,11 @@ pub(crate) fn compile<'tcx>(
             .then(|| qualified_module(tcx, tcx.parent(id)))
         })
         .collect();
-    let nvvm_namespaces: BTreeSet<_> = tcx
-        .hir_crate_items(())
-        .definitions()
-        .filter_map(|id| {
-            let id = id.to_def_id();
-            tcx.opt_item_name(id)
-                .is_some_and(|n| n.as_str() == NVVM_MODULE_MARKER)
-                .then(|| qualified_module(tcx, tcx.parent(id)))
-        })
-        .collect();
     let kernel_owners: BTreeSet<_> = collection
         .functions
         .iter()
         .filter(|f| f.is_kernel)
         .map(|f| module_owner(tcx, f.instance.def_id(), &marked))
-        .collect();
-    let nvvm_modules = kernel_owners
-        .iter()
-        .filter(|name| {
-            nvvm_namespaces
-                .iter()
-                .any(|namespace| module_in_namespace(name, namespace))
-        })
-        .cloned()
         .collect();
     let mut owners = HashMap::new();
     let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
@@ -975,9 +939,8 @@ pub(crate) fn compile<'tcx>(
     let options = FinalizationOptions::new(target.parse::<libnvvm_sys::CudaArch>()?)
         .with_fma_contraction(std::env::var_os("CUDA_OXIDE_NO_FMA").is_none())
         .with_debug_policy(policy);
-    let source_compiler = SourceCompiler::from_env(tcx, &finalizer, &options, nvvm_modules)?;
+    let source_compiler = SourceCompiler::from_env(tcx, &finalizer, &options)?;
     let mut source_units = BTreeMap::new();
-    let mut unit_dependencies = BTreeMap::new();
     let mut unit_kernels = BTreeMap::new();
     let mut units: BTreeMap<String, CompiledUnit> = BTreeMap::new();
     let mut timings = Vec::new();
@@ -1105,8 +1068,23 @@ pub(crate) fn compile<'tcx>(
                 },
             )
         }));
-        unit_dependencies.insert(name.clone(), dependencies.clone());
         let ir_seconds = ir_started.elapsed().as_secs_f64();
+        if source_compiler.is_some() {
+            // LLVM consumes the retained source IR directly. Skip NVIDIA's
+            // LTO cache and compilation entirely, including helper-only units.
+            timings.push(json!({
+                "module":name, "definitions":roots.len(), "declarations":declarations.len(),
+                "nvvm_cache_key":key, "nvvm_hit":ir_hit, "nvvm_seconds":ir_seconds,
+                "ltoir_skipped":true, "ltoir_hit":null, "ltoir_seconds":0.0,
+                "seconds":unit_started.elapsed().as_secs_f64(),
+            }));
+            units.insert(name.clone(), (Vec::new(), dependencies, [0; 32]));
+            eprintln!(
+                "[device-modules] {name}: NVVM {} ({ir_seconds:.3}s), LTOIR skipped",
+                if ir_hit { "hit" } else { "compiled" }
+            );
+            continue;
+        }
         let compiler_key = finalizer
             .compiler()
             .artifact_digest(name, ir, &options)
@@ -1138,34 +1116,6 @@ pub(crate) fn compile<'tcx>(
             if ir_hit { "hit" } else { "compiled" }
         );
     }
-    if let Some(compiler) = &source_compiler {
-        let mut required = BTreeSet::new();
-        for name in &compiler.nvvm_modules {
-            if unit_kernels.get(name).is_none_or(BTreeSet::is_empty) {
-                return Err(format!(
-                    "NVIDIA compiler policy names a module without kernels: {name}"
-                )
-                .into());
-            }
-            required.extend(unit_dependencies[name].iter().cloned());
-        }
-        let mut nvidia = Vec::new();
-        for mut job in pending_lto {
-            if required.contains(&job.name) {
-                nvidia.push(job);
-            } else {
-                job.timing["ltoir_skipped"] = json!(true);
-                job.timing["ltoir_hit"] = serde_json::Value::Null;
-                job.timing["ltoir_seconds"] = json!(0.0);
-                job.timing["seconds"] = json!(job.frontend_seconds);
-                timings.push(job.timing);
-                // This unit supplies source IR only. NVIDIA native jobs can
-                // reference only the validated required set above.
-                units.insert(job.name, (Vec::new(), job.dependencies, [0; 32]));
-            }
-        }
-        pending_lto = nvidia;
-    }
     let compiled = parallel_finalization(
         pending_lto.len(),
         "LTOIR",
@@ -1196,16 +1146,6 @@ pub(crate) fn compile<'tcx>(
         // Expanding whole helper units here would add dependencies of their
         // unrelated definitions, often pulling most of the crate into a link.
         link_jobs.insert(name.clone(), units[name].1.clone());
-    }
-    if let Some(compiler) = &source_compiler
-        && let Some(name) = compiler
-            .nvvm_modules
-            .iter()
-            .find(|name| !link_jobs.contains_key(*name))
-    {
-        return Err(
-            format!("NVIDIA compiler policy names a module without kernels: {name}").into(),
-        );
     }
     let mut priorities = BTreeMap::new();
     let priority_started = Instant::now();
@@ -1349,7 +1289,7 @@ pub(crate) fn compile<'tcx>(
             json!({"path":relative,"sha256":cubin_digest,
             "inputs":deps,"kernels":kernels.iter().map(|f| &f.export_name).collect::<Vec<_>>(),
             "native_compilation_phases": linked.compilation_phases,
-            "compiler": if source_compiler.as_ref().is_some_and(|compiler| !compiler.nvvm_modules.contains(name)) { "llvm-source" } else { "nvvm-lto" },
+            "compiler": if source_compiler.is_some() { "llvm-source" } else { "nvvm-lto" },
             "link_hit":hit,"link_seconds":linked.seconds,
             "link_digest_seconds":digest_seconds,"cubin_cache_seconds":cache_seconds,"publish_seconds":publish_seconds}),
         );
@@ -1415,19 +1355,6 @@ pub(crate) fn compile<'tcx>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn compiler_namespace_override_respects_rust_module_boundaries() {
-        assert!(module_in_namespace("crate::kernels", "crate::kernels"));
-        assert!(module_in_namespace(
-            "crate::kernels::nested",
-            "crate::kernels"
-        ));
-        assert!(!module_in_namespace(
-            "crate::kernels_extra",
-            "crate::kernels"
-        ));
-        assert!(!module_in_namespace("crate::other", "crate::kernels"));
-    }
     #[test]
     fn no_history_keeps_cold_estimates() {
         let estimates = BTreeMap::from([("large".into(), 900), ("small".into(), 10)]);

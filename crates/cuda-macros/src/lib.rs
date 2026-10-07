@@ -251,12 +251,6 @@ pub fn ptx_asm(input: TokenStream) -> TokenStream {
 ///     .await?;
 /// ```
 ///
-/// # Native compiler policy
-///
-/// `#[cuda_module(compiler = "nvvm")]` keeps NVIDIA's NVVM/LTO compiler for
-/// kernels in this module and its descendants. Device-only helper modules do
-/// not produce executable artifacts; each helper uses its caller's compiler.
-///
 /// # Raw launch safety
 ///
 /// A raw [`LaunchConfig`](https://docs.rs/cuda-core/latest/cuda_core/simt/launch/struct.LaunchConfig.html)

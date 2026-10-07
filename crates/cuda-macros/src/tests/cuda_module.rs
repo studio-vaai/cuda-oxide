@@ -1404,29 +1404,3 @@ fn proof_deduplication_preserves_distinct_types_lifetimes_and_layouts() {
     crate::common::deduplicate_where_predicates(&mut generics);
     assert_eq!(generics.where_clause.unwrap().predicates.len(), 8);
 }
-
-#[test]
-fn native_compiler_override_marks_namespace_without_host_dependencies() {
-    let options = syn::parse2(quote!(compiler = "nvvm",)).unwrap();
-    let expanded =
-        crate::cuda_module::expand_cuda_module_with_options(one_kernel_module(), false, options)
-            .unwrap()
-            .to_string()
-            .replace(' ', "");
-    assert!(expanded.contains("static__cuda_oxide_module_nvvm_v1:u8=0"));
-    assert!(expanded.contains("static__cuda_oxide_module_v1:u8=0"));
-    assert!(!expanded.contains("cuda_host"));
-}
-
-#[test]
-fn native_compiler_override_rejects_invalid_or_duplicate_policies() {
-    use crate::cuda_module::CudaModuleOptions;
-    for input in [
-        quote!(compiler = "llvm"),
-        quote!(compiler = "nvvm", compiler = "nvvm"),
-        quote!(unknown = "nvvm"),
-    ] {
-        assert!(syn::parse2::<CudaModuleOptions>(input).is_err());
-    }
-    assert!(syn::parse2::<CudaModuleOptions>(quote!()).is_ok());
-}
