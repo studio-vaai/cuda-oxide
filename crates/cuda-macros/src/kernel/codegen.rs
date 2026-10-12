@@ -26,7 +26,7 @@ use syn::{FnArg, GenericParam, Ident, ItemFn, Pat, Type};
 
 /// Determine the entry-body policy before constructing tokens. Ordinary
 /// generic implementation helpers keep their CPU semantics.
-fn host_entries_stubbed() -> Result<bool, TokenStream2> {
+pub(crate) fn host_entries_stubbed() -> Result<bool, TokenStream2> {
     if !proc_macro::is_available() {
         return Ok(false);
     }
@@ -49,7 +49,7 @@ fn host_stub_attrs(enabled: bool) -> TokenStream2 {
         return TokenStream2::new();
     }
     let marker = reserved_oxide_symbols::HOST_KERNEL_STUB_DOC;
-    quote! { #[allow(unused_variables)] #[doc = #marker] }
+    quote! { #[allow(unused_variables, unused_mut)] #[doc = #marker] }
 }
 
 fn host_stub_body() -> TokenStream2 {
@@ -382,7 +382,7 @@ pub(super) fn generate_simple_kernel(
     if stub {
         input
             .attrs
-            .push(syn::parse_quote!(#[allow(unused_variables)]));
+            .push(syn::parse_quote!(#[allow(unused_variables, unused_mut)]));
         let marker = reserved_oxide_symbols::HOST_KERNEL_STUB_DOC;
         input.attrs.push(syn::parse_quote!(#[doc = #marker]));
         input.block = syn::parse2(host_stub_body()).expect("valid generated host stub");
