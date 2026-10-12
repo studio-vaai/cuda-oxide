@@ -22,13 +22,23 @@ mod kernels {
     impl<const N: usize> Prepared<N> {
         #[inline(always)]
         fn select(&self, role: usize) -> f32 {
-            self.coefficients.get(role)
+            self.coefficients[role]
+        }
+
+        #[inline(always)]
+        fn first(&self) -> f32 {
+            self.coefficients[0]
+        }
+
+        #[inline(always)]
+        fn last(&self) -> f32 {
+            self.coefficients[N - 1]
         }
     }
 
     /// # Safety
     /// `input` must contain 3 floats; `indices` and `output` must contain
-    /// one element per launched thread. Every index must be less than 3.
+    /// one index and three output elements per launched thread. Every index must be less than 3.
     #[kernel]
     pub unsafe fn select_3(input: *const f32, indices: *const u32, output: *mut u32) {
         let i = thread::index_1d().get();
@@ -43,13 +53,15 @@ mod kernels {
             // The index is loaded at runtime, rather than bounded syntactically
             // by a remainder that the existing compiler scalarization recognizes.
             let role = indices.add(i).read() as usize;
-            output.add(i).write(prepared.select(role).to_bits());
+            output.add(3 * i).write(prepared.select(role).to_bits());
+            output.add(3 * i + 1).write(prepared.first().to_bits());
+            output.add(3 * i + 2).write(prepared.last().to_bits());
         }
     }
 
     /// # Safety
     /// `input` must contain 4 floats; `indices` and `output` must contain
-    /// one element per launched thread. Every index must be less than 4.
+    /// one index and three output elements per launched thread. Every index must be less than 4.
     #[kernel]
     pub unsafe fn select_4(input: *const f32, indices: *const u32, output: *mut u32) {
         let i = thread::index_1d().get();
@@ -65,13 +77,15 @@ mod kernels {
             // The index is loaded at runtime, rather than bounded syntactically
             // by a remainder that the existing compiler scalarization recognizes.
             let role = indices.add(i).read() as usize;
-            output.add(i).write(prepared.select(role).to_bits());
+            output.add(3 * i).write(prepared.select(role).to_bits());
+            output.add(3 * i + 1).write(prepared.first().to_bits());
+            output.add(3 * i + 2).write(prepared.last().to_bits());
         }
     }
 
     /// # Safety
     /// `input` must contain 16 floats; `indices` and `output` must contain
-    /// one element per launched thread. Every index must be less than 16.
+    /// one index and three output elements per launched thread. Every index must be less than 16.
     #[kernel]
     pub unsafe fn select_16(input: *const f32, indices: *const u32, output: *mut u32) {
         let i = thread::index_1d().get();
@@ -99,7 +113,9 @@ mod kernels {
             // The index is loaded at runtime, rather than bounded syntactically
             // by a remainder that the existing compiler scalarization recognizes.
             let role = indices.add(i).read() as usize;
-            output.add(i).write(prepared.select(role).to_bits());
+            output.add(3 * i).write(prepared.select(role).to_bits());
+            output.add(3 * i + 1).write(prepared.first().to_bits());
+            output.add(3 * i + 2).write(prepared.last().to_bits());
         }
     }
 }
@@ -118,9 +134,9 @@ fn main() {
     for n in [3_u32, 4, 16] {
         let indices: Vec<u32> = (0..256).map(|i| (i * 7 + 1) % n).collect();
         let roles = DeviceBuffer::from_host(&stream, &indices).expect("upload indices");
-        let output = DeviceBuffer::<u32>::zeroed(&stream, indices.len()).expect("alloc output");
+        let output = DeviceBuffer::<u32>::zeroed(&stream, 3 * indices.len()).expect("alloc output");
         let config = LaunchConfig::for_num_elems(indices.len() as u32);
-        // SAFETY: input has 16 floats, roles/output have 256 elements, and all
+        // SAFETY: input has 16 floats, roles has 256 elements, output has 768 elements, and all
         // uploaded indices are valid for the selected kernel's array length.
         unsafe {
             let pointers = (
@@ -138,8 +154,11 @@ fn main() {
         }
         stream.synchronize().expect("sync");
         let actual = output.to_host_vec(&stream).expect("download output");
-        let expected: Vec<u32> = indices.iter().map(|&i| bits[i as usize]).collect();
+        let expected: Vec<u32> = indices
+            .iter()
+            .flat_map(|&i| [bits[i as usize], bits[0], bits[n as usize - 1]])
+            .collect();
         assert_eq!(actual, expected, "RegisterArray length {n}");
     }
-    println!("register_array: PASS (3/4/16 elements, exact float bits)");
+    println!("register_array: PASS (3/4/16 elements, runtime/constant indices, exact float bits)");
 }
