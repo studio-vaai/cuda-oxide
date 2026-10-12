@@ -197,8 +197,16 @@ fn generate_device_function(mut input: ItemFn) -> TokenStream {
             call
         };
         // Non-generic device function: simple case.
+        // The device backend consumes the source inline hint, but rustc's host
+        // backend ignores it after we give this function an exported identity.
+        let inline_lint = input
+            .attrs
+            .iter()
+            .any(|attr| attr.path().is_ident("inline"))
+            .then(|| quote! { #[allow(unused_attributes)] });
         let expanded = quote! {
             #[unsafe(no_mangle)]
+            #inline_lint
             #input
 
             /// Wrapper for the device function with the original name.
