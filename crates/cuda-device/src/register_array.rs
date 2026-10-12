@@ -7,14 +7,14 @@
 
 /// A small fixed-size array whose runtime reads use constant element accesses.
 ///
-/// Unlike ordinary runtime array indexing, [`get`](Self::get) selects between
-/// literal element reads. This lets the device optimizer keep a thread-private
+/// Indexing selects between literal element references instead of computing a
+/// dynamic element address. This lets the device optimizer keep a thread-private
 /// array as independent register values instead of making it addressable in
 /// local memory. Actual register allocation still depends on the surrounding
 /// kernel and register pressure.
 ///
-/// Supports lengths from zero through 16. Elements must be [`Copy`]. `get`
-/// returns a value; `Index` returns an element reference using literal indices.
+/// Supports lengths from zero through 16. Elements must be [`Copy`]. `Index`
+/// returns an element reference using literal indices.
 /// Immediate indexing reads can be promoted just like value selection, while
 /// retaining or escaping references can require addressable storage. There is
 /// no `AsRef` or `Deref` implementation. Use ordinary arrays or memory views
@@ -25,10 +25,8 @@
 ///
 /// let coefficients = RegisterArray::new([1.0_f32, 2.0, 3.0]);
 /// let role = 1;
-/// assert_eq!(coefficients.get(role), 2.0);
 /// assert_eq!(coefficients[role], 2.0);
 /// assert_eq!(coefficients[2], 3.0);
-/// assert_eq!(coefficients.get_const::<2>(), 3.0);
 /// ```
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,29 +45,6 @@ impl<T: Copy, const N: usize> RegisterArray<T, N> {
     pub const fn new(values: [T; N]) -> Self {
         const { assert!(N <= 16, "RegisterArray supports at most 16 elements") };
         Self { values }
-    }
-
-    /// Select an element by value using constant array indices.
-    ///
-    /// # Panics
-    /// Panics if `index >= N`.
-    #[inline(always)]
-    pub fn get(self, index: usize) -> T {
-        self[index]
-    }
-
-    /// Read a compile-time element index by value.
-    ///
-    /// An out-of-bounds index is rejected at compile time.
-    ///
-    /// ```compile_fail
-    /// use cuda_device::RegisterArray;
-    /// const INVALID: u32 = RegisterArray::new([10, 20, 30]).get_const::<3>();
-    /// ```
-    #[inline(always)]
-    pub const fn get_const<const I: usize>(self) -> T {
-        const { assert!(I < N, "RegisterArray index out of bounds") };
-        self.values[I]
     }
 
     /// Return the underlying array by value.
@@ -122,15 +97,11 @@ mod tests {
         let values = [0.0_f32, -0.0, f32::from_bits(0x7fc00123), f32::NEG_INFINITY];
         let registers = RegisterArray::new(values);
         for (index, value) in values.into_iter().enumerate() {
-            assert_eq!(registers.get(index).to_bits(), value.to_bits());
             assert_eq!(registers[index].to_bits(), value.to_bits());
         }
         let triangle = RegisterArray::new([values[0], values[1], values[2]]);
         for index in 0..3 {
-            assert_eq!(
-                triangle.get(index).to_bits(),
-                registers.get(index).to_bits()
-            );
+            assert_eq!(triangle[index].to_bits(), registers[index].to_bits());
         }
     }
 
@@ -140,7 +111,6 @@ mod tests {
             let values: [u32; N] = core::array::from_fn(|i| i as u32 + 10);
             let registers = RegisterArray::from(values);
             for (index, value) in values.into_iter().enumerate() {
-                assert_eq!(registers.get(index), value);
                 assert_eq!(registers[index], value);
             }
             assert_eq!(registers.into_array(), values);
@@ -170,37 +140,24 @@ mod tests {
     #[test]
     fn constant_access() {
         const REGISTERS: RegisterArray<u32, 3> = RegisterArray::new([10, 20, 30]);
-        const LAST: u32 = REGISTERS.get_const::<2>();
-        assert_eq!(LAST, 30);
-        assert_eq!(REGISTERS[2], LAST);
+        assert_eq!(REGISTERS[2], 30);
     }
 
     #[test]
     #[should_panic(expected = "RegisterArray index out of bounds")]
     fn empty_rejects_read() {
-        RegisterArray::<u32, 0>::new([]).get(0);
+        let _ = RegisterArray::<u32, 0>::new([])[0];
     }
 
     #[test]
     #[should_panic(expected = "RegisterArray index out of bounds")]
     fn triangle_rejects_fourth_role() {
-        RegisterArray::new([1.0, 2.0, 3.0]).get(3);
-    }
-
-    #[test]
-    #[should_panic(expected = "RegisterArray index out of bounds")]
-    fn rejects_large_index() {
-        RegisterArray::new([1.0, 2.0, 3.0, 4.0]).get(usize::MAX);
-    }
-    #[test]
-    #[should_panic(expected = "RegisterArray index out of bounds")]
-    fn index_rejects_out_of_bounds() {
         let _ = RegisterArray::new([1.0, 2.0, 3.0])[3];
     }
 
     #[test]
     #[should_panic(expected = "RegisterArray index out of bounds")]
-    fn index_rejects_empty() {
-        let _ = RegisterArray::<u32, 0>::new([])[0];
+    fn rejects_large_index() {
+        let _ = RegisterArray::new([1.0, 2.0, 3.0, 4.0])[usize::MAX];
     }
 }
