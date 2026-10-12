@@ -44,6 +44,7 @@ pub mod int;
 pub mod mma_frag;
 pub mod prmt;
 pub mod ptx;
+pub mod register_array;
 pub mod shared;
 pub mod swizzle;
 pub mod tcgen05;
@@ -84,6 +85,7 @@ pub use disjoint::{
 };
 pub use disjoint::{DisjointSlice, SpaceLayout};
 pub use fence::*;
+pub use register_array::RegisterArray;
 pub use shared::{DynamicSharedArray, SharedArray};
 pub use tcgen05::{
     TensorMemoryHandle, TmemAddress, TmemDeallocated, TmemF32x4, TmemF32x32, TmemGuard, TmemReady,
