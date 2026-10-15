@@ -19,7 +19,7 @@ path = "src/main.rs"
 # crates and are fine.
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-cuda-artifact-finalizer = { workspace = true }
+cuda-artifact-finalizer = { workspace = true, features = ["llvm-nvptx"] }
 libnvvm-sys = { workspace = true }
 nvjitlink-sys = { workspace = true }
 oxide-artifacts = { workspace = true }

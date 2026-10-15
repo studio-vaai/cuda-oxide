@@ -7,6 +7,7 @@ Uses persistent Cargo/NVIDIA caches. Source is restored even on failures.
 Run with CUDA_OXIDE_BACKEND pointing at the matching fork backend.
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -148,9 +149,8 @@ def main():
                 events.append(event)
         assert events and all(event['fresh'] for event in events)
         run()
-        # A wrapper/compiler fence can change while the exact LTOIR stays
-        # unchanged. Retain the native image produced by the fresh kernel edit
-        # instead of asking nvJitLink to optimize that same program again.
+        # A wrapper/compiler fence can change while exact source IR or LTOIR
+        # stays unchanged. Reuse the native image for those verified inputs.
         source.write_text(original.replace('kernel_bias = 10u32', f'kernel_bias = {10 + delta}u32', 1)
             .replace('i as u32 * 4 + 12', f'i as u32 * 4 + {12 + delta}', 1))
         old_fence = env.get('CUDA_OXIDE_EXACT_CACHE_TEST_FENCE')
@@ -160,8 +160,18 @@ def main():
             run()
             env['CUDA_OXIDE_EXACT_CACHE_TEST_FENCE'] = 'second'
             exact_reuse = build('exact_input_fence_reuse')
-            assert {u['module']: u['ltoir_cache_key'] for u in exact_seed['compilation_units']} == {
-                u['module']: u['ltoir_cache_key'] for u in exact_reuse['compilation_units']}
+            def exact_inputs(manifest):
+                identities = {}
+                for unit in manifest['compilation_units']:
+                    if unit.get('ltoir_skipped'):
+                        # LLVM consumes source IR directly. Compare its actual
+                        # cached contents across the changed compiler fence.
+                        path = artifact_root / 'cache/modules/v1/nvvm-v2' / unit['nvvm_cache_key']
+                        identities[unit['module']] = hashlib.sha256(path.read_bytes()).hexdigest()
+                    else:
+                        identities[unit['module']] = unit['ltoir_cache_key']
+                return identities
+            assert exact_inputs(exact_seed) == exact_inputs(exact_reuse)
             assert all(m['link_hit'] for m in exact_reuse['modules'].values())
             assert {n: m['sha256'] for n, m in exact_seed['modules'].items()} == {
                 n: m['sha256'] for n, m in exact_reuse['modules'].items()}

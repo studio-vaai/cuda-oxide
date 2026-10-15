@@ -1,9 +1,8 @@
 # Incremental native device modules
 
 The default `cargo oxide build -- --release --lib --locked`
-workflow partitions reachable device code by `#[cuda_module]`, caches NVVM IR and
-LTOIR for each compilation unit, and links architecture-specific cubins with
-nvJitLink at build time. The local GPU architecture is detected automatically. For cross-compilation,
+workflow partitions reachable device code by `#[cuda_module]`, caches device IR for each compilation unit, and finalizes architecture-specific
+cubins with LLVM NVPTX and CUDA toolkit `ptxas` at build time. The local GPU architecture is detected automatically. For cross-compilation,
 set `--arch` or `CUDA_OXIDE_TARGET` to the deployment GPU architecture.
 Use `--no-incremental-modules` (or `CUDA_OXIDE_INCREMENTAL_MODULES=0`) to opt out.
 The old `--incremental-modules` switch remains accepted.

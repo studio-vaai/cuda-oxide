@@ -15,7 +15,7 @@ use crate::diagnostics::parse_ptxas_resource_usage;
 use crate::link::logical_ptx;
 use crate::nvvm::report_changed_tool;
 use crate::provenance::{
-    StableDigest, ToolFileIdentity, digest_file_handle, recipe_digest,
+    PinnedToolProvenance, StableDigest, ToolFileIdentity, digest_file_handle, recipe_digest,
     with_revalidated_tool_identity,
 };
 use crate::{FinalizationOptions, FinalizerError, LinkReport, NamedInput, is_valid_cubin};
@@ -98,12 +98,16 @@ struct PtxasTool {
     file: File,
     identity: ToolFileIdentity,
     digest: [u8; 32],
+    cuda_major: Option<u32>,
     #[cfg(target_os = "linux")]
     execute_from_fd: bool,
 }
 
 impl PtxasTool {
-    fn open(path: PathBuf) -> Result<Self, FinalizerError> {
+    fn open(
+        path: PathBuf,
+        expected: Option<&PinnedToolProvenance>,
+    ) -> Result<Self, FinalizerError> {
         let file = File::open(&path).map_err(|source| FinalizerError::Io {
             path: path.clone(),
             source,
@@ -126,10 +130,14 @@ impl PtxasTool {
                 path: path.clone(),
                 details: "could not capture a stable file identity".to_string(),
             })?;
-        let digest = digest_file_handle(&file).map_err(|source| FinalizerError::Io {
-            path: path.clone(),
-            source,
-        })?;
+        let digest =
+            match expected.filter(|hint| hint.file.has_unix_identity() && hint.file == identity) {
+                Some(hint) => hint.sha256,
+                None => digest_file_handle(&file).map_err(|source| FinalizerError::Io {
+                    path: path.clone(),
+                    source,
+                })?,
+            };
 
         #[cfg(target_os = "linux")]
         let execute_from_fd = {
@@ -137,19 +145,20 @@ impl PtxasTool {
             file.read_exact_at(&mut magic, 0).is_ok() && magic == *b"\x7fELF"
         };
 
-        let tool = Self {
+        let mut tool = Self {
             path,
             file,
             identity,
             digest,
+            cuda_major: None,
             #[cfg(target_os = "linux")]
             execute_from_fd,
         };
-        tool.validate_version()?;
+        tool.cuda_major = tool.validate_version()?;
         Ok(tool)
     }
 
-    fn validate_version(&self) -> Result<(), FinalizerError> {
+    fn validate_version(&self) -> Result<Option<u32>, FinalizerError> {
         let output = self.invoke([OsStr::new("--version")])?;
         let details = combined_diagnostics(&output);
         let recognized = output.status.success()
@@ -157,7 +166,9 @@ impl PtxasTool {
                 .to_ascii_lowercase()
                 .contains("ptx optimizing assembler");
         if recognized {
-            Ok(())
+            Ok(details
+                .split_once("release ")
+                .and_then(|(_, version)| version.split('.').next()?.parse().ok()))
         } else {
             Err(FinalizerError::InvalidPtxas {
                 path: self.path.clone(),
@@ -259,6 +270,13 @@ impl PtxAssembler {
     /// `CUDA_TOOLKIT_PATH`, `CUDA_HOME`, or `CUDA_PATH`, conventional toolkit
     /// roots, then `PATH`.
     pub fn discover() -> Result<Self, FinalizerError> {
+        Self::discover_with_provenance(None)
+    }
+
+    /// Discover the assembler, reusing a digest only for an identical open file.
+    pub fn discover_with_provenance(
+        expected: Option<&PinnedToolProvenance>,
+    ) -> Result<Self, FinalizerError> {
         let (candidates, explicit) = ptxas_candidates(|name| std::env::var_os(name));
         let mut tried = Vec::new();
         let mut first_error = None;
@@ -267,7 +285,7 @@ impl PtxAssembler {
             if !path.is_file() {
                 continue;
             }
-            match Self::from_path(path) {
+            match Self::from_path_with_provenance(path, expected) {
                 Ok(assembler) => return Ok(assembler),
                 Err(error) if explicit && index == 0 => return Err(error),
                 Err(error) => {
@@ -283,9 +301,29 @@ impl PtxAssembler {
         })
     }
 
+    #[cfg(test)]
     fn from_path(path: PathBuf) -> Result<Self, FinalizerError> {
+        Self::from_path_with_provenance(path, None)
+    }
+
+    fn from_path_with_provenance(
+        path: PathBuf,
+        expected: Option<&PinnedToolProvenance>,
+    ) -> Result<Self, FinalizerError> {
         Ok(Self {
-            tool: Arc::new(PtxasTool::open(path)?),
+            tool: Arc::new(PtxasTool::open(path, expected)?),
+        })
+    }
+
+    /// PTX 9.0 is supported by CUDA 13 and newer.
+    pub fn supports_ptx90(&self) -> bool {
+        self.tool.cuda_major.is_some_and(|major| major >= 13)
+    }
+
+    pub fn pinned_tool_provenance(&self) -> Option<PinnedToolProvenance> {
+        Some(PinnedToolProvenance {
+            sha256: self.ptxas_digest()?,
+            file: self.tool.identity,
         })
     }
 
