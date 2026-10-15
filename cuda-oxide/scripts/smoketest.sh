@@ -295,6 +295,13 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
 cd "${repo_root}"
 
+# These lanes assert legacy PTX/IR/debug shapes beside each example's source.
+# Ordinary SDK builds default to cached native modules under Cargo's target dir.
+legacy_smoke_oxide() {
+    CUDA_OXIDE_PTX_DIR="${repo_root}/crates/rustc-codegen-cuda/examples/${2}" \
+        cargo oxide --no-incremental-modules "$@"
+}
+
 if [[ ! -f "${repo_root}/../Cargo.toml" ]] || [[ ! -d "crates/rustc-codegen-cuda/examples" ]]; then
     echo "error: must be run from inside the cuda-oxide repo (got ${PWD})" >&2
     exit 2
@@ -1236,10 +1243,10 @@ run_full_debug_build() {
     fi
 
     if [[ ${VERBOSE} -eq 1 ]]; then
-        cargo oxide "${args[@]}" 2>&1 | tee "${log}"
+        legacy_smoke_oxide "${args[@]}" 2>&1 | tee "${log}"
         CARGO_EC=${PIPESTATUS[0]}
     else
-        cargo oxide "${args[@]}" >"${log}" 2>&1
+        legacy_smoke_oxide "${args[@]}" >"${log}" 2>&1
         CARGO_EC=$?
     fi
 
@@ -1280,10 +1287,10 @@ run_cargo() {
         for arch in sm_90 sm_100; do
             local -a char_abi_args=("build" "${ex}" "--emit-nvvm-ir" "--arch=${arch}")
             if [[ ${VERBOSE} -eq 1 ]]; then
-                cargo oxide "${char_abi_args[@]}" 2>&1 | tee -a "${log}"
+                legacy_smoke_oxide "${char_abi_args[@]}" 2>&1 | tee -a "${log}"
                 CARGO_EC=${PIPESTATUS[0]}
             else
-                cargo oxide "${char_abi_args[@]}" >>"${log}" 2>&1
+                legacy_smoke_oxide "${char_abi_args[@]}" >>"${log}" 2>&1
                 CARGO_EC=$?
             fi
             if [[ ${CARGO_EC} -ne 0 ]]; then
@@ -1310,10 +1317,10 @@ run_cargo() {
         local -a nvvm_args=("emit-ltoir" "${ex}" "--arch=sm_120a")
         local llvm_ec
         if [[ ${VERBOSE} -eq 1 ]]; then
-            cargo oxide "${llvm_args[@]}" 2>&1 | tee "${log}"
+            legacy_smoke_oxide "${llvm_args[@]}" 2>&1 | tee "${log}"
             llvm_ec=${PIPESTATUS[0]}
         else
-            cargo oxide "${llvm_args[@]}" >"${log}" 2>&1
+            legacy_smoke_oxide "${llvm_args[@]}" >"${log}" 2>&1
             llvm_ec=$?
         fi
         if [[ ${llvm_ec} -ne 0 ]]; then
@@ -1382,10 +1389,10 @@ run_cargo() {
             return
         fi
         if [[ ${VERBOSE} -eq 1 ]]; then
-            cargo oxide "${nvvm_args[@]}" 2>&1 | tee -a "${log}"
+            legacy_smoke_oxide "${nvvm_args[@]}" 2>&1 | tee -a "${log}"
             CARGO_EC=${PIPESTATUS[0]}
         else
-            cargo oxide "${nvvm_args[@]}" >>"${log}" 2>&1
+            legacy_smoke_oxide "${nvvm_args[@]}" >>"${log}" 2>&1
             CARGO_EC=$?
         fi
         if [[ ${CARGO_EC} -ne 0 ]]; then
@@ -1444,10 +1451,10 @@ run_cargo() {
         local -a llvm_args=("build" "${ex}" "--arch=sm_100a")
         local llvm_ec
         if [[ ${VERBOSE} -eq 1 ]]; then
-            cargo oxide "${llvm_args[@]}" 2>&1 | tee "${log}"
+            legacy_smoke_oxide "${llvm_args[@]}" 2>&1 | tee "${log}"
             llvm_ec=${PIPESTATUS[0]}
         else
-            cargo oxide "${llvm_args[@]}" >"${log}" 2>&1
+            legacy_smoke_oxide "${llvm_args[@]}" >"${log}" 2>&1
             llvm_ec=$?
         fi
         CARGO_EC=${llvm_ec}
@@ -1517,10 +1524,10 @@ run_cargo() {
         local -a llvm_args=("build" "${ex}" "--arch=sm_100a")
         local llvm_ec
         if [[ ${VERBOSE} -eq 1 ]]; then
-            cargo oxide "${llvm_args[@]}" 2>&1 | tee "${log}"
+            legacy_smoke_oxide "${llvm_args[@]}" 2>&1 | tee "${log}"
             llvm_ec=${PIPESTATUS[0]}
         else
-            cargo oxide "${llvm_args[@]}" >"${log}" 2>&1
+            legacy_smoke_oxide "${llvm_args[@]}" >"${log}" 2>&1
             llvm_ec=$?
         fi
         if [[ ${llvm_ec} -ne 0 ]]; then
@@ -1692,10 +1699,10 @@ run_cargo() {
 
         local -a nvvm_args=("emit-ltoir" "${ex}" "--arch=sm_100a")
         if [[ ${VERBOSE} -eq 1 ]]; then
-            cargo oxide "${nvvm_args[@]}" 2>&1 | tee -a "${log}"
+            legacy_smoke_oxide "${nvvm_args[@]}" 2>&1 | tee -a "${log}"
             CARGO_EC=${PIPESTATUS[0]}
         else
-            cargo oxide "${nvvm_args[@]}" >>"${log}" 2>&1
+            legacy_smoke_oxide "${nvvm_args[@]}" >>"${log}" 2>&1
             CARGO_EC=$?
         fi
         if [[ ${CARGO_EC} -ne 0 ]]; then
@@ -1918,10 +1925,10 @@ run_cargo() {
         local -a llvm_args=("build" "${ex}" "--arch=sm_86")
         local llvm_ec
         if [[ ${VERBOSE} -eq 1 ]]; then
-            cargo oxide "${llvm_args[@]}" 2>&1 | tee "${log}"
+            legacy_smoke_oxide "${llvm_args[@]}" 2>&1 | tee "${log}"
             llvm_ec=${PIPESTATUS[0]}
         else
-            cargo oxide "${llvm_args[@]}" >"${log}" 2>&1
+            legacy_smoke_oxide "${llvm_args[@]}" >"${log}" 2>&1
             llvm_ec=$?
         fi
         if [[ ${llvm_ec} -ne 0 ]]; then
@@ -1960,10 +1967,10 @@ run_cargo() {
 
         local -a nvvm_args=("emit-ltoir" "${ex}" "--arch=sm_86")
         if [[ ${VERBOSE} -eq 1 ]]; then
-            cargo oxide "${nvvm_args[@]}" 2>&1 | tee -a "${log}"
+            legacy_smoke_oxide "${nvvm_args[@]}" 2>&1 | tee -a "${log}"
             CARGO_EC=${PIPESTATUS[0]}
         else
-            cargo oxide "${nvvm_args[@]}" >>"${log}" 2>&1
+            legacy_smoke_oxide "${nvvm_args[@]}" >>"${log}" 2>&1
             CARGO_EC=$?
         fi
         if [[ ${CARGO_EC} -ne 0 ]]; then
@@ -2028,10 +2035,10 @@ run_cargo() {
         nvvm_arch="$(nvvm_verify_arch "${ex}")"
         local -a args=("emit-ltoir" "${ex}" "--arch=${nvvm_arch}")
         if [[ ${VERBOSE} -eq 1 ]]; then
-            cargo oxide "${args[@]}" 2>&1 | tee "${log}"
+            legacy_smoke_oxide "${args[@]}" 2>&1 | tee "${log}"
             CARGO_EC=${PIPESTATUS[0]}
         else
-            cargo oxide "${args[@]}" >"${log}" 2>&1
+            legacy_smoke_oxide "${args[@]}" >"${log}" 2>&1
             CARGO_EC=$?
         fi
         return
@@ -2095,10 +2102,10 @@ run_cargo() {
         args+=("--emit-nvvm-ir" "--arch=${LTOIR_MODERN_ARCH}")
     fi
     if [[ ${VERBOSE} -eq 1 ]]; then
-        cargo oxide "${args[@]}" 2>&1 | tee "${log}"
+        legacy_smoke_oxide "${args[@]}" 2>&1 | tee "${log}"
         CARGO_EC=${PIPESTATUS[0]}
     else
-        cargo oxide "${args[@]}" >"${log}" 2>&1
+        legacy_smoke_oxide "${args[@]}" >"${log}" 2>&1
         CARGO_EC=$?
     fi
     # Any example may ship a verify-code-shape.sh; running whichever exist keeps
@@ -2117,7 +2124,7 @@ run_cargo() {
                 # and already set CARGO_EC.
                 local -a no_opt_args=("${args[@]}")
                 no_opt_args[0]="build"
-                CUDA_OXIDE_NO_OPT=1 cargo oxide "${no_opt_args[@]}" >>"${log}" 2>&1 \
+                CUDA_OXIDE_NO_OPT=1 legacy_smoke_oxide "${no_opt_args[@]}" >>"${log}" 2>&1 \
                     || CARGO_EC=$?
                 break
             fi

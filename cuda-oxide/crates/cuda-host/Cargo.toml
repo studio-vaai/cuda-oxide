@@ -19,6 +19,9 @@ cuda-artifact-finalizer = { workspace = true }
 ptx-parse = { workspace = true }
 sha2 = { workspace = true }
 oxide-artifacts = { workspace = true, features = ["object-read"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+libc = "0.2"
 thiserror = { workspace = true }
 cuda-async = { workspace = true, optional = true }
 

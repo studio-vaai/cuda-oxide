@@ -183,6 +183,18 @@ fn ptx_export_records_standalone_device_function_roots_for_internalization() {
         "{}",
         exported.llvm_ir
     );
+
+    llvm_export::export::mark_linkable_device_module(&mut ctx, &module);
+    let linkable = export_module_with_externs_and_roots::<DeviceExternDecl>(
+        &ctx,
+        &module,
+        &[],
+        &NvvmExportConfig::new(NvvmIrDialect::Modern),
+    )
+    .expect("linkable device export succeeds");
+    assert_eq!(linkable.public_symbols, ["standalone_export"]);
+    assert!(linkable.llvm_ir.contains("define void @standalone_export("));
+    assert!(!linkable.llvm_ir.contains("@llvm.used"));
 }
 
 /// Builds a `void` function taking pointer parameters in the given address

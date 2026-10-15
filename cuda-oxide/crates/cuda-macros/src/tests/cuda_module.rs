@@ -391,10 +391,10 @@ fn cfg_gated_generic_uses_the_same_gate_for_marker_and_loader() {
 const ANCHORED_EMBEDDED_LOADER: &str = concat!(
     "match__cuda_oxide_artifact_anchor{::core::option::Option::Some(anchor)=>{",
     "#[cfg(any(target_os=\"linux\",target_os=\"android\"))]",
-    "{::cuda_host::load_embedded_module_from_anchor(ctx,name,anchor)?}",
+    "{ifname==env!(\"CARGO_PKG_NAME\"){::cuda_host::load_embedded_cuda_module_from_anchor(ctx,name,module_path!(),anchor)?}else{::cuda_host::load_embedded_module_from_anchor(ctx,name,anchor)?}}",
     "#[cfg(not(any(target_os=\"linux\",target_os=\"android\")))]",
-    "{let_=anchor;::cuda_host::load_embedded_module(ctx,name)?}",
-    "}::core::option::Option::None=>::cuda_host::load_embedded_module(ctx,name)?,}",
+    "{let_=anchor;ifname==env!(\"CARGO_PKG_NAME\"){::cuda_host::load_embedded_cuda_module(ctx,name,module_path!())?}else{::cuda_host::load_embedded_module(ctx,name)?}}",
+    "}::core::option::Option::None=>ifname==env!(\"CARGO_PKG_NAME\"){::cuda_host::load_embedded_cuda_module(ctx,name,module_path!())?}else{::cuda_host::load_embedded_module(ctx,name)?},}",
 );
 
 #[test]
@@ -404,10 +404,10 @@ fn generated_loader_preserves_other_platform_executable_lookup() {
     };
     let expanded = expand_to_compact_string(module);
     assert!(expanded.contains(
-        "#[cfg(not(any(target_os=\"linux\",target_os=\"android\")))]{let_=anchor;::cuda_host::load_embedded_module(ctx,name)?}"
+        "#[cfg(not(any(target_os=\"linux\",target_os=\"android\")))]{let_=anchor;ifname==env!(\"CARGO_PKG_NAME\"){::cuda_host::load_embedded_cuda_module(ctx,name,module_path!())?}else{::cuda_host::load_embedded_module(ctx,name)?}}"
     ), "{expanded}");
     assert!(expanded.contains(
-        "#[cfg(any(target_os=\"linux\",target_os=\"android\"))]{::cuda_host::load_embedded_module_from_anchor(ctx,name,anchor)?}"
+        "#[cfg(any(target_os=\"linux\",target_os=\"android\"))]{ifname==env!(\"CARGO_PKG_NAME\"){::cuda_host::load_embedded_cuda_module_from_anchor(ctx,name,module_path!(),anchor)?}else{::cuda_host::load_embedded_module_from_anchor(ctx,name,anchor)?}}"
     ), "{expanded}");
 }
 
