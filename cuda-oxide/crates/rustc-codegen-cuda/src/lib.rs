@@ -311,6 +311,7 @@ extern crate rustc_data_structures;
 extern crate rustc_driver;
 extern crate rustc_errors;
 extern crate rustc_hir;
+extern crate rustc_incremental;
 extern crate rustc_index;
 extern crate rustc_interface;
 extern crate rustc_metadata;
@@ -330,6 +331,7 @@ extern crate rustc_codegen_llvm;
 mod collector;
 mod device_codegen;
 mod generated_intrinsics;
+mod host_cache;
 mod incremental;
 mod materialize;
 
@@ -364,10 +366,14 @@ pub struct CudaCodegenBackend {
     config: CudaCodegenConfig,
     /// The underlying LLVM backend for host code generation
     llvm_backend: Box<dyn CodegenBackend>,
+    pending_contract: std::sync::Mutex<Option<host_cache::Request>>,
 }
 
 struct CudaOngoingCodegen {
-    host: Box<dyn Any>,
+    host: Option<Box<dyn Any>>,
+    reused_host: Option<CompiledModules>,
+    reused_work_products: WorkProductMap,
+    host_cache: Option<host_cache::Request>,
     artifact_objects: Vec<PathBuf>,
     module_manifest: Option<Vec<u8>>,
 }
@@ -473,6 +479,16 @@ impl CodegenBackend for CudaCodegenBackend {
             sess.dcx()
                 .fatal("host kernel stubs cannot be used with the CUDA codegen backend");
         }
+        if host_cache::kernels_only(sess.opts.crate_name.as_deref().unwrap_or(""))
+            && (sess.opts.crate_types != [rustc_structures::CrateType::StaticLib]
+                || sess.opts.output_types.should_link()
+                || sess
+                    .opts
+                    .output_types
+                    .contains_key(&rustc_session::config::OutputType::Metadata))
+        {
+            sess.dcx().fatal("kernel-only compilation must emit only objects as staticlib; use cargo oxide --kernels-only");
+        }
         // Note: Don't log here - init() is called for ALL crates including dependencies.
         // We log in codegen_crate() only when there are kernels to compile.
 
@@ -535,12 +551,83 @@ impl CodegenBackend for CudaCodegenBackend {
         with_no_trimmed_paths!({
             // Step 1: Analyze for device code
             let crate_name = tcx.crate_name(rustc_hir::def_id::LOCAL_CRATE);
-            let mono_partitions = tcx.collect_and_partition_mono_items(());
-            let cgus = mono_partitions.codegen_units;
-            let kernel_count = collector::count_kernels_in_cgus(tcx, cgus);
-            let device_fn_count = collector::count_device_fns_in_cgus(tcx, cgus);
+            let kernels_only = host_cache::kernels_only(crate_name.as_str());
+            let native = std::env::var("CUDA_OXIDE_INCREMENTAL_MODULES").map_or(true, |value| {
+                !matches!(value.as_str(), "0" | "false" | "off")
+            });
+            let early_proof_started = std::time::Instant::now();
+            let mut early_request = if !kernels_only
+                && native
+                && self.config.allows_device_codegen_for(crate_name.as_str())
+                && std::env::var_os("CUDA_OXIDE_REUSE_HOST_FOR_KERNEL_EDITS").is_some()
+                && tcx.hir_crate_items(()).definitions().any(|local| {
+                    tcx.opt_item_name(local.to_def_id())
+                        .is_some_and(|name| reserved_oxide_symbols::is_kernel_symbol(name.as_str()))
+                }) {
+                let output = self.config.ptx_output_dir.clone().unwrap_or_else(|| {
+                    tcx.sess
+                        .io
+                        .output_dir
+                        .clone()
+                        .unwrap_or_else(|| "target".into())
+                        .join("oxide")
+                });
+                host_cache::request(tcx, &[], &output)
+            } else {
+                None
+            };
+            let mut early_host = early_request
+                .as_ref()
+                .and_then(host_cache::read_for_contract);
+            let mut shader_collection = (kernels_only || early_request.is_some())
+                .then(|| collector::collect_local_kernel_functions(tcx));
+            if !kernels_only
+                && shader_collection.as_ref().is_some_and(|collection| {
+                    collection.requires_ptx_bundle_merge
+                        || !collection
+                            .functions
+                            .iter()
+                            .any(|function| function.is_kernel)
+                })
+            {
+                early_host = None;
+                early_request = None;
+                shader_collection = None;
+            }
+            if early_host.is_some() {
+                eprintln!(
+                    "[device-modules] host source contract reused before mono collection: {:.3}s",
+                    early_proof_started.elapsed().as_secs_f64()
+                );
+            }
+            let deferred_host_mono =
+                !kernels_only && early_host.is_none() && shader_collection.is_some();
+            let mono_partitions = (!kernels_only && early_host.is_none() && !deferred_host_mono)
+                .then(|| tcx.collect_and_partition_mono_items(()));
+            let cgus = mono_partitions
+                .as_ref()
+                .map(|partitions| partitions.codegen_units)
+                .unwrap_or(&[]);
+            let kernel_count = shader_collection
+                .as_ref()
+                .map(|collection| {
+                    collection
+                        .functions
+                        .iter()
+                        .filter(|function| function.is_kernel)
+                        .count()
+                })
+                .unwrap_or_else(|| collector::count_kernels_in_cgus(tcx, cgus));
+            let device_fn_count = if shader_collection.is_some() {
+                0
+            } else {
+                collector::count_device_fns_in_cgus(tcx, cgus)
+            };
             let unsupported_protocol_root =
                 collector::unsupported_codegen_protocol_root_in_cgus(tcx, cgus);
+            if kernels_only && kernel_count == 0 {
+                tcx.dcx().fatal("kernel-only update requires local non-generic kernel entries; run a full build");
+            }
             if reject_unsupported_codegen_protocol(
                 std::env::var_os(reserved_oxide_symbols::CODEGEN_FINGERPRINT_ENV).is_some(),
                 unsupported_protocol_root.is_some(),
@@ -619,12 +706,92 @@ impl CodegenBackend for CudaCodegenBackend {
                 );
             }
 
+            // Host queries stay on this rustc thread. Native link workers use
+            // only immutable LTOIR, so host proof and LLVM codegen can proceed
+            // while those workers finalize device images.
+            let mut host_state = None;
+            let mut generate_host = || {
+                // Building CPU mono items is independent of the kernel-root
+                // collector and can wait until native workers are running.
+                let deferred_partitions =
+                    deferred_host_mono.then(|| tcx.collect_and_partition_mono_items(()));
+                let host_cgus = deferred_partitions
+                    .as_ref()
+                    .map(|partitions| partitions.codegen_units)
+                    .unwrap_or(cgus);
+                let host_proof_started = std::time::Instant::now();
+                let host_cache = early_host
+                    .as_ref()
+                    .map(|(request, _)| request.clone())
+                    .or_else(|| early_request.clone())
+                    .or_else(|| {
+                        has_device_code
+                            .then(|| {
+                                host_cache::request(
+                                    tcx,
+                                    host_cgus,
+                                    &self.config.ptx_output_dir.clone().unwrap_or_else(|| {
+                                        tcx.sess
+                                            .io
+                                            .output_dir
+                                            .clone()
+                                            .unwrap_or_else(|| Path::new("target").to_owned())
+                                            .join("oxide")
+                                    }),
+                                )
+                            })
+                            .flatten()
+                    });
+                if has_device_code {
+                    eprintln!(
+                        "[device-modules] host proof: {:.3}s",
+                        host_proof_started.elapsed().as_secs_f64()
+                    );
+                }
+                let reused_host = if kernels_only {
+                    if host_cache
+                        .as_ref()
+                        .and_then(host_cache::read_contract)
+                        .is_none()
+                    {
+                        tcx.dcx().fatal("kernel-only update cannot prove unchanged host MIR/ABI; run a full native build with debug=0 and CUDA_OXIDE_REUSE_HOST_FOR_KERNEL_EDITS=1 first");
+                    }
+                    Some(CompiledModules {
+                        modules: Vec::new(),
+                        allocator_module: None,
+                    })
+                } else {
+                    early_host
+                        .take()
+                        .map(|(_, modules)| modules)
+                        .or_else(|| host_cache.as_ref().and_then(host_cache::read))
+                };
+                // Step 3: Delegate ALL host codegen to LLVM backend
+                // (No logging here - it fires for every crate including dependencies)
+                let host_result = if reused_host.is_some() {
+                    eprintln!(
+                        "[device-modules] host objects reused: host MIR and kernel ABI unchanged"
+                    );
+                    None
+                } else {
+                    Some(self.llvm_backend.codegen_crate(tcx))
+                };
+
+                let reused_work_products = if reused_host.is_some() && !kernels_only {
+                    host_cache::retained_work_products(tcx)
+                } else {
+                    WorkProductMap::default()
+                };
+                host_state = Some((host_cache, reused_host, host_result, reused_work_products));
+            };
+            if !has_device_code || !native {
+                generate_host();
+            }
             // Step 2: If device code exists, compile via cuda-oxide
-            let native = std::env::var("CUDA_OXIDE_INCREMENTAL_MODULES").map_or(true, |value| {
-                !matches!(value.as_str(), "0" | "false" | "off")
-            });
             let _device_result = if has_device_code && native {
-                let collection = collector::collect_device_functions(tcx, cgus, false);
+                let collection = shader_collection
+                    .take()
+                    .unwrap_or_else(|| collector::collect_device_functions(tcx, cgus, false));
                 let config = device_codegen::DeviceCodegenConfig {
                     minimum_dynamic_shared_alignment: 0,
                     output_dir: self.config.ptx_output_dir.clone().unwrap_or_else(|| {
@@ -641,7 +808,7 @@ impl CodegenBackend for CudaCodegenBackend {
                     dump_mir_dialect: self.config.dump_mir_dialect,
                     dump_llvm_dialect: self.config.dump_llvm_dialect,
                 };
-                match incremental::compile(tcx, &collection, &config) {
+                match incremental::compile(tcx, &collection, &config, &mut generate_host) {
                     Ok(path) => artifact_objects.push(path),
                     Err(error) => tcx.dcx().fatal(format!(
                         "[rustc_codegen_cuda] Incremental device compilation failed: {error}"
@@ -877,13 +1044,16 @@ impl CodegenBackend for CudaCodegenBackend {
             } else {
                 None
             };
-            // Step 3: Delegate ALL host codegen to LLVM backend
-            // (No logging here - it fires for every crate including dependencies)
-            let host_result = self.llvm_backend.codegen_crate(tcx);
+            drop(generate_host);
+            let (host_cache, reused_host, host_result, reused_work_products) =
+                host_state.expect("host codegen must run before device publication");
 
             // Return the LLVM backend's result
             Box::new(CudaOngoingCodegen {
                 host: host_result,
+                reused_host,
+                reused_work_products,
+                host_cache,
                 artifact_objects,
                 module_manifest,
             })
@@ -901,13 +1071,25 @@ impl CodegenBackend for CudaCodegenBackend {
         let ongoing = *ongoing_codegen
             .downcast::<CudaOngoingCodegen>()
             .expect("rustc_codegen_cuda received unexpected ongoing codegen state");
-        let (mut compiled_modules, work_products) = self.llvm_backend.join_codegen(
-            ongoing.host,
-            sess,
-            incr_comp_session,
-            outputs,
-            crate_info,
-        );
+        let (mut compiled_modules, work_products) = if let Some(host) = ongoing.host {
+            let result =
+                self.llvm_backend
+                    .join_codegen(host, sess, incr_comp_session, outputs, crate_info);
+            if let Some(request) = &ongoing.host_cache
+                && let Err(error) = host_cache::write(request, &result.0)
+            {
+                eprintln!("[device-modules] host object cache unavailable: {error}");
+            }
+            result
+        } else {
+            (
+                ongoing.reused_host.expect("missing cached host objects"),
+                ongoing.reused_work_products,
+            )
+        };
+        if !host_cache::kernels_only(crate_info.local_crate_name.as_str()) {
+            *self.pending_contract.lock().unwrap() = ongoing.host_cache;
+        }
         for (index, object) in ongoing.artifact_objects.into_iter().enumerate() {
             compiled_modules.modules.push(CompiledModule {
                 name: format!("oxide_artifact_embed_{index}"),
@@ -950,8 +1132,29 @@ impl CodegenBackend for CudaCodegenBackend {
         metadata: EncodedMetadata,
         outputs: &OutputFilenames,
     ) {
+        if host_cache::kernels_only(crate_info.local_crate_name.as_str()) {
+            let object = compiled_modules
+                .modules
+                .first()
+                .and_then(|module| module.object.as_ref())
+                .expect("kernel-only object missing");
+            std::fs::copy(
+                object,
+                outputs
+                    .path(rustc_session::config::OutputType::Object)
+                    .as_path(),
+            )
+            .expect("could not write kernel-only object");
+            return;
+        }
         self.llvm_backend
             .link(sess, compiled_modules, crate_info, metadata, outputs);
+        if sess.dcx().has_errors().is_none()
+            && let Some(request) = self.pending_contract.lock().unwrap().take()
+            && let Err(error) = host_cache::publish_contract(&request)
+        {
+            eprintln!("[device-modules] kernel-only contract unavailable: {error}");
+        }
     }
 }
 
@@ -1293,6 +1496,7 @@ pub fn __rustc_codegen_backend() -> Box<dyn CodegenBackend> {
     Box::new(CudaCodegenBackend {
         config,
         llvm_backend,
+        pending_contract: std::sync::Mutex::new(None),
     })
 }
 

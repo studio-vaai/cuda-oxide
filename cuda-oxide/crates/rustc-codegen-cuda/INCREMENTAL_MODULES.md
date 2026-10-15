@@ -61,3 +61,44 @@ The fixture checks native launches, embedded/file loading, generic aggregate ABI
 shared static identity, dynamic shared alignment, promoted constants, helper
 invalidation, unreachable pruning, and isolation of an unrelated kernel module.
 
+## Kernel body edits with an existing host executable
+
+Use file loading and seed a full release library with the same compiler, target,
+features, dependencies and profile:
+
+```sh
+export CUDA_OXIDE_MODULE_FILES_ONLY=1
+export CUDA_OXIDE_REUSE_HOST_FOR_KERNEL_EDITS=1
+export CARGO_PROFILE_RELEASE_DEBUG=0
+export CARGO_PROFILE_RELEASE_INCREMENTAL=true
+export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256
+cargo oxide build --emit-nvvm-ir -- --release --lib --locked
+# Build the application's host executable once, using the generated files.
+cargo oxide --kernels-only my-kernel-crate build --emit-nvvm-ir -- --release --lib --locked
+# Restart that existing executable to load the new cubins.
+```
+
+The fast command retains the host rlib, metadata and executable. Rust parses and
+checks the selected crate, walks only local non-generic kernel roots, and emits
+no Rust metadata or host LLVM code. It avoids collecting the CPU monomorphization
+graph. A source
+contract hashes host/helper HIR bodies (including closures), attributes, types,
+ABI, observable source locations, compiler options and dependency identities.
+Only reserved CUDA kernel entry bodies are excluded. CPU/helper/ABI/location
+changes, CPU references to raw kernel entries, changed dependencies, and a damaged
+host proof cache reject the update before publishing a new native manifest. Run a
+normal full build after such changes. This mode requires debug information off;
+request device line tables explicitly when debugging, using a full build.
+
+A persistent `target/oxide-kernels-only` cache is seeded from the normal release
+cache once per host contract. The initial copy is setup cost. Subsequent edits
+reuse it. A normal build after a kernel-only update refreshes the selected root
+library even when the source has returned to its original contents; dependency
+and device caches stay intact. Cache locks still require one build per target at
+a time. Restart the process after updates: loaded module caches are immutable.
+
+Run `scripts/check-kernels-only.py` and `scripts/check-host-kernel-reuse.py` with
+`--cargo-oxide PATH --output DIRECTORY` to test actual launches, frozen host
+artifacts, repeated edits, source-location/closure/ABI rejection, cache corruption,
+and returning to a full build. Native cubin digests hash each LTOIR input once;
+unchanged published cubins are verified and retained instead of rewritten.
