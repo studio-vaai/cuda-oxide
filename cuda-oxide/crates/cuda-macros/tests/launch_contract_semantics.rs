@@ -7,6 +7,10 @@
 #[cfg(not(feature = "async"))]
 #[test]
 fn launch_contract_types_are_resolved_semantically() {
+    // These fixtures validate complete device bodies, which ordinary CPU
+    // builds intentionally omit. This integration binary has one test, so
+    // changing its environment before trybuild spawns children is safe.
+    unsafe { std::env::set_var(reserved_oxide_symbols::HOST_KERNEL_STUBS_ENV, "0") };
     let t = trybuild::TestCases::new();
     t.pass("tests/pass/launch_contract_disjoint_aliases.rs");
     t.pass("tests/pass/launch_contract_uniform_scalar.rs");

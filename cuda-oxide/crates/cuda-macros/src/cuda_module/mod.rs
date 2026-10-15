@@ -7,6 +7,7 @@
 
 pub(crate) mod constants;
 pub(crate) mod contract;
+mod host_lints;
 pub(crate) mod launchers;
 pub(crate) mod model;
 
@@ -77,9 +78,15 @@ pub(crate) fn expand_cuda_module(module: ItemMod) -> syn::Result<TokenStream2> {
 /// feature back on under feature unification even for
 /// `cargo test --no-default-features`.
 pub(crate) fn expand_cuda_module_inner(
-    module: ItemMod,
+    mut module: ItemMod,
     emit_host: bool,
 ) -> syn::Result<TokenStream2> {
+    if crate::kernel::codegen::host_entries_stubbed()
+        .map_err(|error| syn::Error::new_spanned(error, "invalid host kernel stub policy"))?
+        && let Some((_, items)) = &mut module.content
+    {
+        host_lints::retain_source_lints(items);
+    }
     let module_attrs = &module.attrs;
     let vis = &module.vis;
     let ident = &module.ident;

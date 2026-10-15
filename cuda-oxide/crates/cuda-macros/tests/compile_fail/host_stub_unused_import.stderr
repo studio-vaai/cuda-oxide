@@ -1,0 +1,11 @@
+error: unused import: `SharedArray`
+ --> tests/compile_fail/host_stub_unused_import.rs:8:23
+  |
+8 |     use cuda_device::{SharedArray, thread};
+  |                       ^^^^^^^^^^^
+  |
+note: the lint level is defined here
+ --> tests/compile_fail/host_stub_unused_import.rs:3:9
+  |
+3 | #![deny(unused_imports)]
+  |         ^^^^^^^^^^^^^^
