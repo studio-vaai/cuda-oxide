@@ -307,6 +307,17 @@ pub fn push_kernel_device_slice(
     args.push(len as *mut u64 as *mut c_void);
 }
 
+/// Push the pointer and count stored in a caller-owned slice argument pair.
+/// The pair must stay in place until the driver consumes the argument list.
+#[inline]
+#[doc(hidden)]
+pub fn push_kernel_device_slice_pair(
+    args: &mut Vec<*mut c_void>,
+    value: &mut (cuda_core::sys::CUdeviceptr, u64),
+) {
+    push_kernel_device_slice(args, &mut value.0, &mut value.1);
+}
+
 /// A device buffer together with the row width the kernel will index it by.
 ///
 /// Kernels whose index space fixes the row width in the type need nothing
@@ -440,6 +451,197 @@ pub fn push_kernel_row_width_device_slice(
     args.push(ptr as *mut cuda_core::sys::CUdeviceptr as *mut c_void);
     args.push(len as *mut u64 as *mut c_void);
     args.push(width as *mut u32 as *mut c_void);
+}
+
+/// Push a caller-owned pointer/count/row-width triple in device ABI order.
+/// The triple must stay in place until the driver consumes the argument list.
+#[inline]
+#[doc(hidden)]
+pub fn push_kernel_row_width_device_slice_triple(
+    args: &mut Vec<*mut c_void>,
+    value: &mut (cuda_core::sys::CUdeviceptr, u64, u32),
+) {
+    push_kernel_row_width_device_slice(args, &mut value.0, &mut value.1, &mut value.2);
+}
+
+/// One logical argument's live storage; never transported as a Rust tuple.
+#[doc(hidden)]
+pub trait KernelArgumentStorage {
+    const SLOTS: usize;
+    fn append(&mut self, args: &mut Vec<*mut c_void>);
+}
+impl<T: KernelScalar> KernelArgumentStorage for Scalar<T> {
+    const SLOTS: usize = if std::mem::size_of::<T>() == 0 { 0 } else { 1 };
+    #[inline]
+    fn append(&mut self, args: &mut Vec<*mut c_void>) {
+        push_kernel_scalar(args, &mut self.0);
+    }
+}
+impl KernelArgumentStorage for (cuda_core::sys::CUdeviceptr, u64) {
+    const SLOTS: usize = 2;
+    #[inline]
+    fn append(&mut self, args: &mut Vec<*mut c_void>) {
+        push_kernel_device_slice_pair(args, self);
+    }
+}
+impl KernelArgumentStorage for (cuda_core::sys::CUdeviceptr, u64, u32) {
+    const SLOTS: usize = 3;
+    #[inline]
+    fn append(&mut self, args: &mut Vec<*mut c_void>) {
+        push_kernel_row_width_device_slice_triple(args, self);
+    }
+}
+
+/// A tuple of logical arguments in source order.
+#[doc(hidden)]
+pub trait KernelArgumentList {
+    const SLOTS: usize;
+    fn append(&mut self, args: &mut Vec<*mut c_void>);
+}
+/// Nest a bounded argument list inside another without changing driver order.
+#[doc(hidden)]
+pub struct KernelArgumentGroup<A>(pub A);
+
+impl<A: KernelArgumentList> KernelArgumentStorage for KernelArgumentGroup<A> {
+    const SLOTS: usize = A::SLOTS;
+    #[inline]
+    fn append(&mut self, args: &mut Vec<*mut c_void>) {
+        self.0.append(args);
+    }
+}
+
+impl KernelArgumentList for () {
+    const SLOTS: usize = 0;
+    fn append(&mut self, _args: &mut Vec<*mut c_void>) {}
+}
+macro_rules! argument_lists {
+    (@impl $($ty:ident:$index:tt),+) => {
+        impl<$($ty: KernelArgumentStorage),+> KernelArgumentList for ($($ty,)+) {
+            const SLOTS: usize = 0 $(+ $ty::SLOTS)+;
+            #[inline]
+            fn append(&mut self, args: &mut Vec<*mut c_void>) {
+                $(self.$index.append(args);)+
+            }
+        }
+    };
+    (@grow [$($previous:ident:$slot:tt,)*] $next:ident:$index:tt $(,$rest:ident:$tail:tt)*) => {
+        argument_lists!(@impl $($previous:$slot,)* $next:$index);
+        argument_lists!(@grow [$($previous:$slot,)* $next:$index,] $($rest:$tail),*);
+    };
+    (@grow [$($previous:ident:$slot:tt,)*]) => {};
+}
+argument_lists!(@grow [] A0:0,A1:1,A2:2,A3:3,A4:4,A5:5,A6:6,A7:7,
+    A8:8,A9:9,A10:10,A11:11,A12:12,A13:13,A14:14,A15:15,
+    A16:16,A17:17,A18:18,A19:19,A20:20,A21:21,A22:22,A23:23,
+    A24:24,A25:25,A26:26,A27:27,A28:28,A29:29,A30:30,A31:31);
+
+/// Obtain driver pointers into caller-owned storage. Keep the storage in place
+/// until submission returns; zero-sized scalars occupy no driver argument slot.
+#[inline]
+#[doc(hidden)]
+pub fn kernel_argument_pointers<A: KernelArgumentList>(storage: &mut A) -> Vec<*mut c_void> {
+    let mut args = Vec::with_capacity(A::SLOTS);
+    storage.append(&mut args);
+    args
+}
+
+// Keep argument storage in the submission frame. CUDA copies these values
+// during the driver call; neither storage nor its pointer list escapes it.
+macro_rules! argument_launch {
+    ($name:ident, $driver:ident $(, $cluster:ident)?) => {
+        /// Shared submission implementation for generated synchronous launchers.
+        /// # Safety
+        /// The function's ABI and resource/geometry requirements must match
+        /// the supplied arguments, configuration, stream and cluster.
+        #[doc(hidden)]
+        pub unsafe fn $name<A: KernelArgumentList>(
+            function: &cuda_core::CudaFunction,
+            config: cuda_core::simt::LaunchConfig,
+            stream: &cuda_core::CudaStream,
+            $( $cluster: (u32, u32, u32), )?
+            mut storage: A,
+        ) -> Result<(), cuda_core::DriverError> {
+            let mut args = kernel_argument_pointers(&mut storage);
+            unsafe {
+                cuda_core::$driver(
+                    function, config.grid_dim, config.block_dim,
+                    config.shared_mem_bytes, $( $cluster, )? stream, &mut args,
+                )
+            }
+        }
+    };
+}
+argument_launch!(__launch_kernel_on_stream, launch_kernel_on_stream);
+argument_launch!(
+    __launch_kernel_cooperative_on_stream,
+    launch_kernel_cooperative_on_stream
+);
+argument_launch!(
+    __launch_kernel_ex_on_stream,
+    launch_kernel_ex_on_stream,
+    cluster
+);
+argument_launch!(
+    __launch_kernel_ex_cooperative_on_stream,
+    launch_kernel_ex_cooperative_on_stream,
+    cluster
+);
+
+/// Error context shared by one generated `requires` relation.
+#[doc(hidden)]
+pub struct __LaunchRequirement {
+    kernel: &'static str,
+    relation: &'static str,
+}
+impl __LaunchRequirement {
+    pub const fn new(kernel: &'static str, relation: &'static str) -> Self {
+        Self { kernel, relation }
+    }
+
+    /// Keep the checked-arithmetic error and the failing relation together.
+    pub fn value(&self, value: Option<u64>) -> Result<u64, cuda_core::LaunchContractError> {
+        value.ok_or(cuda_core::LaunchContractError::SizeRequirementOverflow {
+            kernel: self.kernel,
+            relation: self.relation,
+        })
+    }
+
+    fn check(
+        &self,
+        lhs: u64,
+        rhs: u64,
+        satisfied: bool,
+    ) -> Result<(), cuda_core::LaunchContractError> {
+        if satisfied {
+            Ok(())
+        } else {
+            Err(cuda_core::LaunchContractError::SizeRequirementViolated {
+                kernel: self.kernel,
+                relation: self.relation,
+                lhs,
+                rhs,
+            })
+        }
+    }
+
+    pub fn lt(&self, lhs: u64, rhs: u64) -> Result<(), cuda_core::LaunchContractError> {
+        self.check(lhs, rhs, lhs < rhs)
+    }
+    pub fn le(&self, lhs: u64, rhs: u64) -> Result<(), cuda_core::LaunchContractError> {
+        self.check(lhs, rhs, lhs <= rhs)
+    }
+    pub fn eq(&self, lhs: u64, rhs: u64) -> Result<(), cuda_core::LaunchContractError> {
+        self.check(lhs, rhs, lhs == rhs)
+    }
+    pub fn ne(&self, lhs: u64, rhs: u64) -> Result<(), cuda_core::LaunchContractError> {
+        self.check(lhs, rhs, lhs != rhs)
+    }
+    pub fn ge(&self, lhs: u64, rhs: u64) -> Result<(), cuda_core::LaunchContractError> {
+        self.check(lhs, rhs, lhs >= rhs)
+    }
+    pub fn gt(&self, lhs: u64, rhs: u64) -> Result<(), cuda_core::LaunchContractError> {
+        self.check(lhs, rhs, lhs > rhs)
+    }
 }
 
 // =============================================================================
@@ -995,6 +1197,45 @@ mod tests {
     use super::*;
     use std::ffi::c_void;
 
+    #[test]
+    fn launch_requirement_preserves_comparisons_and_error_values() {
+        let r = __LaunchRequirement::new("kernel", "input.len() >= n * stride");
+        for (lhs, rhs) in [(0, 0), (0, 1), (1, 0), (u64::MAX, u64::MAX)] {
+            for (result, expected) in [
+                (r.lt(lhs, rhs), lhs < rhs),
+                (r.le(lhs, rhs), lhs <= rhs),
+                (r.eq(lhs, rhs), lhs == rhs),
+                (r.ne(lhs, rhs), lhs != rhs),
+                (r.ge(lhs, rhs), lhs >= rhs),
+                (r.gt(lhs, rhs), lhs > rhs),
+            ] {
+                assert_eq!(result.is_ok(), expected);
+                if let Err(error) = result {
+                    assert!(
+                        matches!(error, cuda_core::LaunchContractError::SizeRequirementViolated {
+                        kernel: "kernel", relation: "input.len() >= n * stride",
+                        lhs: actual_lhs, rhs: actual_rhs,
+                    } if actual_lhs == lhs && actual_rhs == rhs)
+                    );
+                }
+            }
+        }
+        assert_eq!(r.value(3u64.checked_mul(7)).unwrap(), 21);
+        for overflow in [
+            u64::MAX.checked_add(1),
+            0u64.checked_sub(1),
+            u64::MAX.checked_mul(2),
+        ] {
+            assert!(matches!(
+                r.value(overflow),
+                Err(cuda_core::LaunchContractError::SizeRequirementOverflow {
+                    kernel: "kernel",
+                    relation: "input.len() >= n * stride",
+                })
+            ));
+        }
+    }
+
     // Dummy kernel marker for testing
     struct TestKernelMarker;
     impl CudaKernel for TestKernelMarker {
@@ -1149,5 +1390,28 @@ mod tests {
             ptr
         );
         assert_eq!(unsafe { *(args[1] as *const u64) }, len);
+    }
+
+    #[test]
+    fn packed_slice_arguments_preserve_storage_order_and_field_widths() {
+        let mut storage = (
+            KernelArgumentGroup(((0xfeed_beefu64, 1024u64), Scalar(()))),
+            KernelArgumentGroup((Scalar(17u32), (0xcafe_babeu64, 2048u64, 64u32))),
+        );
+        let args = kernel_argument_pointers(&mut storage);
+        assert_eq!(args.len(), 6);
+        assert!(kernel_argument_pointers(&mut ()).is_empty());
+        // Slots reference the original live fields, not temporary copies.
+        storage.0.0.0.1 = 4096;
+        storage.1.0.1.2 = 128;
+        assert_eq!(args[0], std::ptr::from_mut(&mut storage.0.0.0.0).cast());
+        assert_eq!(args[1], std::ptr::from_mut(&mut storage.0.0.0.1).cast());
+        assert_eq!(args[2], std::ptr::from_mut(&mut storage.1.0.0.0).cast());
+        assert_eq!(args[3], std::ptr::from_mut(&mut storage.1.0.1.0).cast());
+        assert_eq!(args[4], std::ptr::from_mut(&mut storage.1.0.1.1).cast());
+        assert_eq!(args[5], std::ptr::from_mut(&mut storage.1.0.1.2).cast());
+        assert_eq!(unsafe { *args[1].cast::<u64>() }, 4096);
+        assert_eq!(unsafe { *args[2].cast::<u32>() }, 17);
+        assert_eq!(unsafe { *args[5].cast::<u32>() }, 128);
     }
 }

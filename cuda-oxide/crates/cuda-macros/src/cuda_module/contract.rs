@@ -683,30 +683,27 @@ pub(super) fn generate_requires_checks(
         return None;
     }
     let kernel_name = kernel.fn_name.to_string();
-    let lhs_binding = internal_ident("__cuda_oxide_requires_lhs");
-    let rhs_binding = internal_ident("__cuda_oxide_requires_rhs");
+    let context = internal_ident("__cuda_oxide_requires");
     let checks = contract.requires.iter().map(|relation| {
         let Expr::Binary(binary) = relation else {
             unreachable!("requires relations are validated during contract construction");
         };
         let relation_text = render_requires_expr(relation);
-        let op = &binary.op;
-        let lhs = requires_operand_tokens(&binary.left, access, &kernel_name, &relation_text);
-        let rhs = requires_operand_tokens(&binary.right, access, &kernel_name, &relation_text);
+        let compare = match binary.op {
+            syn::BinOp::Lt(_) => quote!(lt),
+            syn::BinOp::Le(_) => quote!(le),
+            syn::BinOp::Eq(_) => quote!(eq),
+            syn::BinOp::Ne(_) => quote!(ne),
+            syn::BinOp::Ge(_) => quote!(ge),
+            syn::BinOp::Gt(_) => quote!(gt),
+            _ => unreachable!("requires comparisons are validated during contract construction"),
+        };
+        let lhs = requires_operand_tokens(&binary.left, access, &context);
+        let rhs = requires_operand_tokens(&binary.right, access, &context);
         quote! {
             {
-                let #lhs_binding: u64 = #lhs;
-                let #rhs_binding: u64 = #rhs;
-                if !(#lhs_binding #op #rhs_binding) {
-                    return ::core::result::Result::Err(
-                        ::cuda_core::LaunchContractError::SizeRequirementViolated {
-                            kernel: #kernel_name,
-                            relation: #relation_text,
-                            lhs: #lhs_binding,
-                            rhs: #rhs_binding,
-                        },
-                    );
-                }
+                let #context = ::cuda_host::__LaunchRequirement::new(#kernel_name, #relation_text);
+                #context.#compare(#lhs, #rhs)?;
             }
         }
     });
@@ -718,8 +715,7 @@ pub(super) fn generate_requires_checks(
 fn requires_operand_tokens(
     expr: &Expr,
     access: RequiresLenAccess,
-    kernel_name: &str,
-    relation_text: &str,
+    context: &Ident,
 ) -> TokenStream2 {
     match expr {
         Expr::Lit(literal) => {
@@ -748,29 +744,18 @@ fn requires_operand_tokens(
                 }
             }
         }
-        Expr::Paren(paren) => {
-            requires_operand_tokens(&paren.expr, access, kernel_name, relation_text)
-        }
-        Expr::Group(group) => {
-            requires_operand_tokens(&group.expr, access, kernel_name, relation_text)
-        }
+        Expr::Paren(paren) => requires_operand_tokens(&paren.expr, access, context),
+        Expr::Group(group) => requires_operand_tokens(&group.expr, access, context),
         Expr::Binary(binary) => {
-            let lhs = requires_operand_tokens(&binary.left, access, kernel_name, relation_text);
-            let rhs = requires_operand_tokens(&binary.right, access, kernel_name, relation_text);
+            let lhs = requires_operand_tokens(&binary.left, access, context);
+            let rhs = requires_operand_tokens(&binary.right, access, context);
             let checked = match binary.op {
                 syn::BinOp::Add(_) => quote! { checked_add },
                 syn::BinOp::Sub(_) => quote! { checked_sub },
                 syn::BinOp::Mul(_) => quote! { checked_mul },
                 _ => unreachable!("requires operators are validated during contract construction"),
             };
-            quote! {
-                #lhs.#checked(#rhs).ok_or(
-                    ::cuda_core::LaunchContractError::SizeRequirementOverflow {
-                        kernel: #kernel_name,
-                        relation: #relation_text,
-                    },
-                )?
-            }
+            quote! { #context.value(#lhs.#checked(#rhs))? }
         }
         _ => unreachable!("requires operands are validated during contract construction"),
     }
