@@ -20,9 +20,9 @@ use common::{
     range_for_loop, u32t,
 };
 use dialect_mir::ops::{
-    MirAddOp, MirBitAndOp, MirCallOp, MirCheckedAddOp, MirCheckedSubOp, MirCondBranchOp,
-    MirConstantOp, MirGeOp, MirGetDiscriminantOp, MirGtOp, MirLeOp, MirLtOp, MirNotOp, MirReturnOp,
-    MirSubOp, MirUnrollHintOp,
+    MirAddOp, MirAssertOp, MirBitAndOp, MirCallOp, MirCheckedAddOp, MirCheckedSubOp,
+    MirCondBranchOp, MirConstantOp, MirGeOp, MirGetDiscriminantOp, MirGtOp, MirLeOp, MirLtOp,
+    MirNotOp, MirReturnOp, MirSubOp, MirUnrollHintOp,
 };
 use mir_transforms::analyses::induction::{CmpPred, analyze};
 use mir_transforms::unroll::unroll_annotated_loops;
@@ -83,6 +83,8 @@ fn return_count(ctx: &Context, region: Ptr<Region>) -> usize {
         .count()
 }
 
+/// The assertion has an implicit abort edge. A single-successor CFG merge
+/// must not treat it as an unconditional goto and erase the bounds check.
 fn constant_i128(ctx: &Context, value: pliron::value::Value) -> Option<i128> {
     let def = value.defining_op()?;
     if let Some(c) = Operation::get_op::<MirConstantOp>(def, ctx) {
@@ -134,7 +136,6 @@ fn full_unroll_removes_the_loop() {
     );
 }
 
-/// With no `#[unroll]` marker the pass is a no-op: the loop is left intact.
 #[test]
 fn no_hint_leaves_the_loop_intact() {
     let mut ctx = mir_ctx();
@@ -1207,4 +1208,324 @@ fn range_for_loop_whose_next_value_is_read_after_both_exits_is_left_untouched() 
         1,
         "the `Option` match is still there"
     );
+}
+
+#[test]
+fn loop_policies_preserve_assertions_that_can_fail() {
+    for factor in [0, 1, 2, 4] {
+        let mut ctx = mir_ctx();
+        let lp = counted_loop(&mut ctx, 3);
+        let old_latch = lp.latch.deref(&ctx).get_terminator(&ctx).unwrap();
+        let continuation = common::block(&mut ctx, lp.region, vec![]);
+        old_latch.unlink(&ctx);
+        old_latch.insert_at_back(continuation, &ctx);
+
+        let ty = common::u32t(&mut ctx);
+        let bool_ty = common::i1(&mut ctx);
+        let bound = common::iconst(&mut ctx, lp.latch, ty, 2);
+        let iv = lp.header.deref(&ctx).get_argument(1);
+        let compare = Operation::new(
+            &mut ctx,
+            MirLtOp::get_concrete_op_info(),
+            vec![bool_ty.into()],
+            vec![iv, bound],
+            vec![],
+            0,
+        );
+        compare.insert_at_back(lp.latch, &ctx);
+        let condition = compare.deref(&ctx).get_result(0);
+        MirAssertOp::new(&mut ctx, condition)
+            .get_operation()
+            .insert_at_back(lp.latch, &ctx);
+        common::goto(&mut ctx, lp.latch, continuation, vec![]);
+        MirUnrollHintOp::new(&mut ctx, factor)
+            .get_operation()
+            .insert_at_front(lp.latch, &ctx);
+
+        unroll_annotated_loops(lp.module, &mut ctx, &mut AnalysisManager::default()).unwrap();
+        assert!(
+            operations(&ctx, lp.region)
+                .iter()
+                .any(|&op| Operation::get_op::<MirAssertOp>(op, &ctx).is_some()),
+            "factor {factor} must retain the assertion that fails at i=2"
+        );
+    }
+}
+
+#[test]
+fn factor_one_keeps_the_loop_and_marks_its_latch() {
+    let mut ctx = mir_ctx();
+    let lp = counted_loop(&mut ctx, 20);
+    MirUnrollHintOp::new(&mut ctx, 1)
+        .get_operation()
+        .insert_at_front(lp.latch, &ctx);
+    unroll_annotated_loops(lp.module, &mut ctx, &mut AnalysisManager::default()).unwrap();
+    let info = loop_info(&ctx, lp.region);
+    assert_eq!(info.loops().len(), 1);
+    assert_eq!(hint_count(&ctx, lp.region), 0);
+    for &latch in &info.loops()[0].latches {
+        assert!(dialect_mir::attributes::loop_unroll_disabled(
+            &ctx,
+            latch.deref(&ctx).get_terminator(&ctx).unwrap()
+        ));
+    }
+}
+
+#[test]
+fn factor_one_handles_early_break_without_induction_analysis() {
+    let mut ctx = mir_ctx();
+    let lp = early_exit_counted_loop(&mut ctx, 20, 2);
+    MirUnrollHintOp::new(&mut ctx, 1)
+        .get_operation()
+        .insert_at_front(lp.latch, &ctx);
+    unroll_annotated_loops(lp.module, &mut ctx, &mut AnalysisManager::default()).unwrap();
+    let info = loop_info(&ctx, lp.region);
+    assert_eq!(info.loops().len(), 1);
+    for &latch in &info.loops()[0].latches {
+        assert!(dialect_mir::attributes::loop_unroll_disabled(
+            &ctx,
+            latch.deref(&ctx).get_terminator(&ctx).unwrap()
+        ));
+    }
+}
+
+#[test]
+fn factor_one_marks_every_continue_latch() {
+    let mut ctx = mir_ctx();
+    let lp = multi_latch_counted_loop(&mut ctx, 20, 1, 1);
+    MirUnrollHintOp::new(&mut ctx, 1)
+        .get_operation()
+        .insert_at_front(lp.choose, &ctx);
+    unroll_annotated_loops(lp.module, &mut ctx, &mut AnalysisManager::default()).unwrap();
+    let info = loop_info(&ctx, lp.region);
+    assert_eq!(info.loops().len(), 1);
+    assert_eq!(info.loops()[0].latches.len(), 2);
+    let groups: Vec<_> = info.loops()[0]
+        .latches
+        .iter()
+        .map(|latch| {
+            dialect_mir::attributes::loop_unroll_group(
+                &ctx,
+                latch.deref(&ctx).get_terminator(&ctx).unwrap(),
+            )
+            .unwrap()
+        })
+        .collect();
+    assert_eq!(groups[0], groups[1]);
+    for &latch in &info.loops()[0].latches {
+        assert!(dialect_mir::attributes::loop_unroll_disabled(
+            &ctx,
+            latch.deref(&ctx).get_terminator(&ctx).unwrap()
+        ));
+    }
+}
+
+#[test]
+fn factor_one_survives_outer_full_unroll() {
+    let mut ctx = mir_ctx();
+    let lp = nested_counted_loop(&mut ctx, 3, 20);
+    MirUnrollHintOp::new(&mut ctx, 0)
+        .get_operation()
+        .insert_at_front(lp.outer_body, &ctx);
+    MirUnrollHintOp::new(&mut ctx, 1)
+        .get_operation()
+        .insert_at_front(lp.inner_body, &ctx);
+    unroll_annotated_loops(lp.module, &mut ctx, &mut AnalysisManager::default()).unwrap();
+    pliron::operation::verify_operation(lp.module, &ctx).unwrap();
+    let info = loop_info(&ctx, lp.region);
+    assert_eq!(info.loops().len(), 3);
+    assert_eq!(hint_count(&ctx, lp.region), 0);
+    let mut groups: Vec<_> = info
+        .loops()
+        .iter()
+        .map(|lp| {
+            dialect_mir::attributes::loop_unroll_group(
+                &ctx,
+                lp.latches[0].deref(&ctx).get_terminator(&ctx).unwrap(),
+            )
+            .unwrap()
+        })
+        .collect();
+    groups.sort();
+    groups.dedup();
+    assert_eq!(groups.len(), 3, "cloned loops need distinct policy groups");
+    for lp in info.loops() {
+        for &latch in &lp.latches {
+            assert!(dialect_mir::attributes::loop_unroll_disabled(
+                &ctx,
+                latch.deref(&ctx).get_terminator(&ctx).unwrap()
+            ));
+        }
+    }
+}
+
+/// With no `#[unroll]` marker the pass is a no-op: the loop is left intact.
+
+#[test]
+fn partial_unroll_with_extra_exits_delegates_to_native_llvm() {
+    let mut ctx = mir_ctx();
+    let lp = multiple_exit_counted_loop(&mut ctx, 4);
+
+    MirUnrollHintOp::new(&mut ctx, 2)
+        .get_operation()
+        .insert_at_front(lp.check_a, &ctx);
+    let mut analyses = AnalysisManager::default();
+    unroll_annotated_loops(lp.module, &mut ctx, &mut analyses)
+        .expect("partial multi-exit delegates without cloning");
+
+    pliron::operation::verify_operation(lp.module, &ctx).expect("skipped loop remains valid");
+    let after = loop_info(&ctx, lp.region);
+    assert_eq!(after.loops().len(), 1, "no main loop was introduced");
+    let id = after.innermost_loop(lp.header).unwrap();
+    assert_eq!(after.loops()[id].latches, vec![lp.latch]);
+    assert_eq!(after.exiting_blocks(&ctx, lp.region, id).len(), 3);
+    assert_eq!(after.exit_blocks(&ctx, lp.region, id).len(), 3);
+    assert_eq!(cond_branch_count(&ctx, lp.region), 3);
+    assert_eq!(hint_count(&ctx, lp.region), 0, "the request was consumed");
+    for &latch in &after.loops()[id].latches {
+        let terminator = latch.deref(&ctx).get_terminator(&ctx).unwrap();
+        assert_eq!(
+            dialect_mir::attributes::loop_unroll_factor(&ctx, terminator),
+            Some(2)
+        );
+        assert!(!dialect_mir::attributes::loop_unroll_disabled(
+            &ctx, terminator
+        ));
+    }
+}
+
+#[test]
+fn native_partial_policy_preserves_direct_early_exit_liveouts() {
+    let mut ctx = mir_ctx();
+    let lp = early_exit_with_direct_liveout(&mut ctx, 20);
+    let before_ops = operations(&ctx, lp.region).len();
+    MirUnrollHintOp::new(&mut ctx, 4)
+        .get_operation()
+        .insert_at_front(lp.body, &ctx);
+    unroll_annotated_loops(lp.module, &mut ctx, &mut AnalysisManager::default()).unwrap();
+    pliron::operation::verify_operation(lp.module, &ctx).unwrap();
+    assert_eq!(hint_count(&ctx, lp.region), 0);
+    assert!(
+        operations(&ctx, lp.region).len() <= before_ops,
+        "native policy must not clone the body"
+    );
+    let info = loop_info(&ctx, lp.region);
+    assert_eq!(info.loops().len(), 1);
+    for &latch in &info.loops()[0].latches {
+        assert_eq!(
+            dialect_mir::attributes::loop_unroll_factor(
+                &ctx,
+                latch.deref(&ctx).get_terminator(&ctx).unwrap(),
+            ),
+            Some(4),
+        );
+    }
+}
+
+#[test]
+fn native_partial_fallback_respects_the_growth_budget() {
+    let mut ctx = mir_ctx();
+    let lp = early_exit_counted_loop(&mut ctx, 20, 2);
+    MirUnrollHintOp::new(&mut ctx, u32::MAX)
+        .get_operation()
+        .insert_at_front(lp.body, &ctx);
+    unroll_annotated_loops(lp.module, &mut ctx, &mut AnalysisManager::default()).unwrap();
+    pliron::operation::verify_operation(lp.module, &ctx).unwrap();
+    assert_eq!(loop_count(&ctx, lp.region), 1);
+    assert_eq!(hint_count(&ctx, lp.region), 0);
+    for &latch in &loop_info(&ctx, lp.region).loops()[0].latches {
+        assert_eq!(
+            dialect_mir::attributes::loop_unroll_factor(
+                &ctx,
+                latch.deref(&ctx).get_terminator(&ctx).unwrap(),
+            ),
+            None
+        );
+    }
+}
+
+#[test]
+fn native_partial_policy_is_renumbered_after_outer_cloning() {
+    let mut ctx = mir_ctx();
+    let lp = nested_counted_loop(&mut ctx, 3, 20);
+    let before = loop_info(&ctx, lp.region);
+    let inner = before.innermost_loop(lp.inner_body).unwrap();
+    for &latch in &before.loops()[inner].latches {
+        let terminator = latch.deref(&ctx).get_terminator(&ctx).unwrap();
+        dialect_mir::attributes::set_loop_unroll_policy(&mut ctx, terminator, "inner", 4);
+    }
+    MirUnrollHintOp::new(&mut ctx, 0)
+        .get_operation()
+        .insert_at_front(lp.outer_body, &ctx);
+    unroll_annotated_loops(lp.module, &mut ctx, &mut AnalysisManager::default()).unwrap();
+    pliron::operation::verify_operation(lp.module, &ctx).unwrap();
+    let info = loop_info(&ctx, lp.region);
+    assert_eq!(info.loops().len(), 3);
+    let mut groups = Vec::new();
+    for lp in info.loops() {
+        for &latch in &lp.latches {
+            let terminator = latch.deref(&ctx).get_terminator(&ctx).unwrap();
+            assert_eq!(
+                dialect_mir::attributes::loop_unroll_factor(&ctx, terminator),
+                Some(4)
+            );
+            groups.push(dialect_mir::attributes::loop_unroll_group(&ctx, terminator).unwrap());
+        }
+    }
+    groups.sort();
+    groups.dedup();
+    assert_eq!(
+        groups.len(),
+        3,
+        "cloned loops need independent native policies"
+    );
+}
+
+#[test]
+fn full_unroll_unknown_bound_is_forwarded_to_native_optimizer() {
+    let mut ctx = mir_ctx();
+    let lp = counted_loop(&mut ctx, 4);
+    let compare = operations(&ctx, lp.region)
+        .into_iter()
+        .find(|&op| Operation::get_op::<MirLtOp>(op, &ctx).is_some())
+        .unwrap();
+    let old_bound = compare.deref(&ctx).get_operand(1);
+    let ty = common::u32t(&mut ctx);
+    let call = Operation::new(
+        &mut ctx,
+        MirCallOp::get_concrete_op_info(),
+        vec![ty.into()],
+        vec![],
+        vec![],
+        0,
+    );
+    let call = MirCallOp::new(call);
+    call.set_attr_callee(&ctx, StringAttr::new("bound_after_inlining".into()));
+    let signature = FunctionType::get(&ctx, vec![], vec![ty.into()]);
+    call.set_external_callee_signature(&mut ctx, signature.into());
+    let terminator = lp.preheader.deref(&ctx).get_terminator(&ctx).unwrap();
+    call.get_operation().insert_before(&ctx, terminator);
+    let bound = call.get_operation().deref(&ctx).get_result(0);
+    old_bound.replace_all_uses_with(&ctx, &bound);
+    MirUnrollHintOp::new(&mut ctx, 0)
+        .get_operation()
+        .insert_at_front(lp.latch, &ctx);
+
+    unroll_annotated_loops(lp.module, &mut ctx, &mut AnalysisManager::default()).unwrap();
+    pliron::operation::verify_operation(lp.module, &ctx).unwrap();
+    assert_eq!(hint_count(&ctx, lp.region), 0);
+    let info = loop_info(&ctx, lp.region);
+    assert_eq!(
+        info.loops().len(),
+        1,
+        "MIR must not guess the unknown trip count"
+    );
+    for &latch in &info.loops()[0].latches {
+        let branch = latch.deref(&ctx).get_terminator(&ctx).unwrap();
+        assert_eq!(
+            dialect_mir::attributes::loop_unroll_factor(&ctx, branch),
+            Some(0)
+        );
+        assert!(dialect_mir::attributes::loop_unroll_group(&ctx, branch).is_some());
+    }
 }

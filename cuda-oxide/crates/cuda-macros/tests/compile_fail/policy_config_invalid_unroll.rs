@@ -6,7 +6,7 @@ use cuda_device::kernel;
 struct Invalid;
 
 impl Invalid {
-    const UNROLL: u32 = 1;
+    const UNROLL: u32 = 1025;
 }
 
 #[kernel]

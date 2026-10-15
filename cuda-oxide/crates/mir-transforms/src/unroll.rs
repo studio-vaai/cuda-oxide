@@ -14,8 +14,10 @@
 //! ```
 //!
 //! `#[unroll]` requests full unrolling when the iteration count is known at
-//! compile time. `#[unroll(N)]` requests `N` body copies per trip and leaves a
-//! small remainder loop for leftover iterations. The frontend records the
+//! compile time. If MIR cannot infer the count, the native compiler receives
+//! the full-unroll request and can infer it after inlining. `#[unroll(1)]` keeps the loop rolled, including in downstream
+//! NVIDIA optimization. `#[unroll(N)]` for `N >= 2` requests `N` body copies per
+//! trip and leaves a small remainder loop for leftover iterations. The frontend records the
 //! request as a `mir.unroll_hint` operation inside that loop.
 //!
 //! The current analysis recognizes explicit counted `while` loops, including an
@@ -26,8 +28,8 @@
 //!
 //! Several `continue` paths are supported: the pass joins their back-edges
 //! before unrolling. Full `#[unroll]` also preserves early `break` paths and
-//! multiple exit targets. Partial `#[unroll(N)]` warns and leaves the loop not
-//! unrolled when it has an extra exit. Partial unrolling currently requires a
+//! multiple exit targets. Partial `#[unroll(N)]` delegates to native LLVM
+//! optimization when it has an extra exit. Partial unrolling currently requires a
 //! positive step, a `<` or `<=` test, and a loop-invariant bound.
 //!
 //! To bound compile time and memory, one request may create at most 1,024 body
@@ -67,12 +69,13 @@ use pliron::op::{Op, op_cast};
 use pliron::operation::Operation;
 use pliron::opts::constants::sccp::sccp;
 use pliron::opts::dce::{SideEffects, dce};
-use pliron::opts::simplify_cfg::simplify_cfg;
 use pliron::pass::AnalysisManager;
 use pliron::region::Region;
 use pliron::result::Result;
 use pliron::r#type::{TypeHandle, Typed, TypedHandle};
 use pliron::utils::apint::APInt;
+
+use crate::cfg_cleanup::simplify_cfg;
 use pliron::value::Value;
 use rustc_hash::FxHashSet;
 use std::num::NonZero;
@@ -173,7 +176,8 @@ fn check_clone_budget(
 /// elimination clean only that function: constant index expressions fold, dead
 /// branches disappear, and unreachable original loop blocks are removed.
 ///
-/// Unsupported loop shapes produce a warning and are not unrolled.
+/// Full requests with an unknown trip count are preserved as native metadata.
+/// Other unsupported shapes and known over-budget requests warn and stay rolled.
 pub fn unroll_annotated_loops(
     module: Ptr<Operation>,
     ctx: &mut Context,
@@ -192,6 +196,7 @@ pub fn unroll_annotated_loops(
     }
 
     let mut changed = false;
+    let mut next_loop_group = 0;
     for func_op in collect_functions(module, ctx) {
         let region = func_op.deref(ctx).get_region(0);
         if collect_hints(ctx, region).is_empty() {
@@ -266,6 +271,19 @@ pub fn unroll_annotated_loops(
             };
             let kind = unroll_kind(factor);
 
+            if factor == 1 {
+                for &latch in &info.loops()[loop_id].latches {
+                    let terminator = latch.deref(ctx).get_terminator(ctx).unwrap();
+                    dialect_mir::attributes::set_loop_unroll_disabled(ctx, terminator, "pending");
+                }
+                for (op, block, _) in &hints {
+                    if info.innermost_loop(*block) == Some(loop_id) {
+                        op.unlink(ctx);
+                    }
+                }
+                continue;
+            }
+
             let Some(ph) = info.preheader(ctx, region, loop_id) else {
                 // The author asked for unrolling; never silently do nothing.
                 for (op, block, _f) in &hints {
@@ -301,7 +319,7 @@ pub fn unroll_annotated_loops(
 
             // A grouped main loop plus a remainder loop needs explicit merging
             // for every early-exit value. Keep that as a follow-up: full unroll
-            // can preserve those paths directly, partial unroll warns and skips.
+            // can preserve those paths directly; partial unroll delegates to LLVM.
             if factor != 0 {
                 let lp = &info.loops()[loop_id];
                 let exiting = info.exiting_blocks(ctx, region, loop_id);
@@ -312,9 +330,22 @@ pub fn unroll_annotated_loops(
                             op.unlink(ctx);
                         }
                     }
-                    eprintln!(
-                        "warning: {kind} requested but the loop was not unrolled: partial unrolling does not yet support an early `break` or multiple exits"
-                    );
+                    let blocks: Vec<_> = lp.blocks.iter().copied().collect();
+                    match check_clone_budget(ctx, u64::from(factor), &blocks) {
+                        Ok(()) => {
+                            // Native LLVM handles partial unrolling with early
+                            // exits without changing their values in this pass.
+                            for &latch in &lp.latches {
+                                let terminator = latch.deref(ctx).get_terminator(ctx).unwrap();
+                                dialect_mir::attributes::set_loop_unroll_policy(
+                                    ctx, terminator, "pending", factor,
+                                );
+                            }
+                        }
+                        Err(reason) => eprintln!(
+                            "warning: {kind} requested but the loop was not unrolled: {reason}"
+                        ),
+                    }
                     continue;
                 }
             }
@@ -399,7 +430,21 @@ pub fn unroll_annotated_loops(
                 // Requested but unsupported shape: report exactly why, loudly, so
                 // it is never a silent no-op.
                 UnrollOutcome::Skipped(reason) => {
-                    eprintln!("warning: {kind} requested but the loop was not unrolled: {reason}");
+                    if factor == 0 && rec.trip_count.is_none() {
+                        // Inlining and scalar replacement can expose a constant
+                        // trip count later. Preserve the request for native LLVM
+                        // instead of dropping it with the consumed MIR marker.
+                        for &latch in &info.loops()[loop_id].latches {
+                            let terminator = latch.deref(ctx).get_terminator(ctx).unwrap();
+                            dialect_mir::attributes::set_loop_unroll_policy(
+                                ctx, terminator, "pending", 0,
+                            );
+                        }
+                    } else {
+                        eprintln!(
+                            "warning: {kind} requested but the loop was not unrolled: {reason}"
+                        );
+                    }
                 }
             }
         }
@@ -412,6 +457,30 @@ pub fn unroll_annotated_loops(
             sccp(func_op, ctx)?;
             simplify_cfg(func_op, ctx)?;
             dce(func_op, ctx)?;
+        }
+
+        // Assign groups after cloning and CFG cleanup. LLVM requires every
+        // back-edge of one loop to reference the same distinct metadata node;
+        // cloned inner loops must receive separate nodes.
+        let mut analyses = AnalysisManager::default();
+        let mut dom = analyses.get_analysis_mut::<DomInfo>(module, ctx)?;
+        let info = LoopInfo::compute(ctx, region, dom.get_dom_tree(ctx, region));
+        for lp in info.loops() {
+            if let Some(factor) = lp.latches.iter().find_map(|latch| {
+                dialect_mir::attributes::loop_unroll_factor(
+                    ctx,
+                    latch.deref(ctx).get_terminator(ctx).unwrap(),
+                )
+            }) {
+                let group = next_loop_group.to_string();
+                next_loop_group += 1;
+                for &latch in &lp.latches {
+                    let terminator = latch.deref(ctx).get_terminator(ctx).unwrap();
+                    dialect_mir::attributes::set_loop_unroll_policy(
+                        ctx, terminator, &group, factor,
+                    );
+                }
+            }
         }
     }
 

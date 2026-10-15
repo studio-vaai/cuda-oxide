@@ -563,6 +563,48 @@ pub mod ops {
     // duplicate semantic representation.
     const LLVM_INLINE_ASM_SIDEEFFECT_KEY: &str = "llvm_inline_asm_side_effects";
     const LLVM_INLINE_ASM_ATTRS_KEY: &str = "llvm_inline_asm_attrs";
+    /// Carry an explicit native loop policy on every back-edge of one loop.
+    /// Zero requests full unrolling, one disables it, and larger factors request partial unrolling.
+    pub fn set_loop_unroll_policy(ctx: &mut Context, op: Ptr<Operation>, group: &str, factor: u32) {
+        use pliron::builtin::attributes::IntegerAttr;
+        use pliron::builtin::types::{IntegerType, Signedness};
+        use pliron::utils::apint::APInt;
+        use std::num::NonZero;
+
+        let ty = IntegerType::get(ctx, 32, Signedness::Unsigned);
+        let value = APInt::from_u64(u64::from(factor), NonZero::new(32).unwrap());
+        op.deref_mut(ctx).attributes.set(
+            "llvm_loop_unroll_group".try_into().unwrap(),
+            StringAttr::new(group.to_string()),
+        );
+        op.deref_mut(ctx).attributes.set(
+            "llvm_loop_unroll_factor".try_into().unwrap(),
+            IntegerAttr::new(ty, value),
+        );
+    }
+
+    /// Stamp a loop latch so textual export preserves its no-unroll policy.
+    pub fn set_loop_unroll_disabled(ctx: &mut Context, op: Ptr<Operation>, group: &str) {
+        set_loop_unroll_policy(ctx, op, group, 1);
+    }
+
+    /// Group identifying the latches of one explicitly annotated loop.
+    pub fn loop_unroll_group(ctx: &Context, op: Ptr<Operation>) -> Option<String> {
+        op.deref(ctx)
+            .attributes
+            .get::<StringAttr>(&"llvm_loop_unroll_group".try_into().unwrap())
+            .map(|value| value.as_str().to_owned())
+    }
+
+    /// Explicit native factor attached to a loop latch.
+    pub fn loop_unroll_factor(ctx: &Context, op: Ptr<Operation>) -> Option<u32> {
+        op.deref(ctx)
+            .attributes
+            .get::<pliron::builtin::attributes::IntegerAttr>(
+                &"llvm_loop_unroll_factor".try_into().unwrap(),
+            )
+            .map(|value| value.value().to_u64() as u32)
+    }
 
     /// Debug type metadata for a local variable described by `llvm.dbg.declare`.
     #[derive(Clone, Debug, Eq, Hash, PartialEq)]
