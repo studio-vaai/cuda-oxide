@@ -28,6 +28,13 @@
 //!
 //! so the same switch that turns host emission on also adds the `cuda-host`
 //! dependency that resolves it.
+//!
+//! Ordinary Rust builds retain kernel signatures and launch identities, with
+//! lightweight panicking bodies for the reserved GPU entry functions. Named
+//! implementation helpers remain callable on the CPU. `cargo oxide` retains
+//! the full entry bodies for device compilation automatically. To retain CPU
+//! entry bodies too, set `CUDA_OXIDE_HOST_KERNEL_STUBS=0`. Raw custom-backend
+//! invocations must also set this opt-out; the collector rejects host stubs.
 
 #![feature(proc_macro_def_site, proc_macro_span, proc_macro_tracked_env)]
 

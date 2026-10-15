@@ -463,6 +463,13 @@ impl CodegenBackend for CudaCodegenBackend {
     }
 
     fn init(&mut self, sess: &EarlySession) -> CodegenBackendInit {
+        let host_stubs = std::env::var(reserved_oxide_symbols::HOST_KERNEL_STUBS_ENV).ok();
+        if host_stubs.as_deref().is_some_and(|setting| {
+            reserved_oxide_symbols::host_kernel_stubs(Some(setting), true) == Ok(true)
+        }) {
+            sess.dcx()
+                .fatal("host kernel stubs cannot be used with the CUDA codegen backend");
+        }
         // Note: Don't log here - init() is called for ALL crates including dependencies.
         // We log in codegen_crate() only when there are kernels to compile.
 
