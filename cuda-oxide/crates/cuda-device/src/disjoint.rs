@@ -305,6 +305,22 @@ impl<'a, T, IndexSpace: SpaceLayout<Data = u32>> __LaunchContractDisjointSliceAb
 {
 }
 
+/// Shared proof of both launch-domain compatibility and transported slice shape.
+/// Both sealed authorities remain required; generated launchers name them once.
+#[doc(hidden)]
+pub trait __LaunchSlice<Element, const DOMAIN: u8, const HAS_ROW_WIDTH: bool>:
+    __LaunchContractDisjointSlice<Element, DOMAIN>
+    + __LaunchContractDisjointSliceAbi<Element, HAS_ROW_WIDTH>
+{
+}
+impl<S, Element, const DOMAIN: u8, const HAS_ROW_WIDTH: bool>
+    __LaunchSlice<Element, DOMAIN, HAS_ROW_WIDTH> for S
+where
+    S: __LaunchContractDisjointSlice<Element, DOMAIN>
+        + __LaunchContractDisjointSliceAbi<Element, HAS_ROW_WIDTH>,
+{
+}
+
 impl<'a, T, IndexSpace: SpaceLayout> DisjointSlice<'a, T, IndexSpace> {
     /// Create a `DisjointSlice` from a raw pointer, a length and the runtime
     /// layout its index space needs.

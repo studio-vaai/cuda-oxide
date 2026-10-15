@@ -80,7 +80,9 @@ pub use barrier::{
 pub use constant::{ConstantMemory, ConstantMemoryValue};
 pub use cusimd::{CuSimd, Float2, Float4, TmemRegs4, TmemRegs32};
 #[doc(hidden)]
-pub use disjoint::{__LaunchContractDisjointSlice, __LaunchContractDisjointSliceAbi};
+pub use disjoint::{
+    __LaunchContractDisjointSlice, __LaunchContractDisjointSliceAbi, __LaunchSlice,
+};
 pub use disjoint::{DisjointSlice, SpaceLayout};
 pub use fence::*;
 pub use register_array::RegisterArray;
