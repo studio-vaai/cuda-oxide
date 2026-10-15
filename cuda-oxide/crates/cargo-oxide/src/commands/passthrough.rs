@@ -231,6 +231,9 @@ pub(super) fn cargo_passthrough_command_with_env(
         cmd.args(["--features", features]);
     }
     cmd.args(cargo_args).current_dir(&ctx.workspace_root);
+    if let Some(cargo_target_dir) = opts.cargo_target_dir {
+        cmd.env("CARGO_TARGET_DIR", cargo_target_dir);
+    }
 
     // Project configuration provides defaults. Explicit wrapper flags and
     // internal compiler requirements are applied afterward and therefore win.
@@ -283,6 +286,15 @@ pub fn codegen_cargo_passthrough(
             std::process::exit(2);
         });
 
+    configure_artifact_directory(&mut cmd).unwrap_or_else(|error| {
+        eprintln!("Error: {error}");
+        std::process::exit(2);
+    });
+    apply_native_tool_identity(&mut cmd, ctx).unwrap_or_else(|error| {
+        eprintln!("Error: {error}");
+        std::process::exit(2);
+    });
+
     let displayed_args: Vec<_> = cmd
         .get_args()
         .skip(1)
@@ -299,7 +311,21 @@ pub fn codegen_cargo_passthrough(
     }
     println!();
 
-    let status = cmd.status().expect("Failed to run cargo");
+    let output_root = cmd
+        .get_envs()
+        .find_map(|(key, value)| (key == "CUDA_OXIDE_PTX_DIR").then_some(value).flatten())
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("CUDA_OXIDE_PTX_DIR").map(std::path::PathBuf::from))
+        .expect("artifact directory configured");
+    let status = if cargo_subcommand == CargoPassthroughSubcommand::Build
+    {
+        super::module_snapshots::build(&cmd, &output_root).unwrap_or_else(|error| {
+            eprintln!("Error: {error}");
+            std::process::exit(2);
+        })
+    } else {
+        cmd.status().expect("Failed to run cargo")
+    };
     if !status.success() {
         eprintln!(
             "\nCargo {} failed with exit code: {:?}",

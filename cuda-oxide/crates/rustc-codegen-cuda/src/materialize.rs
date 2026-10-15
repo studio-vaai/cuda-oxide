@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-//! Strict, opt-in build-time finalization of embedded device artifacts.
+//! Verified tool identity for native and embedded device artifacts.
 //!
-//! `cargo oxide --materialize-cubin` discovers and fingerprints the exact
+//! Native module builds and `cargo oxide --materialize-cubin` discover and fingerprint the exact
 //! libNVVM, nvJitLink, and libdevice inputs before invoking Cargo. Device
 //! macros record the complete codegen identity and exact provenance as Cargo
 //! environment dependencies. We reopen the tools, bind the parent digest to
@@ -51,17 +51,17 @@ pub(crate) enum MaterializeError {
     NonUnicodeBoolean,
 
     #[error(
-        "{MATERIALIZE_ENV}=true requires cargo-oxide's provenance handshake; use `cargo oxide build --materialize-cubin` instead of invoking raw Cargo"
+        "native cubin compilation requires cargo-oxide's provenance handshake; use `cargo oxide build` instead of invoking raw Cargo"
     )]
     MissingExpectedProvenance,
 
     #[error(
-        "{MATERIALIZE_ENV}=true is missing cargo-oxide's tracked codegen fingerprint; use `cargo oxide build --materialize-cubin` instead of invoking raw Cargo"
+        "native cubin compilation is missing cargo-oxide's tracked codegen fingerprint; use `cargo oxide build` instead of invoking raw Cargo"
     )]
     MissingCargoFingerprint,
 
     #[error(
-        "{MATERIALIZE_ENV}=true requires cargo-oxide's named v1 tool-identity handshake in {MATERIALIZER_HANDSHAKE_ENV}"
+        "native cubin compilation requires cargo-oxide's named v1 tool-identity handshake in {MATERIALIZER_HANDSHAKE_ENV}"
     )]
     MissingToolIdentityHandshake,
 
@@ -131,6 +131,21 @@ pub(crate) fn request_from_env() -> Result<Option<MaterializationRequest>, Mater
     if !enabled {
         return Ok(None);
     }
+    Ok(Some(provenance_request_from_env()?))
+}
+
+/// The native module path pins tools without opting into embedded artifacts.
+/// Direct backend callers retain discovery when no wrapper handshake is present.
+pub(crate) fn native_finalizer_from_env() -> Result<Finalizer, MaterializeError> {
+    if std::env::var_os(EXPECTED_PROVENANCE_ENV).is_none()
+        && std::env::var_os(MATERIALIZER_HANDSHAKE_ENV).is_none()
+    {
+        return Ok(Finalizer::discover()?);
+    }
+    checked_finalizer(provenance_request_from_env()?)
+}
+
+fn provenance_request_from_env() -> Result<MaterializationRequest, MaterializeError> {
     let value = std::env::var(EXPECTED_PROVENANCE_ENV)
         .map_err(|_| MaterializeError::MissingExpectedProvenance)?;
     let expected_provenance = parse_digest(&value)?;
@@ -147,10 +162,10 @@ pub(crate) fn request_from_env() -> Result<Option<MaterializationRequest>, Mater
         })?;
     validate_tool_identity_handshake(expected_provenance, &handshake)?;
     validate_codegen_fingerprint()?;
-    Ok(Some(MaterializationRequest {
+    Ok(MaterializationRequest {
         expected_provenance,
         tool_identity_handshake: handshake,
-    }))
+    })
 }
 
 fn validate_tool_identity_handshake(

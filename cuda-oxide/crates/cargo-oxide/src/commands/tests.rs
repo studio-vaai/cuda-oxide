@@ -2051,6 +2051,21 @@ fn test_profile_ignores_the_build_only_debug_assertions_toggle() {
 }
 
 #[test]
+fn package_pipeline_preserves_explicit_mir_inlining_policy() {
+    let rustflags = build_encoded_rustflags_with_existing(
+        Path::new("/tmp/librustc_codegen_cuda.so"),
+        CodegenProfilePolicy::ReleaseLike,
+        &["-Zinline-mir=no".to_string()],
+        &[],
+        None,
+        None,
+    );
+    let flags = decoded_rustflags(&rustflags);
+    assert!(flags.contains(&"-Zinline-mir=no"));
+    assert!(!flags.contains(&"-Zinline-mir=yes"));
+}
+
+#[test]
 fn encoded_rustflags_preserve_configured_flag_boundaries_and_spaces() {
     let rustflags = build_encoded_rustflags_with_existing(
         Path::new("/tmp/backend path/librustc_codegen_cuda.so"),
@@ -2881,6 +2896,27 @@ fn passthrough_fingerprint_tracks_output_affecting_settings() {
         Some("sm_80"),
         &MaterializationMode::default(),
         &inherited_env,
+    );
+
+    let routing = BTreeMap::from([
+        ("CUDA_OXIDE_KERNELS_ONLY".into(), b"gpu_crate".to_vec()),
+        ("CUDA_OXIDE_INTERNAL_RUSTC_WRAPPER".into(), b"1".to_vec()),
+        (
+            "CUDA_OXIDE_UPSTREAM_RUSTC_WRAPPER".into(),
+            b"/wrapper".to_vec(),
+        ),
+    ]);
+    assert_eq!(
+        base_hash,
+        passthrough_codegen_fingerprint_with_env(
+            &ctx,
+            &base,
+            None,
+            Some("sm_80"),
+            &MaterializationMode::default(),
+            &routing,
+        ),
+        "kernel-only output routing must preserve CUDA unit identity"
     );
 
     let arch = CargoPassthroughOptions {

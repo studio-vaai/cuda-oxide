@@ -346,6 +346,8 @@ pub struct DeviceCodegenArtifact {
 ///
 /// Controls output paths and diagnostic output during compilation.
 pub struct DeviceCodegenConfig {
+    /// Cross-unit alignment floor for dynamic shared-memory launch contracts.
+    pub minimum_dynamic_shared_alignment: u64,
     /// Output directory for generated files (.ll, .ptx).
     pub output_dir: PathBuf,
     /// Base name for output files (e.g., "kernel" → kernel.ll, kernel.ptx).
@@ -363,6 +365,7 @@ pub struct DeviceCodegenConfig {
 impl Default for DeviceCodegenConfig {
     fn default() -> Self {
         Self {
+            minimum_dynamic_shared_alignment: 0,
             output_dir: std::env::current_dir().unwrap_or_else(|_| ".".into()),
             output_name: "kernel".to_string(),
             verbose: false,
@@ -893,6 +896,17 @@ pub fn generate_device_code<'tcx>(
     device_externs: &[DeviceExternDecl],
     config: &DeviceCodegenConfig,
 ) -> Result<DeviceCodegenResult, DeviceCodegenError> {
+    generate_device_code_partition(tcx, functions, &HashSet::new(), device_externs, config)
+}
+
+/// Compile definitions and ABI-identical declarations in one compilation unit.
+pub fn generate_device_code_partition<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    functions: &[CollectedFunction<'tcx>],
+    declarations: &HashSet<String>,
+    device_externs: &[DeviceExternDecl],
+    config: &DeviceCodegenConfig,
+) -> Result<DeviceCodegenResult, DeviceCodegenError> {
     use rustc_public::rustc_internal;
 
     if functions.is_empty() {
@@ -1178,6 +1192,7 @@ pub fn generate_device_code<'tcx>(
                         rustc_mir_block_count: reachability.block_count,
                         rustc_mono_successors: reachability.successors.clone(),
                         is_kernel: *is_kernel,
+                        declaration_only: declarations.contains(export_name),
                         export_name: export_name.clone(),
                         debug_source_scopes: Some(debug_source_scopes.clone()),
                         statement_debug_info,
@@ -1190,7 +1205,12 @@ pub fn generate_device_code<'tcx>(
             .collect();
 
         // Check for NVVM IR mode (set by cargo oxide --emit-nvvm-ir)
-        let emit_nvvm_ir = std::env::var("CUDA_OXIDE_EMIT_NVVM_IR").is_ok();
+        let emit_nvvm_ir = nvvm_ir_enabled(
+            std::env::var("CUDA_OXIDE_EMIT_NVVM_IR").ok().as_deref(),
+            std::env::var("CUDA_OXIDE_INCREMENTAL_MODULES")
+                .ok()
+                .as_deref(),
+        );
 
         if verbose {
             eprintln!(
@@ -1224,6 +1244,7 @@ pub fn generate_device_code<'tcx>(
 
         // Create pipeline config
         let pipeline_config = mir_importer::PipelineConfig {
+            minimum_dynamic_shared_alignment: config.minimum_dynamic_shared_alignment,
             output_dir: output_dir.clone(),
             output_name: output_name.clone(),
             verbose,
@@ -1318,7 +1339,7 @@ pub fn generate_device_code<'tcx>(
     }
 }
 
-fn device_debug_kind(rustc_debug: DebugInfo) -> llvm_export::export::DebugKind {
+pub(crate) fn device_debug_kind(rustc_debug: DebugInfo) -> llvm_export::export::DebugKind {
     device_debug_kind_with_override(
         rustc_debug,
         std::env::var("CUDA_OXIDE_DEBUG").ok().as_deref(),
@@ -1379,8 +1400,41 @@ fn read_compilation_artifact(
     }
 }
 
+/// Ordinary device globals cannot be duplicated across independently loaded cubins.
+pub(crate) fn has_device_globals<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    functions: &[CollectedFunction<'tcx>],
+) -> bool {
+    let mut provenance = StaticDebugProvenance::new(tcx);
+    for function in functions {
+        provenance.current_instance = Some(function.instance);
+        provenance.visit_body(tcx.instance_mir(function.instance.def));
+    }
+    provenance.drain_allocations();
+    provenance
+        .statics
+        .iter()
+        .any(|id| shared_static_debug_storage(tcx, *id).is_none())
+}
+
+fn nvvm_ir_enabled(emit: Option<&str>, native: Option<&str>) -> bool {
+    let enabled = |value: &str| !matches!(value, "0" | "false" | "off");
+    emit.is_some_and(enabled) || native.is_none_or(enabled)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_module_opt_out_preserves_the_requested_output_route() {
+        assert!(super::nvvm_ir_enabled(None, None));
+        for disabled in ["0", "false", "off"] {
+            assert!(!super::nvvm_ir_enabled(None, Some(disabled)));
+            assert!(!super::nvvm_ir_enabled(Some(disabled), Some(disabled)));
+            assert!(super::nvvm_ir_enabled(Some("1"), Some(disabled)));
+        }
+        assert!(super::nvvm_ir_enabled(Some("0"), Some("1")));
+    }
+
     use super::*;
 
     #[test]

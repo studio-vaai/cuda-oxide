@@ -99,6 +99,22 @@ pub(crate) fn expand_cuda_module_inner(
 
     let constants = collect_cuda_module_constants(items, ident)?;
     let transformed = transform_cuda_module_items(items, &mut Vec::new(), &[], false, emit_host)?;
+    if transformed.kernels.is_empty()
+        && items.iter().any(|item| {
+            matches!(item,
+        Item::Fn(function) if has_attr_named(&function.attrs, "device"))
+        })
+    {
+        return Ok(quote! {
+            #(#module_attrs)*
+            #vis mod #ident {
+                #[doc(hidden)]
+                #[used]
+                static __cuda_oxide_module_v1: u8 = 0;
+                #(#items)*
+            }
+        });
+    }
     if transformed.kernels.is_empty() {
         return Err(syn::Error::new_spanned(
             &module.ident,
@@ -177,15 +193,23 @@ pub(crate) fn expand_cuda_module_inner(
             ::core::option::Option::Some(anchor) => {
                 #[cfg(any(target_os = "linux", target_os = "android"))]
                 {
-                    ::cuda_host::load_embedded_module_from_anchor(ctx, name, anchor)?
+                    if name == env!("CARGO_PKG_NAME") {
+                        ::cuda_host::load_embedded_cuda_module_from_anchor(ctx, name, module_path!(), anchor)?
+                    } else {
+                        ::cuda_host::load_embedded_module_from_anchor(ctx, name, anchor)?
+                    }
                 }
                 #[cfg(not(any(target_os = "linux", target_os = "android")))]
                 {
                     let _ = anchor;
-                    ::cuda_host::load_embedded_module(ctx, name)?
+                    if name == env!("CARGO_PKG_NAME") {
+                        ::cuda_host::load_embedded_cuda_module(ctx, name, module_path!())?
+                    } else { ::cuda_host::load_embedded_module(ctx, name)? }
                 }
             }
-            ::core::option::Option::None => ::cuda_host::load_embedded_module(ctx, name)?,
+            ::core::option::Option::None => if name == env!("CARGO_PKG_NAME") {
+                        ::cuda_host::load_embedded_cuda_module(ctx, name, module_path!())?
+                    } else { ::cuda_host::load_embedded_module(ctx, name)? },
         }
     };
     let module_loader = if has_generic {
@@ -424,7 +448,13 @@ pub(crate) fn expand_cuda_module_inner(
 
             #async_module_items
 
+            impl ::cuda_host::CudaModuleBinding for LoadedModule {
+                const MODULE_ID: &'static str = module_path!();
+            }
             impl LoadedModule {
+                /// Stable identity of this generated binding in the module manifest.
+                pub const MODULE_ID: &'static str = module_path!();
+
                 pub fn as_cuda_module(&self) -> &::std::sync::Arc<::cuda_core::CudaModule> {
                     &self.__module
                 }
@@ -443,6 +473,9 @@ pub(crate) fn expand_cuda_module_inner(
     Ok(quote! {
         #(#module_attrs)*
         #vis mod #ident {
+            #[doc(hidden)]
+            #[used]
+            static __cuda_oxide_module_v1: u8 = 0;
             #(#module_items)*
             #(#ptx_merge_required_markers)*
             #host_items
@@ -755,6 +788,9 @@ fn generate_nested_cuda_module_support(
             #(#function_fields)*
         }
 
+        impl ::cuda_host::CudaModuleBinding for LoadedModule {
+            const MODULE_ID: &'static str = <super::LoadedModule as ::cuda_host::CudaModuleBinding>::MODULE_ID;
+        }
         impl LoadedModule {
             /// Bind this namespace's launchers to a module loaded by its
             /// immediate parent namespace.

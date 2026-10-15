@@ -1898,6 +1898,7 @@ pub fn translate_body(
     is_inline_always: bool,
     is_inline_never: bool,
     is_inline_hint: bool,
+    declaration_only: bool,
     override_name: Option<&str>,
     legaliser: &mut Legaliser,
     debug_kind: DebugKind,
@@ -2128,6 +2129,10 @@ pub fn translate_body(
         instance.name().to_string()
     };
     mir_func_op.set_symbol_name(ctx, legaliser.legalise(&name_str));
+
+    if declaration_only {
+        return Ok(op_ptr);
+    }
 
     // Keep the Rust/source-facing name independent of the physical symbol.
     // Kernels deliberately retain their user-visible export name: their MIR

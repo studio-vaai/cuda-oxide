@@ -1048,6 +1048,18 @@ pub fn collect_device_functions<'tcx>(
     result
 }
 
+/// Reuse the exact collector semantics to compute a compilation unit's dependencies.
+pub fn collect_from_roots<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    roots: &[CollectedFunction<'tcx>],
+) -> CollectionResult<'tcx> {
+    let mut collector = DeviceCollector::new(tcx, false);
+    for root in roots {
+        collector.add_root(root.instance, root.is_kernel, root.export_name.clone());
+    }
+    collector.collect()
+}
+
 /// Worklist-based collector for device-reachable functions.
 ///
 /// Uses breadth-first traversal to discover all functions reachable from kernels.
