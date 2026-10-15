@@ -1293,6 +1293,28 @@ pub fn __unchecked_indexing_config<const ENABLED: bool>() {
     // Compiler marker: deliberately empty and removed during MIR import.
 }
 
+/// Request a loop-unroll policy from an ordinary device helper.
+///
+/// Place the call inside the loop body. This is the function form of the
+/// `#[unroll(N)]` annotation accepted by `#[kernel]` and `#[device]`, and works
+/// in helpers that do not carry either attribute. It generates no device code.
+/// `FACTOR = 0` requests full unrolling, `1` keeps the loop rolled, and larger
+/// factors request that many copies per trip while retaining any remainder.
+///
+/// A constant condition can restrict the request to one generic instance:
+///
+/// ```rust,ignore
+/// let mut sweep = 0;
+/// while sweep < 64 {
+///     if D == 12 {
+///         cuda_device::thread::unroll::<1>();
+///     }
+///     // Sweep body, including its existing early-exit checks.
+///     sweep += 1;
+/// }
+/// ```
+pub use __unroll_config as unroll;
+
 /// Compile-time loop-unroll request marker (internal, do not call directly).
 ///
 /// The `#[kernel]` and `#[device]` macros insert this marker at the start of an
@@ -1303,7 +1325,8 @@ pub fn __unchecked_indexing_config<const ENABLED: bool>() {
 /// # Usage
 ///
 /// Put the annotation directly on the loop. Bare `#[unroll]` requests full
-/// unrolling; `#[unroll(N)]` requests `N` copies per trip:
+/// unrolling; `#[unroll(1)]` disables native unrolling; `#[unroll(N)]` for
+/// `N >= 2` requests `N` copies per trip:
 ///
 /// ```rust,ignore
 /// #[kernel]
@@ -1335,9 +1358,9 @@ pub fn __unchecked_indexing_config<const ENABLED: bool>() {
 ///
 /// Loops with several `continue` paths are supported. Full `#[unroll]` also
 /// preserves `break` paths and multiple exit targets. Partial `#[unroll(N)]`
-/// requires a positive counter step, a `<` or `<=` test, an unchanging limit,
-/// and no exit besides the normal header test. Unsupported requests warn and
-/// are not unrolled.
+/// delegates loops with early exits to native LLVM. Other partial loops require
+/// a positive counter step, a `<` or `<=` test, and an unchanging limit.
+/// Unsupported requests warn and are not unrolled.
 ///
 /// One annotation may create at most 1,024 body copies, 8,192 cloned basic
 /// blocks, and 65,536 cloned operations. A partial factor above 1,024 is
@@ -1347,6 +1370,7 @@ pub fn __unchecked_indexing_config<const ENABLED: bool>() {
 ///
 /// - `FACTOR = 0` requests full unrolling of this loop and requires a
 ///   compile-time-known trip count.
+/// - `FACTOR = 1` keeps the loop rolled, including during native optimization.
 /// - `FACTOR >= 2` requests partial unrolling of this loop by that factor.
 ///   It groups that many iterations; it does not limit the loop to that many
 ///   total iterations, and a remainder still runs.
@@ -1360,7 +1384,7 @@ pub fn __unroll_config<const FACTOR: u32>() {
 
 const fn validate_unroll_factor(factor: u32) {
     assert!(
-        factor == 0 || (factor >= 2 && factor <= 1024),
-        "partial unroll factor must be in 2..=1024, or 0 for full unrolling"
+        factor <= 1024,
+        "unroll factor must be in 1..=1024, or 0 for full unrolling"
     );
 }

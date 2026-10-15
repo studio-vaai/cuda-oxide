@@ -398,7 +398,9 @@ pub fn cuda_module(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// Put `#[unroll]` on a loop with a compile-time-known trip count to request full
 /// unrolling. Use `#[unroll(N)]`, where `N >= 2`, to request `N` iterations of
-/// work per trip; a remainder loop handles any leftovers.
+/// work per trip; a remainder loop handles any leftovers. `#[unroll(1)]` keeps
+/// the loop rolled through NVIDIA optimization, including range-based `for`
+/// loops and loops with early exits.
 ///
 /// ```ignore
 /// #[kernel]
@@ -428,9 +430,8 @@ pub fn cuda_module(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// back-edges) are supported.
 ///
 /// Full `#[unroll]` preserves `break` paths and multiple exit targets. Partial
-/// `#[unroll(N)]` currently requires the loop condition to be the only exit. If
-/// the loop has a `break` or another extra exit, the compiler warns and skips
-/// partial unrolling for that loop.
+/// `#[unroll(N)]` delegates loops with a `break` or another extra exit to native
+/// LLVM, preserving the original loop and all exit values in the frontend.
 ///
 /// Partial unrolling also requires a positive counter step, a `<` or `<=` test,
 /// and a limit that does not change inside the loop. One annotation may create
@@ -825,7 +826,7 @@ pub fn cooperative_launch(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// factors must be `N >= 2`. Multiple `continue` paths are supported; full
 /// unrolling preserves `break` and multiple exit targets. Partial unrolling
 /// requires a positive counter step, a `<` or `<=` test, an unchanging limit,
-/// and no exit besides the normal header test.
+/// with early exits delegated to native LLVM.
 ///
 /// One annotation may create at most 1,024 body copies, 8,192 cloned basic
 /// blocks, and 65,536 cloned operations. Factors above 1,024 are rejected;

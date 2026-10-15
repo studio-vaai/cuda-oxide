@@ -21,6 +21,14 @@ impl Policy for SmallPolicy {
     const UNROLL: u32 = 2;
 }
 
+enum RolledPolicy {}
+
+impl Policy for RolledPolicy {
+    const MAX_THREADS: u32 = 32;
+    const MIN_BLOCKS: u32 = 1;
+    const UNROLL: u32 = 1;
+}
+
 enum WidePolicy {}
 
 impl Policy for WidePolicy {
@@ -71,12 +79,16 @@ mod contracted {
 const SMALL_CONTRACT_MAX: u32 =
     match <contracted::__configured_CudaKernel<SmallPolicy> as KernelLaunchContract>::SPEC.block() {
         BlockRequirement::MaxThreads(max) => max,
-        BlockRequirement::Exact(_) => panic!("policy contract unexpectedly requires an exact block"),
+        BlockRequirement::Exact(_) => {
+            panic!("policy contract unexpectedly requires an exact block")
+        }
     };
 const WIDE_CONTRACT_MAX: u32 =
     match <contracted::__configured_CudaKernel<WidePolicy> as KernelLaunchContract>::SPEC.block() {
         BlockRequirement::MaxThreads(max) => max,
-        BlockRequirement::Exact(_) => panic!("policy contract unexpectedly requires an exact block"),
+        BlockRequirement::Exact(_) => {
+            panic!("policy contract unexpectedly requires an exact block")
+        }
     };
 
 const _: () = assert!(SMALL_CONTRACT_MAX == 64);
@@ -115,4 +127,6 @@ mod nested {
 fn main() {
     assert_ne!(SMALL_CONTRACT_MAX, WIDE_CONTRACT_MAX);
     let _ = prepared_paths_are_policy_branded;
+    configured::<RolledPolicy>();
+    configured_helper::<RolledPolicy>();
 }
