@@ -18,21 +18,29 @@ import re
 import sys
 from pathlib import Path
 
+# The first block is the true entry block, whatever its label. Modern NVVM IR
+# without debug info numbers local labels, so it need not be named `entry`.
 function = None
 block = None
+in_entry = False
 slots = 0
 for line in Path(sys.argv[1]).read_text().splitlines():
     if line.startswith("define "):
         function = line
         block = None
+        in_entry = True
     elif line == "}":
         function = None
     elif function and re.fullmatch(r"[A-Za-z0-9_.$]+:", line):
+        if block is not None:
+            in_entry = False
         block = line[:-1]
-    elif function and " = alloca " in line:
-        slots += 1
-        if block != "entry":
-            sys.exit(f"error: fixed scratch outside true entry block ({block}): {line.strip()}")
+    elif function and line.strip() and not line.lstrip().startswith(";"):
+        block = block or "entry"
+        if " = alloca " in line:
+            slots += 1
+            if not in_entry:
+                sys.exit(f"error: fixed scratch outside true entry block ({block}): {line.strip()}")
 if slots == 0:
     sys.exit("error: example no longer exercises fixed scratch allocations")
 CHECK_IR
