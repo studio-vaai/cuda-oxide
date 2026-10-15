@@ -743,3 +743,104 @@ fn hygiene_fixtures_still_collide_with_the_generated_scope_names() {
              forced down its rename path"
     );
 }
+
+#[test]
+fn host_stubs_preserve_entry_identity_and_ordinary_helper_semantics() {
+    use crate::kernel::codegen::generic_kernel_no_instantiation_tokens_with_host_stubs;
+    let input: syn::ItemFn = parse_quote! {
+        #[launch_bounds(128)]
+        pub fn host_stub_probe<T: Copy, const N: usize>(values: *mut T) {
+            let index = ::cuda_device::thread::thread_idx_x();
+            unsafe { *values.add(index as usize) = *values; }
+        }
+    };
+    let tokens = generic_kernel_no_instantiation_tokens(input.clone(), None);
+    assert_eq!(
+        generic_kernel_no_instantiation_tokens_with_host_stubs(input.clone(), None, false)
+            .to_string(),
+        tokens.to_string()
+    );
+    let original: syn::File = syn::parse2(tokens).unwrap();
+    let stubbed: syn::File = syn::parse2(generic_kernel_no_instantiation_tokens_with_host_stubs(
+        input, None, true,
+    ))
+    .unwrap();
+    assert_host_entry_stubs(&original, &stubbed, 1);
+}
+
+#[test]
+fn host_stubs_preserve_legacy_instantiations_and_helper_semantics() {
+    use crate::kernel::codegen::generic_kernel_instantiation_tokens_with_host_stubs;
+    let input: syn::ItemFn = parse_quote! {
+        #[launch_bounds(128)]
+        pub fn host_stub_legacy<T: Copy>(values: *mut T) {
+            let index = ::cuda_device::thread::thread_idx_x();
+            unsafe { *values.add(index as usize) = *values; }
+        }
+    };
+    let types = vec![parse_quote! { f32 }, parse_quote! { u32 }];
+    let original = syn::parse2(generic_kernel_instantiation_tokens_with_host_stubs(
+        input.clone(),
+        types.clone(),
+        None,
+        false,
+    ))
+    .unwrap();
+    let stubbed = syn::parse2(generic_kernel_instantiation_tokens_with_host_stubs(
+        input, types, None, true,
+    ))
+    .unwrap();
+    assert_host_entry_stubs(&original, &stubbed, 2);
+}
+
+fn assert_host_entry_stubs(original: &syn::File, stubbed: &syn::File, expected: usize) {
+    use quote::ToTokens;
+    assert_eq!(original.items.len(), stubbed.items.len());
+    let mut entries = 0;
+    for (before, after) in original.items.iter().zip(&stubbed.items) {
+        match (before, after) {
+            (syn::Item::Fn(before), syn::Item::Fn(after))
+                if before.sig.ident.to_string().starts_with(KERNEL_PREFIX) =>
+            {
+                assert_eq!(
+                    before.sig.to_token_stream().to_string(),
+                    after.sig.to_token_stream().to_string()
+                );
+                assert_eq!(
+                    before.vis.to_token_stream().to_string(),
+                    after.vis.to_token_stream().to_string()
+                );
+                assert_eq!(
+                    after.attrs[..before.attrs.len()]
+                        .iter()
+                        .map(|a| a.to_token_stream().to_string())
+                        .collect::<Vec<_>>(),
+                    before
+                        .attrs
+                        .iter()
+                        .map(|a| a.to_token_stream().to_string())
+                        .collect::<Vec<_>>()
+                );
+                assert!(
+                    after
+                        .block
+                        .to_token_stream()
+                        .to_string()
+                        .contains("cannot execute on the CPU")
+                );
+                assert!(after.attrs.iter().any(|attribute| {
+                    attribute
+                        .to_token_stream()
+                        .to_string()
+                        .contains(reserved_oxide_symbols::HOST_KERNEL_STUB_DOC)
+                }));
+                entries += 1;
+            }
+            _ => assert_eq!(
+                before.to_token_stream().to_string(),
+                after.to_token_stream().to_string()
+            ),
+        }
+    }
+    assert_eq!(entries, expected);
+}
