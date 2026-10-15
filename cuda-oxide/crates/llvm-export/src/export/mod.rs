@@ -36,6 +36,7 @@
 //! - `literals`: constant/literal formatting
 //! - `metadata`: nvvm annotations and version, llvm.used
 
+mod allocas;
 mod config;
 mod convergence;
 mod debug;

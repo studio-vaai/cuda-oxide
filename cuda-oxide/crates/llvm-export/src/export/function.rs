@@ -41,6 +41,7 @@ use crate::{
 };
 
 use super::{
+    allocas::{EntryAllocas, entry_allocas},
     literals::{format_float_literal, format_half_literal},
     names::{decode_intrinsic_identifier, has_device_prefix, strip_device_prefix},
     state::{
@@ -1376,6 +1377,14 @@ impl<'a> ModuleExportState<'a> {
                 }
             }
 
+            // NVVM treats allocas outside the true entry block as dynamic
+            // stack regions even when their count is constant. In particular,
+            // inlined helpers can introduce stackrestore paths whose outgoing
+            // vector argument stores are misaligned in extended split codegen.
+            // Emit eligible slots in entry, retaining stores and lifetime ops
+            // at their original sites and preserving each slot's alignment.
+            let entry_allocas = entry_allocas(self.ctx, func);
+
             // Export blocks
             for (i, block_node) in func
                 .get_operation()
@@ -1393,6 +1402,7 @@ impl<'a> ModuleExportState<'a> {
                     &pred_map,
                     i == 0,
                     &entry_prologue,
+                    &entry_allocas,
                     debug_scope,
                     output,
                 )?;
@@ -1443,6 +1453,7 @@ impl<'a> ModuleExportState<'a> {
         pred_map: &PredecessorMap,
         is_entry: bool,
         entry_prologue: &str,
+        entry_allocas: &EntryAllocas,
         debug_scope: Option<usize>,
         output: &mut String,
     ) -> Result<(), String> {
@@ -1497,7 +1508,23 @@ impl<'a> ModuleExportState<'a> {
             }
         }
 
+        if is_entry {
+            for &op in &entry_allocas.operations {
+                self.export_op(
+                    op,
+                    value_names,
+                    next_value_id,
+                    block_labels,
+                    debug_scope,
+                    output,
+                )?;
+            }
+        }
+
         for op in block.deref(self.ctx).iter(self.ctx) {
+            if entry_allocas.members.contains(&op) {
+                continue;
+            }
             self.export_op(
                 op,
                 value_names,
