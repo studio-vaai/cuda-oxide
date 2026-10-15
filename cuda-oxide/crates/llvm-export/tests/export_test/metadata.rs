@@ -77,7 +77,7 @@ fn grid_constant_parameter_emits_byval_and_nvvm_annotation() {
         .expect("NVVM export succeeds");
 
     assert!(
-        ir.contains("define void @consume_map(ptr byval([128 x i8]) align 64 %v0)"),
+        ir.contains("define void @consume_map(ptr byval([128 x i8]) align 64 %0)"),
         "grid-constant pointer must carry the descriptor bytes by value:\n{ir}"
     );
     assert!(ir.contains("!1 = !{i32 1}"), "parameter list:\n{ir}");

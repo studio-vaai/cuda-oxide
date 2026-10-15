@@ -245,7 +245,11 @@ fn reference_validity_exports_each_fact_independently_in_all_dialects() {
             .enumerate()
             .map(|(index, parameter)| {
                 if definition {
-                    format!("{parameter} %v{index}")
+                    if config.nvvm_ir_dialect() == Some(NvvmIrDialect::Modern) {
+                        format!("{parameter} %{index}")
+                    } else {
+                        format!("{parameter} %v{index}")
+                    }
                 } else {
                     parameter
                 }

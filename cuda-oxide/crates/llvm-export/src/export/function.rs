@@ -42,12 +42,14 @@ use crate::{
 
 use super::{
     allocas::{EntryAllocas, entry_allocas},
+    config::DebugKind,
     literals::{format_float_literal, format_half_literal},
     names::{decode_intrinsic_identifier, has_device_prefix, strip_device_prefix},
     state::{
         FunctionAbiAlignment, GridConstantParameter, KernelBlockGeometry, KernelClusterConfig,
         KernelGridConstants, KernelInfo, KernelLaunchBounds, ModuleExportState, PredecessorMap,
     },
+    unnamed::number_function_locals,
 };
 
 /// Flatten a descriptive string so it cannot escape a single `;` comment line.
@@ -1062,6 +1064,7 @@ impl<'a> ModuleExportState<'a> {
                 self.register_debug_source_scopes_for_function(scope_id, func.get_operation());
             }
 
+            let definition_start = output.len();
             write!(output, "define ").unwrap();
             if is_kernel && self.emit_ptx_kernel_keyword {
                 write!(output, "ptx_kernel ").unwrap();
@@ -1124,6 +1127,7 @@ impl<'a> ModuleExportState<'a> {
             if let Some(attrs) = llvm_func_attrs.as_deref() {
                 self.export_llvm_attributes(attrs, output)?;
             }
+            let argument_count = next_value_id;
             // A convergent intrinsic/asm seeds its containing function and
             // propagates through the call graph. Arithmetic-only definitions
             // need no convergence restriction, including alwaysinline helpers.
@@ -1425,6 +1429,15 @@ impl<'a> ModuleExportState<'a> {
             }
 
             writeln!(output, "}}").unwrap();
+            // The legacy libNVVM parser rejects numeric parameter names.
+            // Preserve its existing named locals and only number modern IR.
+            if self.nvvm_ir_dialect == Some(super::config::NvvmIrDialect::Modern)
+                && self.debug_kind == DebugKind::Off
+            {
+                let numbered = number_function_locals(&output[definition_start..], argument_count)?;
+                output.truncate(definition_start);
+                output.push_str(&numbered);
+            }
         } else {
             // get_num_regions() >= 1 but the first region has no entry block (empty function).
             // Treat it as a declaration.
