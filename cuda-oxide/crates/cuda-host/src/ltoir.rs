@@ -88,8 +88,9 @@ use cuda_core::embedded::{
     ArtifactCompileOptions, ArtifactDebugPolicy, COMPILE_OPTIONS_TARGET_MARKER,
 };
 use cuda_core::{CudaContext, CudaModule, DriverError};
+use sha2::Digest as _;
 #[cfg(test)]
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thiserror::Error;
@@ -101,6 +102,9 @@ use thiserror::Error;
 /// Failures while building or loading a module via the LTOIR pipeline.
 #[derive(Debug, Error)]
 pub enum LtoirError {
+    /// Malformed, missing, or corrupted incremental module output.
+    #[error("invalid CUDA module manifest: {0}")]
+    InvalidModuleManifest(String),
     /// A target string was not a concrete CUDA architecture.
     #[error(transparent)]
     InvalidTarget(#[from] CudaArchParseError),
@@ -849,6 +853,175 @@ fn report_cache_result(result: &CacheResult) {
 // Convenience: pick the right artifact and load it
 // ============================================================================
 
+/// Build output selecting one native artifact per logical kernel module.
+#[derive(Debug, serde::Deserialize)]
+pub struct ModuleManifest {
+    /// Format version; currently 1.
+    pub version: u32,
+    /// Concrete GPU architecture used to produce every cubin.
+    pub target: String,
+    /// Logical Rust module IDs and their native images.
+    pub modules: std::collections::BTreeMap<String, ModuleArtifact>,
+}
+/// Content-addressed native image selected by a logical module.
+#[derive(Debug, serde::Deserialize)]
+pub struct ModuleArtifact {
+    /// Path relative to the manifest directory.
+    pub path: PathBuf,
+    /// SHA-256 of the complete native image.
+    pub sha256: String,
+}
+impl ModuleManifest {
+    /// Read a manifest; only a missing file enables legacy package fallback.
+    pub fn read(stem: &Path) -> Result<Option<Self>, LtoirError> {
+        let path = stem.with_extension("modules.json");
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => return Err(LtoirError::Io { path, source }),
+        };
+        let manifest: Self = serde_json::from_slice(&bytes).map_err(|error| {
+            LtoirError::InvalidModuleManifest(format!("{}: {error}", path.display()))
+        })?;
+        if manifest.version != 1 || manifest.modules.is_empty() {
+            return Err(LtoirError::InvalidModuleManifest(
+                "unsupported version or empty module set".into(),
+            ));
+        }
+        manifest.target.parse::<CudaArch>()?;
+        for artifact in manifest.modules.values() {
+            if artifact
+                .path
+                .components()
+                .any(|part| !matches!(part, std::path::Component::Normal(_)))
+                || artifact.path.extension().is_none_or(|ext| ext != "cubin")
+                || artifact.sha256.len() != 64
+                || !artifact.sha256.bytes().all(|b| b.is_ascii_hexdigit())
+                || artifact
+                    .path
+                    .file_name()
+                    .is_none_or(|name| name != format!("{}.cubin", artifact.sha256).as_str())
+            {
+                return Err(LtoirError::InvalidModuleManifest(
+                    "invalid relative artifact path or digest".into(),
+                ));
+            }
+        }
+        Ok(Some(manifest))
+    }
+    /// Resolve a logical module beneath the manifest's directory.
+    pub fn artifact_path(&self, stem: &Path, module: &str) -> Result<PathBuf, LtoirError> {
+        let artifact = self.modules.get(module).ok_or_else(|| {
+            LtoirError::InvalidModuleManifest(format!("module {module} is absent"))
+        })?;
+        Ok(stem
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(&artifact.path))
+    }
+    fn image(&self, stem: &Path, module: &str) -> Result<Vec<u8>, LtoirError> {
+        let path = self.artifact_path(stem, module)?;
+        let bytes = read_artifact(&path)?;
+        if format!("{:x}", sha2::Sha256::digest(&bytes)) != self.modules[module].sha256 {
+            return Err(LtoirError::InvalidModuleManifest(format!(
+                "{} failed its SHA-256 check",
+                path.display()
+            )));
+        }
+        Ok(bytes)
+    }
+
+    /// Verify target compatibility and image identity, then load without JIT.
+    pub fn load(
+        &self,
+        ctx: &Arc<CudaContext>,
+        stem: &Path,
+        module: &str,
+    ) -> Result<Arc<CudaModule>, LtoirError> {
+        let emitted: CudaArch = self.target.parse()?;
+        let execution = execution_arch_for_context(ctx)?;
+        if execution_route(&emitted, &execution)? != ExecutionRoute::Cubin {
+            return Err(LtoirError::IncompatibleExecutionTarget {
+                emitted: emitted.sm(),
+                execution: execution.sm(),
+                reason: "module manifest contains native cubins only; rebuild for this GPU",
+            });
+        }
+        let bytes = self.image(stem, module)?;
+        Ok(ctx.load_module_from_image(&bytes)?)
+    }
+}
+
+/// Discover file artifacts next to the executable or in Cargo's profile cache.
+/// Absolute stems remain explicit overrides. This never searches another profile
+/// or falls back after finding a malformed manifest.
+pub fn kernel_artifact_stem(name: &str, package_dir: Option<&Path>) -> PathBuf {
+    let path = Path::new(name);
+    if path.is_absolute() {
+        return path.to_owned();
+    }
+    let name = if path.components().count() == 1 {
+        name.replace('-', "_")
+    } else {
+        name.to_owned()
+    };
+    let executable = std::env::current_exe().ok();
+    let mut roots = Vec::new();
+    if let Some(parent) = executable.as_deref().and_then(Path::parent) {
+        roots.push(parent.join("oxide"));
+        roots.push(parent.to_owned());
+        if parent
+            .file_name()
+            .is_some_and(|name| matches!(name.to_str(), Some("deps" | "examples")))
+            && let Some(profile) = parent.parent()
+        {
+            roots.push(profile.join("oxide"));
+        }
+    }
+    if let Some(package_dir) = package_dir {
+        // Studio builds its excluded device package separately from its host.
+        // The build recipe packages artifacts beside the executable; this path
+        // also makes standalone Cargo library consumers work during development.
+        let profile = if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        };
+        roots.push(package_dir.join("target").join(profile).join("oxide"));
+        roots.push(package_dir.to_owned());
+    }
+    roots.push(manifest_dir());
+    roots
+        .into_iter()
+        .map(|root| root.join(&name))
+        .find(|stem| {
+            ["modules.json", "target", "ptx", "ll", "ltoir", "cubin"]
+                .iter()
+                .any(|extension| stem.with_extension(extension).exists())
+        })
+        .unwrap_or_else(|| {
+            executable
+                .as_deref()
+                .and_then(Path::parent)
+                .unwrap_or_else(|| Path::new("."))
+                .join("oxide")
+                .join(name)
+        })
+}
+
+/// Select a typed module's native artifact, with legacy package fallback.
+pub fn load_kernel_cuda_module(
+    ctx: &Arc<CudaContext>,
+    stem: &str,
+    module: &str,
+) -> Result<Arc<CudaModule>, LtoirError> {
+    let stem = kernel_artifact_stem(stem, None);
+    match ModuleManifest::read(&stem)? {
+        Some(manifest) => manifest.load(ctx, &stem, module),
+        None => load_kernel_module(ctx, &stem.to_string_lossy()),
+    }
+}
+
 /// Convenience wrapper: load a kernel module by `name` from the binary's
 /// own directory, building the cubin on demand if cuda-oxide emitted NVVM IR.
 ///
@@ -870,7 +1043,11 @@ pub fn load_kernel_module(
     ctx: &Arc<CudaContext>,
     name: &str,
 ) -> Result<Arc<CudaModule>, LtoirError> {
-    let dir = manifest_dir();
+    let stem = kernel_artifact_stem(name, None);
+    let name = stem
+        .to_str()
+        .ok_or_else(|| LtoirError::InvalidModuleManifest("artifact path is not UTF-8".into()))?;
+    let dir = stem.parent().unwrap_or_else(|| Path::new(".")).to_owned();
     let cubin = dir.join(format!("{name}.cubin"));
     let ptx = dir.join(format!("{name}.ptx"));
     let ll = dir.join(format!("{name}.ll"));
@@ -1248,6 +1425,42 @@ pub(crate) fn execution_route(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn module_manifest_rejects_missing_corrupted_and_unsafe_images() {
+        let dir = temp_dir("module_manifest");
+        std::fs::create_dir_all(&dir).unwrap();
+        let stem = dir.join("toy");
+        assert!(ModuleManifest::read(&stem).unwrap().is_none());
+        let bytes = b"native image identity";
+        let sha = format!("{:x}", sha2::Sha256::digest(bytes));
+        let path = format!("toy.modules/{sha}.cubin");
+        let mut document = serde_json::json!({"version":1,"target":"sm_121",
+            "modules":{"toy::kernel":{"path":path,"sha256":sha}}});
+        let manifest_path = stem.with_extension("modules.json");
+        std::fs::write(&manifest_path, serde_json::to_vec(&document).unwrap()).unwrap();
+        let manifest = ModuleManifest::read(&stem).unwrap().unwrap();
+        assert!(manifest.image(&stem, "toy::kernel").is_err());
+        assert!(manifest.artifact_path(&stem, "toy::absent").is_err());
+        let image = manifest.artifact_path(&stem, "toy::kernel").unwrap();
+        std::fs::create_dir_all(image.parent().unwrap()).unwrap();
+        std::fs::write(&image, bytes).unwrap();
+        assert_eq!(manifest.image(&stem, "toy::kernel").unwrap(), bytes);
+        std::fs::write(&image, b"truncated").unwrap();
+        assert!(matches!(
+            manifest.image(&stem, "toy::kernel"),
+            Err(LtoirError::InvalidModuleManifest(_))
+        ));
+        document["modules"]["toy::kernel"]["path"] = format!("../{sha}.cubin").into();
+        std::fs::write(&manifest_path, serde_json::to_vec(&document).unwrap()).unwrap();
+        assert!(ModuleManifest::read(&stem).is_err());
+        document["version"] = 2.into();
+        std::fs::write(&manifest_path, serde_json::to_vec(&document).unwrap()).unwrap();
+        assert!(ModuleManifest::read(&stem).is_err());
+        std::fs::write(&manifest_path, b"partial JSON").unwrap();
+        assert!(ModuleManifest::read(&stem).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let unique = std::time::SystemTime::now()
@@ -1952,5 +2165,15 @@ entry:
         assert_ne!(changed_hit.immutable_cubin_path, Some(native_cache_path));
 
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod artifact_discovery_tests {
+    use super::*;
+    #[test]
+    fn explicit_paths_preserve_hyphens_and_do_not_fall_back() {
+        let path = "/tmp/kernel-bundle/device-module";
+        assert_eq!(kernel_artifact_stem(path, None), PathBuf::from(path));
     }
 }

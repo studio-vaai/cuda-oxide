@@ -2,6 +2,9 @@
 
 A custom rustc codegen backend that enables single-source CUDA programming in Rust. It intercepts rustc's code generation phase to split device code from host code -- device functions compile to PTX via the cuda-oxide pipeline, while host code passes through to the standard LLVM backend.
 
+For repeated edits, [incremental native device modules](INCREMENTAL_MODULES.md)
+cache per-module compilation and emit native cubins at build time.
+
 ## Why Single-Source?
 
 The alternative is split compilation: kernels live in a separate crate compiled with `#[cfg(cuda_device)]`, requiring two compilation passes, careful type coordination, and `instantiate!` macros for generics. With `rustc-codegen-cuda`, everything compiles in **one pass** -- host code and `#[kernel]` functions coexist in the same crate, share types naturally, and generics just work.

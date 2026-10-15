@@ -73,6 +73,15 @@ pub(super) fn passthrough_codegen_fingerprint_with_env(
     // false/stale handshakes before inserting the effective materialization
     // state below, so no-op values do not create distinct Cargo identities.
     effective_env.remove(CODEGEN_FINGERPRINT_ENV);
+    // Execution/output routing does not change CUDA code semantics. The shader
+    // wrapper's actual compiler arguments remain covered by backend cache keys.
+    for key in [
+        "CUDA_OXIDE_KERNELS_ONLY",
+        "CUDA_OXIDE_INTERNAL_RUSTC_WRAPPER",
+        "CUDA_OXIDE_UPSTREAM_RUSTC_WRAPPER",
+    ] {
+        effective_env.remove(key);
+    }
     effective_env.remove(MATERIALIZE_ENV);
     effective_env.remove(EXPECTED_PROVENANCE_ENV);
     // Descriptor identity only accelerates verification; artifact identity is

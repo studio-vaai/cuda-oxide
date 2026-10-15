@@ -119,6 +119,41 @@ fn artifact_bundles_containing(
     }
 }
 
+/// Resolve a typed module from the binary containing its artifact anchor.
+pub fn load_embedded_cuda_module_from_anchor(
+    ctx: &Arc<CudaContext>,
+    package: &str,
+    module: &str,
+    anchor: &u8,
+) -> Result<Arc<CudaModule>, EmbeddedModuleError> {
+    let bundles = artifact_bundles_containing(anchor)?;
+    let selected = bundles
+        .iter()
+        .find(|bundle| bundle.name == module)
+        .or_else(|| bundles.iter().find(|bundle| bundle.name == package))
+        .ok_or_else(|| EmbeddedModuleError::ModuleNotFound {
+            name: module.to_string(),
+        })?;
+    load_bundle(ctx, selected)
+}
+
+/// Resolve a typed module's own artifact; legacy builds contain one package bundle.
+pub fn load_embedded_cuda_module(
+    ctx: &Arc<CudaContext>,
+    package: &str,
+    module: &str,
+) -> Result<Arc<CudaModule>, EmbeddedModuleError> {
+    let bundles = artifact_bundles_from_current_exe()?;
+    let selected = bundles
+        .iter()
+        .find(|bundle| bundle.name == module)
+        .or_else(|| bundles.iter().find(|bundle| bundle.name == package))
+        .ok_or_else(|| EmbeddedModuleError::ModuleNotFound {
+            name: module.to_string(),
+        })?;
+    load_bundle(ctx, selected)
+}
+
 /// Merge all PTX bundles from the current executable into a single CUDA module.
 ///
 /// When a generic kernel is monomorphized in a consuming crate, its PTX ends

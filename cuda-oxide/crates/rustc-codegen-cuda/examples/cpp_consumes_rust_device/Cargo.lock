@@ -206,6 +206,8 @@ dependencies = [
  "libc",
  "oxide-artifacts",
  "ptx-parse",
+ "serde",
+ "serde_json",
  "sha2",
  "thiserror",
 ]

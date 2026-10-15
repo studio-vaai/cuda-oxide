@@ -333,6 +333,7 @@ extern crate rustc_codegen_llvm;
 mod collector;
 mod device_codegen;
 mod generated_intrinsics;
+mod incremental;
 mod materialize;
 
 use rustc_codegen_ssa::traits::CodegenBackend;
@@ -371,6 +372,7 @@ pub struct CudaCodegenBackend {
 struct CudaOngoingCodegen {
     host: Box<dyn Any>,
     artifact_objects: Vec<PathBuf>,
+    module_manifest: Option<Vec<u8>>,
 }
 
 static ARTIFACT_OBJECT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -637,14 +639,13 @@ impl CodegenBackend for CudaCodegenBackend {
                 ))
             });
             // Step 1: Analyze for device code
+            let crate_name = tcx.crate_name(rustc_hir::def_id::LOCAL_CRATE);
             let mono_partitions = tcx.collect_and_partition_mono_items(());
-            let kernel_count = collector::count_kernels_in_cgus(tcx, mono_partitions.codegen_units);
-            let device_fn_count =
-                collector::count_device_fns_in_cgus(tcx, mono_partitions.codegen_units);
-            let unsupported_protocol_root = collector::unsupported_codegen_protocol_root_in_cgus(
-                tcx,
-                mono_partitions.codegen_units,
-            );
+            let cgus = mono_partitions.codegen_units;
+            let kernel_count = collector::count_kernels_in_cgus(tcx, cgus);
+            let device_fn_count = collector::count_device_fns_in_cgus(tcx, cgus);
+            let unsupported_protocol_root =
+                collector::unsupported_codegen_protocol_root_in_cgus(tcx, cgus);
             if reject_unsupported_codegen_protocol(
                 std::env::var_os(reserved_oxide_symbols::CODEGEN_FINGERPRINT_ENV).is_some(),
                 unsupported_protocol_root.is_some(),
@@ -654,7 +655,6 @@ impl CodegenBackend for CudaCodegenBackend {
                     "[rustc_codegen_cuda] Device-code root `{root}` was emitted by a cuda-macros version that predates the scoped Cargo cache protocol. Rebuild the source with cuda-macros from the same cuda-oxide revision; older macro expansions, including pre-expanded output from before this protocol, cannot be cached safely across output and architecture changes."
                 ));
             }
-            let crate_name = tcx.crate_name(rustc_hir::def_id::LOCAL_CRATE);
             let owner_selected = self.config.allows_device_codegen_for(crate_name.as_str());
             let contains_device_code = kernel_count > 0 || device_fn_count > 0;
 
@@ -693,11 +693,14 @@ impl CodegenBackend for CudaCodegenBackend {
             // `.oxart` bundle. New owner-aware macros omit the reference for
             // unselected crates and do not need the fallback.
             if kernel_count > 0 && !owner_selected {
-                let output_dir = self
-                    .config
-                    .ptx_output_dir
-                    .clone()
-                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+                let output_dir = self.config.ptx_output_dir.clone().unwrap_or_else(|| {
+                    tcx.sess
+                        .io
+                        .output_dir
+                        .clone()
+                        .unwrap_or_else(|| "target".into())
+                        .join("oxide")
+                });
                 match write_filtered_artifact_anchor_object(
                     &output_dir,
                     crate_name.as_str(),
@@ -715,14 +718,51 @@ impl CodegenBackend for CudaCodegenBackend {
                 eprintln!(
                     "[rustc_codegen_cuda] Compiling crate '{}': {} CGUs, {} kernel(s), {} device fn(s)",
                     crate_name,
-                    mono_partitions.codegen_units.len(),
+                    cgus.len(),
                     kernel_count,
                     device_fn_count
                 );
             }
 
             // Step 2: If device code exists, compile via cuda-oxide
-            let _device_result = if has_device_code {
+            // Native modules cover the default device backend. CUTLASS MLIR
+            // produces its own final cubin, and Tile exports publish
+            // descriptions only package mode writes; both keep package mode.
+            let incremental_modules =
+                std::env::var("CUDA_OXIDE_INCREMENTAL_MODULES").map_or(true, |value| {
+                    !matches!(value.as_str(), "0" | "false" | "off")
+                }) && matches!(device_backend, mir_importer::DeviceBackend::Native);
+            let native_collection = (has_device_code && incremental_modules)
+                .then(|| collector::collect_device_functions(tcx, cgus, false))
+                .filter(|collection| collection.tile_exports.is_empty());
+            let native = native_collection.is_some();
+            let _device_result = if let Some(collection) = native_collection {
+                let config = device_codegen::DeviceCodegenConfig {
+                    minimum_dynamic_shared_alignment: 0,
+                    output_dir: self.config.ptx_output_dir.clone().unwrap_or_else(|| {
+                        tcx.sess
+                            .io
+                            .output_dir
+                            .clone()
+                            .unwrap_or_else(|| "target".into())
+                            .join("oxide")
+                    }),
+                    output_name: crate_name.to_string(),
+                    mlir_output: None,
+                    device_backend: mir_importer::DeviceBackend::Native,
+                    verbose: self.config.verbose,
+                    dump_rustc_mir: self.config.dump_rustc_mir,
+                    dump_mir_dialect: self.config.dump_mir_dialect,
+                    dump_llvm_dialect: self.config.dump_llvm_dialect,
+                };
+                match incremental::compile(tcx, &collection, &config) {
+                    Ok(path) => artifact_objects.push(path),
+                    Err(error) => tcx.dcx().fatal(format!(
+                        "[rustc_codegen_cuda] Incremental device compilation failed: {error}"
+                    )),
+                }
+                None
+            } else if has_device_code {
                 let materialization_request =
                     materialize::request_from_env().unwrap_or_else(|error| {
                         tcx.dcx().fatal(format!(
@@ -742,11 +782,8 @@ impl CodegenBackend for CudaCodegenBackend {
                 }
 
                 // Collect all device-reachable functions (kernels + their callees)
-                let collection_result = collector::collect_device_functions(
-                    tcx,
-                    mono_partitions.codegen_units,
-                    self.config.verbose,
-                );
+                let collection_result =
+                    collector::collect_device_functions(tcx, cgus, self.config.verbose);
 
                 materialize::validate_collection(
                     materialization_request,
@@ -774,19 +811,24 @@ impl CodegenBackend for CudaCodegenBackend {
                 let device_functions = &collection_result.functions;
 
                 // Create device codegen config from our config
-                let device_config =
-                    device_codegen::DeviceCodegenConfig {
-                        output_dir: self.config.ptx_output_dir.clone().unwrap_or_else(|| {
-                            std::env::current_dir().unwrap_or_else(|_| ".".into())
-                        }),
-                        output_name: tcx.crate_name(rustc_hir::def_id::LOCAL_CRATE).to_string(),
-                        mlir_output: self.config.mlir_output.clone(),
-                        device_backend: device_backend.clone(),
-                        verbose: self.config.verbose,
-                        dump_rustc_mir: self.config.dump_rustc_mir,
-                        dump_mir_dialect: self.config.dump_mir_dialect,
-                        dump_llvm_dialect: self.config.dump_llvm_dialect,
-                    };
+                let device_config = device_codegen::DeviceCodegenConfig {
+                    minimum_dynamic_shared_alignment: 0,
+                    output_dir: self.config.ptx_output_dir.clone().unwrap_or_else(|| {
+                        tcx.sess
+                            .io
+                            .output_dir
+                            .clone()
+                            .unwrap_or_else(|| "target".into())
+                            .join("oxide")
+                    }),
+                    output_name: tcx.crate_name(rustc_hir::def_id::LOCAL_CRATE).to_string(),
+                    mlir_output: self.config.mlir_output.clone(),
+                    device_backend: device_backend.clone(),
+                    verbose: self.config.verbose,
+                    dump_rustc_mir: self.config.dump_rustc_mir,
+                    dump_mir_dialect: self.config.dump_mir_dialect,
+                    dump_llvm_dialect: self.config.dump_llvm_dialect,
+                };
 
                 // Run the cuda-oxide pipeline, catching backend panics and
                 // re-emitting them as a cuda-oxide diagnostic. A panic
@@ -857,6 +899,18 @@ impl CodegenBackend for CudaCodegenBackend {
                     }
                     Ok(Ok(result)) => {
                         emit_hint_warnings(tcx, &result.warnings);
+                        // A successful package-mode build must supersede an
+                        // older native manifest in the same Cargo profile
+                        // directory.
+                        let manifest = device_config
+                            .output_dir
+                            .join(format!("{}.modules.json", device_config.output_name));
+                        if let Err(error) = std::fs::remove_file(&manifest)
+                            && error.kind() != std::io::ErrorKind::NotFound
+                        {
+                            tcx.dcx()
+                                .fatal(format!("cannot retire module manifest: {error}"));
+                        }
                         if self.config.verbose
                             && let Some(artifact) = result.artifact.as_ref()
                         {
@@ -935,6 +989,28 @@ impl CodegenBackend for CudaCodegenBackend {
                 None
             };
 
+            // Preserve the manifest belonging to this exact Cargo compilation
+            // unit. The profile-wide alias can be overwritten by another
+            // feature/target build while Cargo still caches this host library.
+            let module_manifest = if has_device_code && native && kernel_count > 0 {
+                let output = self.config.ptx_output_dir.clone().unwrap_or_else(|| {
+                    tcx.sess
+                        .io
+                        .output_dir
+                        .clone()
+                        .unwrap_or_else(|| "target".into())
+                        .join("oxide")
+                });
+                Some(
+                    std::fs::read(output.join(format!("{crate_name}.modules.json")))
+                        .unwrap_or_else(|error| {
+                            tcx.dcx()
+                                .fatal(format!("cannot snapshot module manifest: {error}"))
+                        }),
+                )
+            } else {
+                None
+            };
             // Step 3: Delegate ALL host codegen to LLVM backend
             // (No logging here - it fires for every crate including dependencies)
             let host_result = self.llvm_backend.codegen_crate(tcx);
@@ -943,6 +1019,7 @@ impl CodegenBackend for CudaCodegenBackend {
             Box::new(CudaOngoingCodegen {
                 host: host_result,
                 artifact_objects,
+                module_manifest,
             })
         })
     }
@@ -977,6 +1054,25 @@ impl CodegenBackend for CudaCodegenBackend {
                 global_asm_object: None,
                 links_from_incr_cache: Vec::new(),
             });
+        }
+        if crate_info
+            .crate_types
+            .contains(&rustc_session::config::CrateType::Rlib)
+        {
+            let snapshot = serde_json::json!({
+                "version": 1,
+                "crate": crate_info.local_crate_name.as_str(),
+                "manifest": ongoing.module_manifest.map(|bytes| String::from_utf8(bytes).expect("JSON manifest is UTF-8")),
+            });
+            let path = outputs
+                .path(rustc_session::config::OutputType::Metadata)
+                .as_path()
+                .with_extension("cuda-modules");
+            let bytes = serde_json::to_vec(&snapshot).expect("cannot encode module snapshot");
+            if let Err(error) = incremental::write_cache(&path, &bytes) {
+                sess.dcx()
+                    .fatal(format!("cannot save module snapshot: {error}"));
+            }
         }
         (compiled_modules, work_products)
     }
@@ -1033,7 +1129,12 @@ fn write_device_artifact_object(
         artifact,
     )?;
     if let Some(materialized) = materialized_artifact.as_ref() {
-        emit_launch_bounds_spill_warnings(tcx, result, functions, &materialized.resource_usage);
+        emit_launch_bounds_spill_warnings(
+            tcx,
+            &result.kernel_launch_bounds,
+            functions,
+            &materialized.resource_usage,
+        );
     }
     let (artifact, was_materialized) = match materialized_artifact.as_ref() {
         Some(materialized) => (&materialized.artifact, true),
@@ -1216,7 +1317,7 @@ fn materialize_artifact_for_embedding(
 /// escape hatch covers builds that measured a spill and accepted it.
 fn emit_launch_bounds_spill_warnings(
     tcx: TyCtxt<'_>,
-    result: &device_codegen::DeviceCodegenResult,
+    bounds_by_kernel: &std::collections::BTreeMap<String, mir_importer::KernelLaunchBounds>,
     functions: &[collector::CollectedFunction<'_>],
     resource_usage: &[cuda_artifact_finalizer::KernelResourceUsage],
 ) {
@@ -1224,7 +1325,7 @@ fn emit_launch_bounds_spill_warnings(
         return;
     }
     for usage in resource_usage.iter().filter(|usage| usage.has_spills()) {
-        let Some(bounds) = result.kernel_launch_bounds.get(&usage.kernel) else {
+        let Some(bounds) = bounds_by_kernel.get(&usage.kernel) else {
             continue;
         };
         let Some(function) = functions

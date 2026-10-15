@@ -308,9 +308,16 @@ impl<'a> ModuleExportState<'a> {
             } else {
                 ""
             };
+            let linkage = match global.get_attr_llvm_global_linkage(self.ctx).as_deref() {
+                Some(LinkageAttr::WeakODRLinkage) => "weak_odr ",
+                Some(LinkageAttr::LinkOnceODRLinkage) => "linkonce_odr ",
+                Some(LinkageAttr::InternalLinkage) => "internal ",
+                Some(LinkageAttr::PrivateLinkage) => "private ",
+                _ => "",
+            };
             write!(
                 output,
-                "@{name} = addrspace({address_space}) {externally_initialized}{storage_keyword} "
+                "@{name} = {linkage}addrspace({address_space}) {externally_initialized}{storage_keyword} "
             )
             .unwrap();
             self.export_type(ty, output)?;

@@ -2155,6 +2155,7 @@ pub fn translate_body(
     rustc_mono_successors: &[Vec<usize>],
     is_kernel: bool,
     inline: Option<InlineIntentAttr>,
+    declaration_only: bool,
     override_name: Option<&str>,
     legaliser: &mut Legaliser,
     debug_kind: DebugKind,
@@ -2385,6 +2386,10 @@ pub fn translate_body(
         instance.name().to_string()
     };
     mir_func_op.set_symbol_name(ctx, legaliser.legalise(&name_str));
+
+    if declaration_only {
+        return Ok(op_ptr);
+    }
 
     // Keep the Rust/source-facing name independent of the physical symbol.
     // Kernels deliberately retain their user-visible export name: their MIR
@@ -3156,6 +3161,7 @@ pub fn cuda_oxide_device_generated_kernel(mut wrapped: Wrapper<u16>) -> u32 {
                             &successors,
                             false,
                             None,
+                            false,
                             Some("entry"),
                             &mut Legaliser::default(),
                             kind,
