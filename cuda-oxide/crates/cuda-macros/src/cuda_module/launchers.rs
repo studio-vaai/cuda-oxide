@@ -6,7 +6,7 @@
 //! Generated host-side launch method families for `#[cuda_module]`
 //! kernels: sync, prepared, async, and owned-async.
 
-use crate::common::{cuda_module_async_lifetime, internal_ident};
+use crate::common::{cuda_module_async_lifetime, deduplicate_where_predicates, internal_ident};
 use crate::cuda_module::contract::{
     DynamicSharedContract, RequiresLenAccess, generate_requires_checks,
 };
@@ -384,16 +384,11 @@ fn generate_cuda_module_legacy_launch_method(kernel: &CudaModuleKernel) -> Token
         let host_ty = &param.sync_host_ty;
         quote! { #name: #host_ty }
     });
-    let arg_marshalling = kernel
-        .params
-        .iter()
-        .enumerate()
-        .map(|(index, param)| cuda_module_arg_marshalling(index, param));
+    let arg_marshalling = cuda_module_arguments(kernel);
     let function_binding = cuda_module_function_binding(kernel);
     let launch_call = cuda_module_launch_call(kernel);
     let stream = internal_ident("__cuda_oxide_stream");
     let config = internal_ident("__cuda_oxide_config");
-    let args = internal_ident("__cuda_oxide_args");
 
     quote! {
         #(#cfg_attrs)*
@@ -413,8 +408,7 @@ fn generate_cuda_module_legacy_launch_method(kernel: &CudaModuleKernel) -> Token
         #where_clause
         {
             #function_binding
-            let mut #args: ::std::vec::Vec<*mut ::std::ffi::c_void> = ::std::vec::Vec::new();
-            #(#arg_marshalling)*
+            #arg_marshalling
             #launch_call
         }
     }
@@ -441,16 +435,8 @@ fn generate_cuda_module_prepared_launch_method(kernel: &CudaModuleKernel) -> Tok
             quote! { #name: #host_ty }
         })
         .collect();
-    let prepared_arg_marshalling = kernel
-        .params
-        .iter()
-        .enumerate()
-        .map(|(index, param)| cuda_module_arg_marshalling(index, param));
-    let unchecked_arg_marshalling = kernel
-        .params
-        .iter()
-        .enumerate()
-        .map(|(index, param)| cuda_module_arg_marshalling(index, param));
+    let prepared_arg_marshalling = cuda_module_arguments(kernel);
+    let unchecked_arg_marshalling = cuda_module_arguments(kernel);
     let unchecked_function_binding = cuda_module_function_binding(kernel);
     let launch_call = cuda_module_launch_call(kernel);
     let unchecked_launch_call = cuda_module_launch_call(kernel);
@@ -459,7 +445,6 @@ fn generate_cuda_module_prepared_launch_method(kernel: &CudaModuleKernel) -> Tok
     let prepared = internal_ident("__cuda_oxide_prepared");
     let function = internal_ident("__cuda_oxide_function");
     let config = internal_ident("__cuda_oxide_config");
-    let args = internal_ident("__cuda_oxide_args");
 
     quote! {
         #(#cfg_attrs)*
@@ -478,8 +463,7 @@ fn generate_cuda_module_prepared_launch_method(kernel: &CudaModuleKernel) -> Tok
             #requires_checks
             let #function = #prepared.function();
             let #config = #prepared.__raw_config();
-            let mut #args: ::std::vec::Vec<*mut ::std::ffi::c_void> = ::std::vec::Vec::new();
-            #(#prepared_arg_marshalling)*
+            #prepared_arg_marshalling
             (#launch_call).map_err(::cuda_core::LaunchContractError::from)
         }
 
@@ -499,8 +483,7 @@ fn generate_cuda_module_prepared_launch_method(kernel: &CudaModuleKernel) -> Tok
         #where_clause
         {
             #unchecked_function_binding
-            let mut #args: ::std::vec::Vec<*mut ::std::ffi::c_void> = ::std::vec::Vec::new();
-            #(#unchecked_arg_marshalling)*
+            #unchecked_arg_marshalling
             #unchecked_launch_call
         }
     }
@@ -992,6 +975,7 @@ fn cuda_module_launch_generics(kernel: &CudaModuleKernel) -> syn::Generics {
                 .push(syn::parse_quote! { #host_ty: ::cuda_host::KernelScalar });
         }
     }
+    deduplicate_where_predicates(&mut generics);
     generics
 }
 
@@ -1023,6 +1007,7 @@ fn cuda_module_owned_async_launch_generics(
                 .push(syn::parse_quote! { #host_ty: ::cuda_host::KernelScalar + 'static });
         }
     }
+    deduplicate_where_predicates(&mut generics);
     generics
 }
 
@@ -1042,6 +1027,7 @@ fn cuda_module_async_launch_generics(kernel: &CudaModuleKernel) -> syn::Generics
                 .push(syn::parse_quote! { #host_ty: ::cuda_host::KernelScalar + #async_lifetime });
         }
     }
+    deduplicate_where_predicates(&mut generics);
     generics
 }
 
@@ -1091,58 +1077,39 @@ fn cuda_module_owned_resources_ty(
     }
 }
 
-fn cuda_module_arg_marshalling(index: usize, param: &CudaModuleParam) -> TokenStream2 {
-    let name = &param.name;
-    let args = internal_ident("__cuda_oxide_args");
-    let value_name = internal_ident(&format!("__cuda_oxide_arg_{index}"));
-    match param.marshal {
-        CudaModuleParamMarshal::Scalar => {
-            quote! {
-                let mut #value_name = #name;
-                ::cuda_host::push_kernel_scalar(&mut #args, &mut #value_name);
+fn cuda_module_arguments(kernel: &CudaModuleKernel) -> TokenStream2 {
+    let storage = internal_ident("__cuda_oxide_argument_storage");
+    let mut fields: Vec<_> = kernel
+        .params
+        .iter()
+        .map(|param| {
+            let name = &param.name;
+            match param.marshal {
+                CudaModuleParamMarshal::Scalar => quote!(::cuda_host::Scalar(#name)),
+                CudaModuleParamMarshal::ReadOnlyDeviceBuffer { .. } => {
+                    quote!(::cuda_host::read_only_device_buffer_arg(#name))
+                }
+                CudaModuleParamMarshal::WritableDeviceBuffer { .. } => {
+                    quote!(::cuda_host::writable_device_buffer_arg(#name))
+                }
+                CudaModuleParamMarshal::RowWidthDeviceBuffer { .. } => {
+                    quote!(::cuda_host::row_width_device_buffer_arg(#name))
+                }
             }
-        }
-        CudaModuleParamMarshal::ReadOnlyDeviceBuffer { .. } => {
-            let ptr_name = internal_ident(&format!("__cuda_oxide_arg_{index}_ptr"));
-            let len_name = internal_ident(&format!("__cuda_oxide_arg_{index}_len"));
-            quote! {
-                let (mut #ptr_name, mut #len_name) =
-                    ::cuda_host::read_only_device_buffer_arg(#name);
-                ::cuda_host::push_kernel_device_slice(
-                    &mut #args,
-                    &mut #ptr_name,
-                    &mut #len_name,
-                );
-            }
-        }
-        CudaModuleParamMarshal::WritableDeviceBuffer { .. } => {
-            let ptr_name = internal_ident(&format!("__cuda_oxide_arg_{index}_ptr"));
-            let len_name = internal_ident(&format!("__cuda_oxide_arg_{index}_len"));
-            quote! {
-                let (mut #ptr_name, mut #len_name) =
-                    ::cuda_host::writable_device_buffer_arg(#name);
-                ::cuda_host::push_kernel_device_slice(
-                    &mut #args,
-                    &mut #ptr_name,
-                    &mut #len_name,
-                );
-            }
-        }
-        CudaModuleParamMarshal::RowWidthDeviceBuffer { .. } => {
-            let ptr_name = internal_ident(&format!("__cuda_oxide_arg_{index}_ptr"));
-            let len_name = internal_ident(&format!("__cuda_oxide_arg_{index}_len"));
-            let width_name = internal_ident(&format!("__cuda_oxide_arg_{index}_row_width"));
-            quote! {
-                let (mut #ptr_name, mut #len_name, mut #width_name) =
-                    ::cuda_host::row_width_device_buffer_arg(#name);
-                ::cuda_host::push_kernel_row_width_device_slice(
-                    &mut #args,
-                    &mut #ptr_name,
-                    &mut #len_name,
-                    &mut #width_name,
-                );
-            }
-        }
+        })
+        .collect();
+    // Group large signatures rather than emitting an unbounded family of tuple
+    // impls or falling back to repeated per-field pointer bookkeeping.
+    while fields.len() > 32 {
+        fields = fields
+            .chunks(32)
+            .map(|chunk| {
+                quote! { ::cuda_host::KernelArgumentGroup((#(#chunk,)*)) }
+            })
+            .collect();
+    }
+    quote! {
+        let #storage = (#(#fields,)*);
     }
 }
 
@@ -1256,59 +1223,16 @@ fn cuda_module_launch_call(kernel: &CudaModuleKernel) -> TokenStream2 {
     let function = internal_ident("__cuda_oxide_function");
     let stream = internal_ident("__cuda_oxide_stream");
     let config = internal_ident("__cuda_oxide_config");
-    let args = internal_ident("__cuda_oxide_args");
-    let cluster_dim = kernel.cluster_dim.map(|(x, y, z)| quote! { (#x, #y, #z) });
-    match (cluster_dim, kernel.cooperative) {
-        (Some(cluster_dim), true) => quote! {
-            unsafe {
-                ::cuda_core::launch_kernel_ex_cooperative_on_stream(
-                    #function,
-                    #config.grid_dim,
-                    #config.block_dim,
-                    #config.shared_mem_bytes,
-                    #cluster_dim,
-                    #stream,
-                    &mut #args,
-                )
-            }
-        },
-        (Some(cluster_dim), false) => quote! {
-            unsafe {
-                ::cuda_core::launch_kernel_ex_on_stream(
-                    #function,
-                    #config.grid_dim,
-                    #config.block_dim,
-                    #config.shared_mem_bytes,
-                    #cluster_dim,
-                    #stream,
-                    &mut #args,
-                )
-            }
-        },
-        (None, true) => quote! {
-            unsafe {
-                ::cuda_core::launch_kernel_cooperative_on_stream(
-                    #function,
-                    #config.grid_dim,
-                    #config.block_dim,
-                    #config.shared_mem_bytes,
-                    #stream,
-                    &mut #args,
-                )
-            }
-        },
-        (None, false) => quote! {
-            unsafe {
-                ::cuda_core::launch_kernel_on_stream(
-                    #function,
-                    #config.grid_dim,
-                    #config.block_dim,
-                    #config.shared_mem_bytes,
-                    #stream,
-                    &mut #args,
-                )
-            }
-        },
+    let storage = internal_ident("__cuda_oxide_argument_storage");
+    let cluster = kernel.cluster_dim.map(|(x, y, z)| quote! { (#x, #y, #z), });
+    let submit = match (kernel.cluster_dim.is_some(), kernel.cooperative) {
+        (true, true) => quote!(::cuda_host::__launch_kernel_ex_cooperative_on_stream),
+        (true, false) => quote!(::cuda_host::__launch_kernel_ex_on_stream),
+        (false, true) => quote!(::cuda_host::__launch_kernel_cooperative_on_stream),
+        (false, false) => quote!(::cuda_host::__launch_kernel_on_stream),
+    };
+    quote! {
+        unsafe { #submit(#function, #config, #stream, #cluster #storage) }
     }
 }
 

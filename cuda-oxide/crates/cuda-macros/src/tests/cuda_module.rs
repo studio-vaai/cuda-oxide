@@ -9,7 +9,7 @@ use crate::cuda_module::{
     transform_cuda_module_items,
 };
 use proc_macro2::TokenStream as TokenStream2;
-use quote::quote;
+use quote::{ToTokens, quote};
 use reserved_oxide_symbols::PTX_MERGE_REQUIRED_PREFIX;
 use reserved_oxide_symbols::ptx_merge_required_marker;
 use syn::{ItemMod, parse_quote};
@@ -58,7 +58,7 @@ fn grid_constant_uses_one_by_value_host_argument() {
         "{expanded}"
     );
     assert!(
-        expanded.contains("letmut__cuda_oxide_arg_0=descriptor;::cuda_host::push_kernel_scalar"),
+        expanded.contains("let__cuda_oxide_argument_storage=(::cuda_host::Scalar(descriptor),::cuda_host::Scalar(out),)"),
         "{expanded}"
     );
     assert!(
@@ -843,8 +843,11 @@ fn requires_relations_generate_overflow_safe_checks_in_checked_launchers_only() 
 
     // Every operand is widened to u64 and arithmetic goes through
     // checked ops with a typed overflow error.
-    assert!(expanded.contains("SizeRequirementViolated"), "{expanded}");
-    assert!(expanded.contains("SizeRequirementOverflow"), "{expanded}");
+    assert!(expanded.contains("__LaunchRequirement::new"), "{expanded}");
+    assert!(
+        expanded.contains("__cuda_oxide_requires.value("),
+        "{expanded}"
+    );
     assert!(expanded.contains("checked_mul"), "{expanded}");
     assert!(expanded.contains("(nasu64)"), "{expanded}");
     // The relation's source text rides along for the error message.
@@ -859,13 +862,13 @@ fn requires_relations_generate_overflow_safe_checks_in_checked_launchers_only() 
     // `_async_owned` twins check too (2 relations each).
     #[cfg(not(feature = "async"))]
     assert_eq!(
-        expanded.matches("SizeRequirementViolated").count(),
+        expanded.matches("__LaunchRequirement::new").count(),
         2,
         "{expanded}"
     );
     #[cfg(feature = "async")]
     assert_eq!(
-        expanded.matches("SizeRequirementViolated").count(),
+        expanded.matches("__LaunchRequirement::new").count(),
         6,
         "{expanded}"
     );
@@ -915,6 +918,25 @@ fn requires_relations_wrap_async_launchers_in_result() {
         !plain.contains("Result<::cuda_host::PreparedOwnedAsyncKernelLaunch<"),
         "{plain}"
     );
+}
+
+#[test]
+fn requires_relations_route_every_comparison_to_the_shared_context() {
+    let module: ItemMod = parse_quote! {
+        mod kernels {
+            #[kernel]
+            #[launch_contract(domain = 1, block = (64, 1, 1),
+                requires = (n < 3, n <= 4, n == 1, n != 2, n >= 1, n > 0))]
+            pub fn comparisons(n: u64) {}
+        }
+    };
+    let expanded = expand_to_compact_string(module);
+    for compare in ["lt", "le", "eq", "ne", "ge", "gt"] {
+        assert!(
+            expanded.contains(&format!("__cuda_oxide_requires.{compare}(")),
+            "{expanded}"
+        );
+    }
 }
 
 #[test]
@@ -1237,7 +1259,7 @@ fn aliased_disjoint_index_space_is_checked_by_rust_type_resolution() {
         ),
         "the bound must preserve the original index-space alias: {expanded}"
     );
-    assert!(expanded.contains("__LaunchContractDisjointSlice<u32,2u8>"));
+    assert!(expanded.contains("__LaunchSlice<u32,2u8,false>"));
 }
 
 #[test]
@@ -1259,7 +1281,7 @@ fn one_dimensional_index_space_is_not_accepted_by_identifier_spelling() {
         ),
         "the bound must preserve the misleading alias for Rust to resolve: {expanded}"
     );
-    assert!(expanded.contains("__LaunchContractDisjointSlice<u32,2u8>"));
+    assert!(expanded.contains("__LaunchSlice<u32,2u8,false>"));
 }
 
 #[test]
@@ -1282,7 +1304,7 @@ fn local_disjoint_slice_lookalike_gets_the_genuine_type_bound() {
         expanded.contains("for<'__cuda_oxide_disjoint>DisjointSlice<'__cuda_oxide_disjoint,u32>:"),
         "the look-alike must receive the genuine cuda-device trait bound: {expanded}"
     );
-    assert!(expanded.contains("__LaunchContractDisjointSlice<u32,1u8>"));
+    assert!(expanded.contains("__LaunchSlice<u32,1u8,false>"));
 }
 
 #[test]
@@ -1492,4 +1514,90 @@ fn non_generic_kernel_lookups_never_consult_the_divergence_diagnosis() {
         !expanded.contains("diagnose_generic_kernel_load_error"),
         "non-generic lookups must keep the ordinary error path: {expanded}"
     );
+}
+
+#[test]
+fn repeated_parameters_share_scalar_and_slice_proofs() {
+    let module: ItemMod = parse_quote! {
+        mod kernels {
+            #[kernel]
+            #[launch_bounds(128)]
+            #[launch_contract(domain = 1)]
+            pub fn repeated<T: Copy>(
+                a: T, b: T, n: u32, m: u32,
+                mut x: DisjointSlice<f32>, mut y: DisjointSlice<f32>,
+            ) {}
+        }
+    };
+    let expanded: ItemMod = syn::parse2(expand_cuda_module(module).unwrap()).unwrap();
+    let items = expanded.content.unwrap().1;
+    let loaded = items
+        .iter()
+        .filter_map(|item| {
+            if let syn::Item::Impl(item) = item {
+                Some(item)
+            } else {
+                None
+            }
+        })
+        .find(|item| {
+            item.trait_.is_none() && item.self_ty.to_token_stream().to_string() == "LoadedModule"
+        })
+        .unwrap();
+    let mut checked = 0;
+    for item in &loaded.items {
+        let syn::ImplItem::Fn(method) = item else {
+            continue;
+        };
+        if !method.sig.ident.to_string().contains("repeated") {
+            continue;
+        }
+        let bounds = method
+            .sig
+            .generics
+            .where_clause
+            .as_ref()
+            .unwrap()
+            .predicates
+            .iter()
+            .map(|p| p.to_token_stream().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            bounds
+                .iter()
+                .filter(|p| p.contains("__LaunchSlice"))
+                .count(),
+            1,
+            "{bounds:?}"
+        );
+        if method.sig.ident.to_string().starts_with("prepare_") {
+            continue;
+        }
+        assert_eq!(
+            bounds.iter().filter(|p| p.starts_with("T :")).count(),
+            1,
+            "{bounds:?}"
+        );
+        assert_eq!(
+            bounds.iter().filter(|p| p.starts_with("u32 :")).count(),
+            1,
+            "{bounds:?}"
+        );
+        checked += 1;
+    }
+    assert!(checked >= 2);
+}
+
+#[test]
+fn proof_deduplication_preserves_distinct_types_lifetimes_and_layouts() {
+    let mut generics: syn::Generics = parse_quote!(<'a, 'b, T, U>);
+    generics.where_clause = Some(parse_quote! {
+        where T: Copy, T: Copy, U: Copy, T: Send,
+        &'a T: Copy, &'b T: Copy,
+        for<'s> DisjointSlice<'s, T>: Proof<T, 1, false>,
+        for<'s> DisjointSlice<'s, T>: Proof<T, 1, true>,
+        for<'s> DisjointSlice<'s, T>: Proof<T, 2, false>,
+    });
+    crate::common::deduplicate_where_predicates(&mut generics);
+    assert_eq!(generics.where_clause.unwrap().predicates.len(), 8);
 }

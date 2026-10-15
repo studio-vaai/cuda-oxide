@@ -19,6 +19,7 @@ help: the trait `for<'__cuda_oxide_disjoint> cuda_device::disjoint::__LaunchCont
              `cuda_device::DisjointSlice<'a, T, RuntimeRowMajorTiles<ROWS, COLS>>` implements `cuda_device::disjoint::__LaunchContractDisjointSlice<T, 2>`
              `cuda_device::DisjointSlice<'a, T, WarpIndex>` implements `cuda_device::disjoint::__LaunchContractDisjointSlice<T, 1>`
              `cuda_device::DisjointSlice<'a, T>` implements `cuda_device::disjoint::__LaunchContractDisjointSlice<T, 1>`
+   = note: required for `DisjointSlice<'__cuda_oxide_disjoint, u32>` to implement `for<'__cuda_oxide_disjoint> cuda_device::disjoint::__LaunchSlice<u32, 1, false>`
 note: required by a bound in `LoadedModule::prepare_lookalike`
   --> tests/compile_fail/launch_contract_fake_disjoint_slice.rs:15:1
    |
@@ -50,6 +51,7 @@ help: `cuda_device::DisjointSlice<'a, T, IndexSpace>` implements trait `cuda_dev
    | / impl<'a, T, IndexSpace: SpaceLayout<Data = u32>> __LaunchContractDisjointSliceAbi<T, true>
    | |     for DisjointSlice<'a, T, IndexSpace>
    | |________________________________________^ `cuda_device::disjoint::__LaunchContractDisjointSliceAbi<T, true>`
+   = note: required for `DisjointSlice<'__cuda_oxide_disjoint, u32>` to implement `for<'__cuda_oxide_disjoint> cuda_device::disjoint::__LaunchSlice<u32, 1, false>`
 note: required by a bound in `LoadedModule::prepare_lookalike`
   --> tests/compile_fail/launch_contract_fake_disjoint_slice.rs:15:1
    |

@@ -15,6 +15,7 @@ error[E0277]: the trait bound `for<'__cuda_oxide_disjoint> cuda_device::Disjoint
              `cuda_device::DisjointSlice<'_, T, RuntimeRowMajorTiles<ROWS, COLS>>` implements `cuda_device::disjoint::__LaunchContractDisjointSlice<T, 2>`
              `cuda_device::DisjointSlice<'_, T, WarpIndex>` implements `cuda_device::disjoint::__LaunchContractDisjointSlice<T, 1>`
              `cuda_device::DisjointSlice<'_, T>` implements `cuda_device::disjoint::__LaunchContractDisjointSlice<T, 1>`
+   = note: required for `cuda_device::DisjointSlice<'__cuda_oxide_disjoint, u64>` to implement `for<'__cuda_oxide_disjoint> cuda_device::disjoint::__LaunchSlice<cuda_device::Index1D, 1, false>`
 note: required by a bound in `LoadedModule::prepare_reordered`
   --> tests/compile_fail/launch_contract_reordered_disjoint_alias.rs:11:1
    |
@@ -42,6 +43,7 @@ help: `cuda_device::DisjointSlice<'_, T, IndexSpace>` implements trait `cuda_dev
    | / impl<'a, T, IndexSpace: SpaceLayout<Data = u32>> __LaunchContractDisjointSliceAbi<T, true>
    | |     for DisjointSlice<'a, T, IndexSpace>
    | |________________________________________^ `cuda_device::disjoint::__LaunchContractDisjointSliceAbi<T, true>`
+   = note: required for `cuda_device::DisjointSlice<'__cuda_oxide_disjoint, u64>` to implement `for<'__cuda_oxide_disjoint> cuda_device::disjoint::__LaunchSlice<cuda_device::Index1D, 1, false>`
 note: required by a bound in `LoadedModule::prepare_reordered`
   --> tests/compile_fail/launch_contract_reordered_disjoint_alias.rs:11:1
    |
