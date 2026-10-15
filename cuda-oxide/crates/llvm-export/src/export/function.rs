@@ -1036,12 +1036,20 @@ impl<'a> ModuleExportState<'a> {
             .iter(self.ctx)
             .next();
 
-        // Check for alwaysinline attribute (from #[inline(always)]).
+        // Preserve explicit Rust inline policies through device LTO.
         // Emitted as a function attribute keyword between the parameter
         // list and the body open brace.
         let alwaysinline_key: pliron::identifier::Identifier = "alwaysinline".try_into().unwrap();
         let is_alwaysinline = attrs
             .get::<pliron::builtin::attributes::StringAttr>(&alwaysinline_key)
+            .is_some();
+        let noinline_key: pliron::identifier::Identifier = "noinline".try_into().unwrap();
+        let is_noinline = attrs
+            .get::<pliron::builtin::attributes::StringAttr>(&noinline_key)
+            .is_some();
+        let inlinehint_key: pliron::identifier::Identifier = "inlinehint".try_into().unwrap();
+        let is_inlinehint = attrs
+            .get::<pliron::builtin::attributes::StringAttr>(&inlinehint_key)
             .is_some();
 
         if let Some(entry_block) = entry_block_opt {
@@ -1119,7 +1127,15 @@ impl<'a> ModuleExportState<'a> {
             // A convergent intrinsic/asm seeds its containing function and
             // propagates through the call graph. Arithmetic-only definitions
             // need no convergence restriction, including alwaysinline helpers.
-            let inline_attr = if is_alwaysinline { "alwaysinline " } else { "" };
+            let inline_attr = if is_noinline {
+                "noinline "
+            } else if is_alwaysinline {
+                "alwaysinline "
+            } else if is_inlinehint {
+                "inlinehint "
+            } else {
+                ""
+            };
             let is_convergent = self.function_is_convergent(&fixed_func_name);
             let convergence_attr = if is_convergent { "#0 " } else { "" };
             if let Some(scope_id) = debug_scope {
