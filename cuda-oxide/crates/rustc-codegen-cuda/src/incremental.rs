@@ -298,7 +298,9 @@ pub(crate) fn compile<'tcx>(
     tcx: TyCtxt<'tcx>,
     collection: &CollectionResult<'tcx>,
     config: &DeviceCodegenConfig,
+    generate_host: impl FnOnce(),
 ) -> Result<PathBuf, Error> {
+    generate_host();
     let started = Instant::now();
     if !collection
         .functions
