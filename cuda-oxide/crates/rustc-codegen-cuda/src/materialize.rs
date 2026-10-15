@@ -315,7 +315,7 @@ fn parse_digest(value: &str) -> Result<[u8; 32], MaterializeError> {
     Ok(digest)
 }
 
-fn digest_hex(digest: &[u8; 32]) -> String {
+pub(crate) fn digest_hex(digest: &[u8; 32]) -> String {
     use std::fmt::Write;
     let mut hex = String::with_capacity(64);
     for byte in digest {

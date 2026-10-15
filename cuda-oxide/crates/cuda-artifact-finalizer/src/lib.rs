@@ -12,6 +12,8 @@
 
 mod diagnostics;
 mod link;
+#[cfg(feature = "llvm-nvptx")]
+mod llvm;
 mod nvvm;
 mod options;
 mod provenance;
@@ -21,6 +23,11 @@ mod validation;
 pub use diagnostics::KernelResourceUsage;
 pub use libnvvm_sys::{CudaArch, CudaArchParseError, LibdeviceNotFound, NvvmError, find_libdevice};
 pub use link::{LinkReport, LtoLinker};
+#[cfg(feature = "llvm-nvptx")]
+pub use llvm::{
+    LlvmNvptxCompiler, LlvmNvptxError, LlvmPtxReport, NativeCompilerPreference,
+    SourceCompilerHandshakeV1, rust_llvm_library,
+};
 pub use nvjitlink_sys::NvJitLinkError;
 pub use nvvm::NvvmCompiler;
 pub use options::{DebugPolicy, FinalizationOptions, FinalizerOutput, NamedInput};
