@@ -227,17 +227,17 @@ fn grid_constant_modern_preserves_opaque_pointer_body_and_explicit_byval_types()
     let module = mixed_module(&mut ctx, false);
     let ir =
         export_module_to_string_with_config(&ctx, &module, &NvvmExportConfig::default()).unwrap();
-    assert!(ir.contains("ptr byval([128 x i8]) align 64 %v2"), "{ir}");
+    assert!(ir.contains("ptr byval([128 x i8]) align 64 %2"), "{ir}");
     assert!(
-        ir.contains("ptr byval(<{ i8, [2 x i32] }>) align 1 %v4"),
+        ir.contains("ptr byval(<{ i8, [2 x i32] }>) align 1 %4"),
         "{ir}"
     );
-    assert!(ir.contains("ptr byval(i8) align 1 %v5"), "{ir}");
+    assert!(ir.contains("ptr byval(i8) align 1 %5"), "{ir}");
     assert!(
         !ir.contains(".byval"),
         "opaque pointer bodies need no adapter:\n{ir}"
     );
-    assert!(ir.contains("phi ptr [ %v2, %entry ]"), "{ir}");
+    assert!(ir.contains("phi ptr [ %2, %6 ]"), "{ir}");
     assert!(ir.contains("!{i32 3, i32 5, i32 6}"), "{ir}");
 }
 

@@ -175,7 +175,7 @@ fn modern_device_extern_erases_pointee_without_boundary_casts() {
     )
     .expect("modern extern export succeeds");
     assert!(ir.contains("declare void @takes_float(ptr)"), "{ir}");
-    assert!(ir.contains("call void @takes_float(ptr %v0)"), "{ir}");
+    assert!(ir.contains("call void @takes_float(ptr %0)"), "{ir}");
     assert!(!ir.contains("bitcast"), "{ir}");
 }
 
@@ -503,19 +503,19 @@ fn modern_device_extern_emits_signext_zeroext_for_small_integer_params() {
 
     // Call site keeps the narrow types and attributes too.
     assert!(
-        ir.contains("i8 signext %v0"),
+        ir.contains("i8 signext %0"),
         "call should use signext on first arg:\n{ir}"
     );
     assert!(
-        ir.contains("i16 zeroext %v1"),
+        ir.contains("i16 zeroext %1"),
         "call should use zeroext on second arg:\n{ir}"
     );
     assert!(
-        ir.contains("i1 zeroext %v2"),
+        ir.contains("i1 zeroext %2"),
         "call should use zeroext on the bool arg:\n{ir}"
     );
     assert!(
-        ir.contains("half %v3"),
+        ir.contains("half %3"),
         "call should use half for the f16 arg:\n{ir}"
     );
 }
