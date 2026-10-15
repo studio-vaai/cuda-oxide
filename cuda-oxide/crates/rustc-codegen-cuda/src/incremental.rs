@@ -370,6 +370,64 @@ fn link_cached_unit(
     })
 }
 
+// Timing records only advise queue order. They never enter cache identity or
+// compiler options, and invalid/missing/unwritable records are ignored.
+fn native_cost_path(
+    cache: &Path,
+    name: &str,
+    finalizer: &Finalizer,
+    options: &FinalizationOptions,
+) -> Option<PathBuf> {
+    let key = finalizer.linker().artifact_digest(
+        &[NamedInput::new("native-cost-v1", name.as_bytes())],
+        options,
+        FinalizerOutput::Cubin,
+    )?;
+    Some(cache.join("native-link-cost-v1").join(digest(&key)))
+}
+
+fn recorded_native_cost(
+    cache: &Path,
+    name: &str,
+    finalizer: &Finalizer,
+    options: &FinalizationOptions,
+) -> Option<f64> {
+    let bytes = read_cache(&native_cost_path(cache, name, finalizer, options)?)?;
+    decode_native_cost(&bytes)
+}
+
+fn decode_native_cost(bytes: &[u8]) -> Option<f64> {
+    let seconds: f64 = serde_json::from_slice(bytes).ok()?;
+    (seconds.is_finite() && seconds > 0.0 && seconds <= 3600.0).then_some(seconds)
+}
+
+fn timing_priorities(
+    estimates: &BTreeMap<String, u64>,
+    costs: &BTreeMap<String, f64>,
+) -> BTreeMap<String, u64> {
+    let mut ratios: Vec<_> = costs
+        .iter()
+        .filter_map(|(name, seconds)| {
+            estimates
+                .get(name)
+                .filter(|cost| **cost != 0)
+                .map(|estimate| seconds / *estimate as f64)
+        })
+        .collect();
+    if ratios.is_empty() {
+        return estimates.clone();
+    }
+    ratios.sort_by(f64::total_cmp);
+    let scale = ratios[ratios.len() / 2];
+    estimates
+        .iter()
+        .map(|(name, estimate)| {
+            let seconds = costs.get(name).copied().unwrap_or(*estimate as f64 * scale);
+            (name.clone(), (seconds * 1_000_000.0).ceil() as u64)
+        })
+        .collect()
+}
+
 /// Finalization operates on immutable LTOIR and cannot access the Rust session.
 /// Reserve Cargo jobserver tokens before starting extra workers; the first
 /// worker uses this rustc process's existing token while the main thread waits.
@@ -416,6 +474,14 @@ fn link_native_modules(
                 link_cached_unit(cache, units, deps, &closure_keys[name], finalizer, options)
             }
             .map_err(|error| format!("{name}: {error}"))?;
+            if !result.hit
+                && result.seconds > 0.0
+                && let Some(path) = native_cost_path(cache, name, finalizer, options)
+                && let Ok(bytes) = serde_json::to_vec(&result.seconds)
+            {
+                // Advisory metadata must not turn a successful native link into a failure.
+                let _ = write_cache(&path, &bytes);
+            }
             eprintln!(
                 "[device-modules] {name}: cubin {} ({:.3}s)",
                 if result.hit { "hit" } else { "linked" },
@@ -428,16 +494,86 @@ fn link_native_modules(
     .map(|results| results.into_iter().collect())
 }
 
-/// Run each finalization on immutable compiler inputs before publication.
+/// Immutable compiler inputs can run off the rustc thread. The callback remains
+/// on that thread, and each extra worker holds a Cargo jobserver token. Drain all
+/// started jobs before returning an error or publishing any module selector.
 fn parallel_finalization<T: Send>(
     count: usize,
-    _stage: &str,
+    stage: &str,
     finalize: impl Fn(usize) -> Result<T, String> + Sync,
     main_thread: impl FnOnce(),
 ) -> Result<Vec<T>, Error> {
-    main_thread();
-    (0..count)
-        .map(|index| finalize(index).map_err(|error| error.into()))
+    if count == 0 {
+        main_thread();
+        return Ok(Vec::new());
+    }
+    let limit = match std::env::var("CUDA_OXIDE_LINK_JOBS") {
+        Ok(value) => value.parse::<std::num::NonZeroUsize>()?.get(),
+        // Large GPU crates benefit from more than eight independent links.
+        // Cargo tokens remain the hard resource limit; cap the automatic
+        // budget so each nvJitLink instance can also parallelize internally.
+        Err(_) => std::thread::available_parallelism().map_or(8, |cpus| cpus.get().min(16)),
+    }
+    .min(count);
+    let client = rustc_data_structures::jobserver::client();
+    let mut tokens = Vec::new();
+    for _ in 1..limit {
+        match client.try_acquire() {
+            Ok(Some(token)) => tokens.push(token),
+            _ => break,
+        }
+    }
+    let workers = tokens.len() + 1;
+    eprintln!("[device-modules] {stage} finalization: {workers} worker(s)");
+    finalization_workers(count, workers, finalize, main_thread)
+}
+
+fn finalization_workers<T: Send>(
+    count: usize,
+    workers: usize,
+    finalize: impl Fn(usize) -> Result<T, String> + Sync,
+    main_thread: impl FnOnce(),
+) -> Result<Vec<T>, Error> {
+    debug_assert!(workers != 0);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let (send, receive) = std::sync::mpsc::channel();
+    let completed = std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let send = send.clone();
+            let finalize = &finalize;
+            let next = &next;
+            scope.spawn(move || {
+                loop {
+                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if index >= count {
+                        break;
+                    }
+                    if send.send((index, finalize(index))).is_err() {
+                        // A host diagnostic can unwind the callback. Let the
+                        // scoped workers drain without replacing it with a
+                        // secondary channel panic.
+                        break;
+                    }
+                }
+            });
+        }
+        drop(send);
+        main_thread();
+        receive.into_iter().collect::<Vec<_>>()
+    });
+    // Restore source order for deterministic manifests and input ordering even
+    // when workers complete in another order.
+    let mut ordered: Vec<_> = (0..count).map(|_| None).collect();
+    for (index, result) in completed {
+        ordered[index] = Some(result);
+    }
+    ordered
+        .into_iter()
+        .map(|result| {
+            result
+                .ok_or("missing finalization result")?
+                .map_err(|error| error.into())
+        })
         .collect()
 }
 
@@ -816,6 +952,19 @@ pub(crate) fn compile<'tcx>(
     let mut pending_lto = Vec::new();
     let mut bounds_by_kernel = BTreeMap::new();
     let mut closure_keys = BTreeMap::new();
+    let mut unit_costs = BTreeMap::new();
+    let order = std::env::var("CUDA_OXIDE_NATIVE_LINK_ORDER");
+    let (estimate_costs, use_history) = match order.as_deref() {
+        Err(std::env::VarError::NotPresent) | Ok("history") => (true, true),
+        Ok("instructions") => (true, false),
+        Ok("bytes") => (false, false),
+        _ => {
+            return Err(
+                "CUDA_OXIDE_NATIVE_LINK_ORDER must be history, instructions or bytes".into(),
+            );
+        }
+    };
+    let mut priority_seconds = 0.0;
     for (name, indices) in &groups {
         let unit_started = Instant::now();
         let mut roots: Vec<_> = indices
@@ -909,6 +1058,11 @@ pub(crate) fn compile<'tcx>(
         if source_compiler.is_some() {
             source_units.insert(name.clone(), ir.to_vec());
         }
+        if estimate_costs {
+            let priority_started = Instant::now();
+            unit_costs.insert(name.clone(), crate::native_link_priority::Unit::from_ir(ir));
+            priority_seconds += priority_started.elapsed().as_secs_f64();
+        }
         let bounds: BTreeMap<String, (u32, Option<u32>)> = serde_json::from_value(bounds)?;
         bounds_by_kernel.extend(bounds.into_iter().map(|(name, (max_threads, min_blocks))| {
             (
@@ -998,7 +1152,59 @@ pub(crate) fn compile<'tcx>(
         // unrelated definitions, often pulling most of the crate into a link.
         link_jobs.insert(name.clone(), units[name].1.clone());
     }
-    let ordered_jobs: Vec<_> = link_jobs.iter().collect();
+    let mut priorities = BTreeMap::new();
+    let priority_started = Instant::now();
+    for (name, deps) in &link_jobs {
+        if !estimate_costs {
+            break;
+        }
+        let kernels: Vec<_> = groups[name]
+            .iter()
+            .map(|&index| &collection.functions[index])
+            .filter(|function| function.is_kernel)
+            .map(|function| function.export_name.clone())
+            .collect();
+        if let Some(cost) = crate::native_link_priority::estimate(
+            deps.iter().map(|name| &unit_costs[name]),
+            &kernels,
+        ) {
+            priorities.insert(name.clone(), cost);
+        }
+    }
+    let recorded_costs: BTreeMap<_, _> = if use_history {
+        link_jobs
+            .keys()
+            .filter_map(|name| {
+                recorded_native_cost(&cache, name, &finalizer, &options)
+                    .map(|seconds| (name.clone(), seconds))
+            })
+            .collect()
+    } else {
+        BTreeMap::new()
+    };
+    if !recorded_costs.is_empty() {
+        priorities = timing_priorities(&priorities, &recorded_costs);
+        eprintln!(
+            "[device-modules] native scheduling: {} recorded module cost(s)",
+            recorded_costs.len()
+        );
+    }
+    // Shared units include unrelated helpers. Estimate reachable instructions
+    // and repeated inlining to start expensive links before short kernels.
+    // Input ordering, cache identity, and publication remain unchanged.
+    let mut ordered_jobs: Vec<_> = link_jobs.iter().collect();
+    ordered_jobs.sort_by_cached_key(|(name, deps)| {
+        std::cmp::Reverse(priorities.get(*name).copied().unwrap_or_else(|| {
+            deps.iter()
+                .map(|name| source_units.get(name).map_or(units[name].0.len(), Vec::len) as u64)
+                .sum()
+        }))
+    });
+    eprintln!(
+        "[device-modules] native scheduling: {} estimated module(s) ({:.3}s)",
+        priorities.len(),
+        priority_seconds + priority_started.elapsed().as_secs_f64()
+    );
     let linked_modules = link_native_modules(
         &ordered_jobs,
         NativeLinkInputs {
@@ -1149,4 +1355,154 @@ pub(crate) fn compile<'tcx>(
         &serde_json::to_vec_pretty(&manifest)?,
     )?;
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn no_history_keeps_cold_estimates() {
+        let estimates = BTreeMap::from([("large".into(), 900), ("small".into(), 10)]);
+        assert_eq!(timing_priorities(&estimates, &BTreeMap::new()), estimates);
+    }
+    #[test]
+    fn recorded_slow_kernel_precedes_larger_ir() {
+        let estimates = BTreeMap::from([("complex".into(), 100), ("simple".into(), 1000)]);
+        let costs = BTreeMap::from([("complex".into(), 9.0), ("simple".into(), 0.3)]);
+        let scores = timing_priorities(&estimates, &costs);
+        assert!(scores["complex"] > scores["simple"]);
+    }
+    #[test]
+    fn unseen_kernels_keep_estimated_relative_order() {
+        let estimates = BTreeMap::from([
+            ("seen".into(), 100),
+            ("large".into(), 900),
+            ("small".into(), 10),
+        ]);
+        let costs = BTreeMap::from([("seen".into(), 2.0)]);
+        let scores = timing_priorities(&estimates, &costs);
+        assert!(scores["large"] > scores["seen"] && scores["seen"] > scores["small"]);
+    }
+
+    #[test]
+    fn invalid_native_costs_are_ignored() {
+        for bytes in [
+            b"0".as_slice(),
+            b"-1",
+            b"3600.1",
+            b"null",
+            b"NaN",
+            b"broken",
+        ] {
+            assert_eq!(decode_native_cost(bytes), None);
+        }
+        assert_eq!(decode_native_cost(b"0.25"), Some(0.25));
+        assert_eq!(decode_native_cost(b"3600"), Some(3600.0));
+    }
+    #[test]
+    fn unrelated_history_does_not_rescale_new_modules() {
+        let estimates = BTreeMap::from([("new".into(), 42)]);
+        let costs = BTreeMap::from([("old".into(), 10.0)]);
+        assert_eq!(timing_priorities(&estimates, &costs), estimates);
+    }
+    #[test]
+    fn parallel_finalization_preserves_input_order_and_callback_thread() {
+        let caller = std::thread::current().id();
+        let result = finalization_workers(
+            32,
+            4,
+            |index| {
+                std::thread::sleep(std::time::Duration::from_micros((32 - index) as u64));
+                Ok(index)
+            },
+            || assert_eq!(std::thread::current().id(), caller),
+        )
+        .unwrap();
+        assert_eq!(result, (0..32).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn parallel_finalization_drains_jobs_after_failure() {
+        let completed = std::sync::atomic::AtomicUsize::new(0);
+        let result = finalization_workers(
+            32,
+            4,
+            |index| {
+                completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if index == 0 {
+                    Err("compiler failure".into())
+                } else {
+                    Ok(index)
+                }
+            },
+            || {},
+        );
+        assert_eq!(result.unwrap_err().to_string(), "compiler failure");
+        assert_eq!(completed.load(std::sync::atomic::Ordering::Relaxed), 32);
+    }
+
+    #[test]
+    fn host_callback_failure_does_not_panic_link_workers() {
+        let failure = std::panic::catch_unwind(|| {
+            let _ = finalization_workers(32, 4, Ok::<_, String>, || panic!("host callback failed"));
+        })
+        .expect_err("the host failure must propagate");
+        assert_eq!(
+            failure.downcast_ref::<&str>(),
+            Some(&"host callback failed")
+        );
+    }
+
+    #[test]
+    fn cached_finalization_runs_callback_without_workers() {
+        let mut called = 0;
+        let result = parallel_finalization::<()>(
+            0,
+            "test",
+            |_| panic!("cached jobs must not compile"),
+            || called += 1,
+        )
+        .unwrap();
+        assert!(result.is_empty());
+        assert_eq!(called, 1);
+    }
+
+    #[test]
+    fn concurrent_cache_writers_publish_complete_entries() {
+        let dir = std::env::temp_dir().join(format!(
+            "oxide-concurrent-cache-test-{}",
+            std::process::id()
+        ));
+        let path = dir.join("shared-entry");
+        let payload = vec![42u8; 65536];
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let path = &path;
+                let payload = &payload;
+                scope.spawn(move || {
+                    for _ in 0..16 {
+                        write_cache(path, payload).unwrap();
+                        assert_eq!(read_cache(path).as_deref(), Some(payload.as_slice()));
+                    }
+                });
+            }
+        });
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn cache_rejects_truncated_or_corrupted_payloads() {
+        let dir =
+            std::env::temp_dir().join(format!("oxide-module-cache-test-{}", std::process::id()));
+        let path = dir.join("entry");
+        write_cache(&path, b"correct").unwrap();
+        assert_eq!(read_cache(&path).as_deref(), Some(b"correct".as_slice()));
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[33] ^= 1;
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(read_cache(&path).is_none());
+        std::fs::write(&path, b"partial").unwrap();
+        assert!(read_cache(&path).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
