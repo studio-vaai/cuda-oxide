@@ -335,6 +335,7 @@ mod device_codegen;
 mod generated_intrinsics;
 mod incremental;
 mod materialize;
+mod native_link_priority;
 
 use rustc_codegen_ssa::traits::CodegenBackend;
 use rustc_codegen_ssa::{CompiledModule, CompiledModules, CrateInfo, ModuleKind};
