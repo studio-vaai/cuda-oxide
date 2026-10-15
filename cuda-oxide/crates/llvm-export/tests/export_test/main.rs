@@ -6,6 +6,7 @@
 mod calls_and_addresses;
 mod common;
 mod control_flow;
+mod convergence;
 mod debug_info;
 mod device_externs;
 mod globals;

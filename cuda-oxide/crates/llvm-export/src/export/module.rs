@@ -584,8 +584,9 @@ pub(super) fn export_module_with_externs_impl(
         config.function_local_static_placement(),
     );
     index_module_symbols(&mut state, module)?;
-    prepare_debug_shared_function_scopes(&mut state, module)?;
     index_device_externs(&mut state, device_externs)?;
+    state.infer_convergence(module);
+    prepare_debug_shared_function_scopes(&mut state, module)?;
 
     // 1. Header
     writeln!(
@@ -775,6 +776,7 @@ pub(super) fn export_module_to_string_with_config(
         config.function_local_static_placement(),
     );
     index_module_symbols(&mut state, module)?;
+    state.infer_convergence(module);
     prepare_debug_shared_function_scopes(&mut state, module)?;
 
     // 1. Header

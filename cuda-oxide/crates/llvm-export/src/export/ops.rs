@@ -1740,17 +1740,18 @@ impl<'a> ModuleExportState<'a> {
             }
         }
 
-        // Every device call is emitted `convergent` (attr group #0). GPU code is
-        // convergent-by-default (as in Clang/nvcc): if the callee transitively
-        // performs a barrier / shuffle / vote, `opt -O2` must not sink or
-        // duplicate the call across divergent control flow. opt strips the
-        // attribute from calls it proves never reach a convergent op.
+        // Preserve convergence at calls to collectives and their wrappers.
+        // Indirect targets cannot be proven non-convergent here.
+        let is_convergent = direct_callee_name
+            .as_deref()
+            .is_none_or(|name| self.function_is_convergent(name));
+        let convergence_attr = if is_convergent { " #0" } else { "" };
         write!(output, ")").unwrap();
         if let Some(attrs) = llvm_call_attrs.as_deref() {
             self.export_llvm_attributes(attrs, output)?;
         }
-        writeln!(output, " #0").unwrap();
-        self.convergent_used = true;
+        writeln!(output, "{convergence_attr}").unwrap();
+        self.convergent_used |= is_convergent;
 
         if normalize_pointer_result {
             let decl = device_extern.as_ref().unwrap();
