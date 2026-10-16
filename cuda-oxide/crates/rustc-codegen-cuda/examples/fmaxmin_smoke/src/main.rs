@@ -127,9 +127,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut failed = 0u32;
 
     // ---------- f32 ----------
-    {
-        let a = 1.5_f32;
-        let b = -2.5_f32;
+    for (a, b) in [
+        (1.5_f32, -2.5_f32),
+        (f32::INFINITY, f32::NEG_INFINITY),
+        (f32::from_bits(1), -f32::from_bits(1)),
+    ] {
         let qnan = f32::from_bits(0x7fc1_2345);
         let snan = f32::from_bits(0x7f81_2345);
         let mut out = DeviceBuffer::<u32>::zeroed(&stream, 22)?;
@@ -137,8 +139,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         unsafe { module.fmaxmin_f32_kernel(&stream, cfg, a, b, qnan, snan, &mut out) }?;
         let mut result = out.to_host_vec(&stream)?;
         let expected: [u32; 22] = [
-            a.max(b).to_bits(), // f32::max finite
-            a.min(b).to_bits(), // f32::min finite
+            a.max(b).to_bits(), // f32::max numeric input
+            a.min(b).to_bits(), // f32::min numeric input
             b.to_bits(),
             b.to_bits(),
             b.to_bits(),
@@ -185,9 +187,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // ---------- f64 ----------
-    {
-        let a = 1.5e10_f64;
-        let b = -2.5e10_f64;
+    for (a, b) in [
+        (1.5e10_f64, -2.5e10_f64),
+        (f64::INFINITY, f64::NEG_INFINITY),
+        (f64::from_bits(1), -f64::from_bits(1)),
+    ] {
         let qnan = f64::from_bits(0x7ff8_0000_0001_2345);
         let snan = f64::from_bits(0x7ff0_0000_0001_2345);
         let mut out = DeviceBuffer::<u64>::zeroed(&stream, 22)?;

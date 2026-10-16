@@ -78,7 +78,7 @@ use llvm_export::op_interfaces::{
     BinArithOp, CastOpInterface, CastOpWithNNegInterface, FloatBinArithOpWithFastMathFlags,
     IntBinArithOpWithOverflowFlag,
 };
-use llvm_export::ops as llvm;
+use llvm_export::ops::{self as llvm, AsmKind, InlineAsmOpExt};
 use llvm_export::types as llvm_types;
 use llvm_export::types::PointerTypeExt;
 use pliron::builtin::attributes::IntegerAttr;
@@ -410,16 +410,12 @@ impl RustFloatMathIntrinsic {
             Self::CopysignF64 => Ok("__nv_copysign"),
             // `f32::max` / `f32::min` (and the f64 forms) call the `_nsz`
             // intrinsics, i.e. IEEE-754 maxNum/minNum with the "no signed
-            // zero" relaxation. They expand to an ordered compare/select
-            // sequence under every intrinsic backend (the caller routes them
+            // zero" relaxation. They use native scalar PTX or the existing
+            // compare/select fallback under every backend (the caller routes them
             // through `lower_float_minmax_nsz` before any symbol lookup), so
             // they must never reach a libdevice name.
             Self::MaxNumNszF32 | Self::MaxNumNszF64 | Self::MinNumNszF32 | Self::MinNumNszF64 => {
-                pliron::input_err!(
-                    loc,
-                    "float max/min intrinsics lower to a compare/select \
-                     expansion, never to libdevice"
-                )
+                pliron::input_err!(loc, "float max/min intrinsics lower without libdevice")
             }
             Self::AsinF32 => Ok("__nv_asinf"),
             Self::AsinF64 => Ok("__nv_asin"),
@@ -519,7 +515,7 @@ impl RustFloatMathIntrinsic {
     /// Scope: `max`/`min` deliberately return `None` here. They cannot use
     /// `llvm.maxnum`/`llvm.minnum` at all, because under LLVM 21 those
     /// propagate signaling NaNs and so contradict Rust's contract; they lower
-    /// as an ordered compare/select instead (`lower_float_minmax_nsz`, see
+    /// to scalar PTX or the compare/select fallback (`lower_float_minmax_nsz`, see
     /// #390) and never reach this table.
     ///
     /// Naming: pliron identifiers cannot contain dots, so intrinsic symbols
@@ -1262,8 +1258,8 @@ fn convert_rust_carrying_mul_add(
 /// Lower placeholder calls for rustc's `f32` / `f64` math intrinsics.
 ///
 /// Simple scalar operations go to LLVM intrinsics so the ordinary llc -> PTX
-/// path can lower them directly, and float `max`/`min` expand to an ordered
-/// compare/select. Transcendentals and other libdevice-owned operations still
+/// path can lower them directly, and scalar `max`/`min` use native PTX.
+/// Transcendentals and other libdevice-owned operations still
 /// lower to `__nv_*` calls, which need libdevice linked at the IR level or
 /// the NVVM IR route.
 fn convert_rust_float_math_intrinsic(
@@ -1368,10 +1364,10 @@ fn float_math_intrinsic_symbol(
 ///
 /// LLVM 21's legacy `llvm.maxnum` / `llvm.minnum` intrinsics propagate a
 /// signaling NaN, whereas Rust requires either kind of NaN to be ignored when
-/// paired with a number. Mirror the definition in `core::intrinsics` exactly:
-/// select `y` when `x` is NaN or `y` compares at least/as-most `x`, otherwise
-/// select `x`. An unordered `y` comparison is false, so a NaN in `y` selects
-/// the numeric `x`.
+/// paired with a number. Scalar PTX numeric min/max has Rust's NaN contract,
+/// deterministic signed-zero ordering permitted by `_nsz`, and full subnormal
+/// support without `.ftz`. Preserve the compare/select expansion for types or
+/// predicates without a matching scalar instruction.
 fn lower_float_minmax_nsz(
     ctx: &mut Context,
     rewriter: &mut DialectConversionRewriter,
@@ -1385,6 +1381,37 @@ fn lower_float_minmax_nsz(
             "Rust float min/max intrinsic requires two operands"
         );
     };
+
+    let ty = x.get_type(ctx);
+    let mnemonic = match ordered_predicate {
+        FCmpPredicateAttr::OGE => Some("max"),
+        FCmpPredicateAttr::OLE => Some("min"),
+        _ => None,
+    };
+    let format = if ty.deref(ctx).downcast_ref::<FP32Type>().is_some() {
+        Some(("f32", "=f,f,f"))
+    } else if ty.deref(ctx).downcast_ref::<FP64Type>().is_some() {
+        Some(("f64", "=d,d,d"))
+    } else {
+        None
+    };
+    if let (Some(mnemonic), Some((format, constraints))) = (mnemonic, format)
+        && y.get_type(ctx) == ty
+        && op.deref(ctx).get_result(0).get_type(ctx) == ty
+    {
+        let native = llvm::InlineAsmOp::build(
+            ctx,
+            ty,
+            vec![*x, *y],
+            &format!("{mnemonic}.{format} $0, $1, $2;"),
+            constraints,
+            AsmKind::Pure,
+        )
+        .get_operation();
+        rewriter.insert_operation(ctx, native);
+        rewriter.replace_operation(ctx, op, native);
+        return Ok(());
+    }
 
     let x_is_nan = llvm::FCmpOp::new(ctx, FCmpPredicateAttr::UNO, *x, *x).get_operation();
     set_empty_fastmath_flags(ctx, x_is_nan);
@@ -2290,7 +2317,7 @@ mod tests {
     }
 
     /// The LLVM 21 `maxnum`/`minnum` intrinsics do not match Rust's signaling
-    /// NaN behavior, so these variants use explicit compare/select lowering.
+    /// NaN behavior, so these variants select native PTX or the fallback.
     #[test]
     fn test_float_math_minmax_nsz_predicates() {
         assert_eq!(
