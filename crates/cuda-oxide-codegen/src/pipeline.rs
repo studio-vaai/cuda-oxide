@@ -1036,7 +1036,7 @@ mod tests {
 
     /// Under an explicit NVVM IR request the sign placeholders fall back to
     /// `__nv_fabsf`/`__nv_copysignf` (so libdevice must be predicted), while
-    /// `max`/`min` expand to compare/select under every backend and
+    /// scalar `max`/`min` use native PTX under every backend and
     /// contribute nothing to the prediction.
     #[test]
     fn sign_module_needs_libdevice_under_nvvm_ir_but_minmax_never_does() {
