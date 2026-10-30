@@ -1,0 +1,20 @@
+cargo-features = ["profile-rustflags"]
+
+[package]
+name = "device_convergence"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+# Mark as standalone crate (not part of parent workspace).
+[workspace]
+
+[dependencies]
+cuda-device = { path = "../../../cuda-device" }
+cuda-host = { path = "../../../cuda-host" }
+cuda-core = { path = "../../../../../cuda-core" }
+
+# Keep the wrapper chains visible in the pre-opt LLVM IR, as in inline_intent.
+# Scope this flag to the example so shared dependencies keep their normal keys.
+[profile.release.package.device_convergence]
+rustflags = ["-Zinline-mir=no"]
