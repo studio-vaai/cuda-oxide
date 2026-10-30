@@ -4,6 +4,7 @@
 //! Shared lowering helpers for generated packed arithmetic and conversions.
 
 use crate::convert::intrinsics::common::call_intrinsic;
+use crate::helpers::Intrinsic;
 use crate::{IntrinsicBackend, context};
 use llvm_export::ops::{self as llvm, AsmKind, InlineAsmOpExt};
 use llvm_export::types as llvm_types;
@@ -118,7 +119,7 @@ pub(crate) fn convert_generated_packed_f32x2(
     ctx: &mut Context,
     rewriter: &mut DialectConversionRewriter,
     op: Ptr<Operation>,
-    typed_intrinsic_name: Option<&str>,
+    typed_intrinsic_name: Option<Intrinsic<'_>>,
     ptx_mnemonic: &str,
     result_width: u32,
 ) -> Result<()> {

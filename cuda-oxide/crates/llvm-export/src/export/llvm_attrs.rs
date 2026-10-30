@@ -25,19 +25,20 @@ fn write_quoted_llvm_string(value: &str, output: &mut String) {
 }
 
 impl ModuleExportState<'_> {
-    /// Render LLVM attributes in the textual syntax accepted after function
-    /// signatures and call instructions.
+    /// Render explicit attributes and any additional inferred convergence requirement.
+    /// Functions and calls share this composition so explicit convergence is emitted once.
     ///
-    /// `LlvmAttributesAttr` is the semantic source of truth. Callers must not
-    /// special-case individual attribute names. Payload shapes whose textual
+    /// `LlvmAttributesAttr` supplies explicit semantics; inference may add protection.
+    /// Callers must not special-case individual attribute names. Payload shapes whose textual
     /// spelling is not mechanically derivable are rejected here rather than
     /// silently emitting invalid LLVM IR.
     pub(super) fn export_llvm_attributes(
-        &self,
-        attrs: &LlvmAttributesAttr,
+        &mut self,
+        attrs: Option<&LlvmAttributesAttr>,
+        inferred_convergent: bool,
         output: &mut String,
     ) -> Result<(), String> {
-        for (name, value) in attrs.iter() {
+        for (name, value) in attrs.into_iter().flat_map(|attrs| attrs.iter()) {
             write!(output, " ").unwrap();
             match value {
                 LlvmAttrValue::Unit => write!(output, "{name}").unwrap(),
@@ -57,6 +58,10 @@ impl ModuleExportState<'_> {
                     write_quoted_llvm_string(value, output);
                 }
             }
+        }
+        if inferred_convergent && !attrs.is_some_and(|attrs| attrs.has("convergent")) {
+            write!(output, " #0").unwrap();
+            self.convergent_used = true;
         }
         Ok(())
     }

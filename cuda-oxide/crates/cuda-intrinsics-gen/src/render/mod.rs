@@ -57,6 +57,9 @@ use std::path::PathBuf;
 mod collector_targets;
 mod common;
 mod compat;
+/// Check that aliases agree on exact primitive convergence semantics.
+/// These facts become descriptors in the generated lowering recipes.
+mod convergence;
 mod dialect;
 mod families;
 mod importer;
@@ -76,6 +79,7 @@ pub fn all_outputs(
     catalog_sha256: &str,
 ) -> Result<BTreeMap<PathBuf, String>> {
     validate_renderable(catalog)?;
+    convergence::convergence_facts(catalog)?;
     let mut outputs = BTreeMap::new();
     outputs.insert("intrinsics/catalog.json".into(), catalog_json);
     outputs.insert(

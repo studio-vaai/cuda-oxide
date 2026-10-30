@@ -11,8 +11,8 @@
 
 use crate::conversion_interface::MirToLlvmConversion;
 use crate::convert::intrinsics::{
-    cp_async::convert_generated_cp_async_control, cp_async::convert_generated_cp_async_copy,
-    cp_async::convert_generated_cp_async_mbarrier,
+    common::Intrinsic, cp_async::convert_generated_cp_async_control,
+    cp_async::convert_generated_cp_async_copy, cp_async::convert_generated_cp_async_mbarrier,
 };
 use dialect_nvvm::ops::{
     CpAsyncCa4Op, CpAsyncCa8Op, CpAsyncCa16Op, CpAsyncCaZfill4Op, CpAsyncCaZfill8Op,
@@ -41,7 +41,7 @@ impl MirToLlvmConversion for CpAsyncCa16Op {
             "ca",
             16,
             false,
-            "llvm_nvvm_cp_async_ca_shared_global_16",
+            Intrinsic::new("llvm_nvvm_cp_async_ca_shared_global_16", false),
         )
     }
 }
@@ -61,7 +61,7 @@ impl MirToLlvmConversion for CpAsyncCa4Op {
             "ca",
             4,
             false,
-            "llvm_nvvm_cp_async_ca_shared_global_4",
+            Intrinsic::new("llvm_nvvm_cp_async_ca_shared_global_4", false),
         )
     }
 }
@@ -81,7 +81,7 @@ impl MirToLlvmConversion for CpAsyncCa8Op {
             "ca",
             8,
             false,
-            "llvm_nvvm_cp_async_ca_shared_global_8",
+            Intrinsic::new("llvm_nvvm_cp_async_ca_shared_global_8", false),
         )
     }
 }
@@ -101,7 +101,7 @@ impl MirToLlvmConversion for CpAsyncCaZfill16Op {
             "ca",
             16,
             true,
-            "llvm_nvvm_cp_async_ca_shared_global_16_s",
+            Intrinsic::new("llvm_nvvm_cp_async_ca_shared_global_16_s", false),
         )
     }
 }
@@ -121,7 +121,7 @@ impl MirToLlvmConversion for CpAsyncCaZfill4Op {
             "ca",
             4,
             true,
-            "llvm_nvvm_cp_async_ca_shared_global_4_s",
+            Intrinsic::new("llvm_nvvm_cp_async_ca_shared_global_4_s", false),
         )
     }
 }
@@ -141,7 +141,7 @@ impl MirToLlvmConversion for CpAsyncCaZfill8Op {
             "ca",
             8,
             true,
-            "llvm_nvvm_cp_async_ca_shared_global_8_s",
+            Intrinsic::new("llvm_nvvm_cp_async_ca_shared_global_8_s", false),
         )
     }
 }
@@ -161,7 +161,7 @@ impl MirToLlvmConversion for CpAsyncCg16Op {
             "cg",
             16,
             false,
-            "llvm_nvvm_cp_async_cg_shared_global_16",
+            Intrinsic::new("llvm_nvvm_cp_async_cg_shared_global_16", false),
         )
     }
 }
@@ -181,7 +181,7 @@ impl MirToLlvmConversion for CpAsyncCgZfill16Op {
             "cg",
             16,
             true,
-            "llvm_nvvm_cp_async_cg_shared_global_16_s",
+            Intrinsic::new("llvm_nvvm_cp_async_cg_shared_global_16_s", false),
         )
     }
 }
@@ -199,7 +199,7 @@ impl MirToLlvmConversion for CpAsyncCommitGroupOp {
             rewriter,
             self.get_operation(),
             "commit_group",
-            "llvm_nvvm_cp_async_commit_group",
+            Intrinsic::new("llvm_nvvm_cp_async_commit_group", false),
         )
     }
 }
@@ -217,7 +217,7 @@ impl MirToLlvmConversion for CpAsyncWaitAllOp {
             rewriter,
             self.get_operation(),
             "wait_all",
-            "llvm_nvvm_cp_async_wait_all",
+            Intrinsic::new("llvm_nvvm_cp_async_wait_all", false),
         )
     }
 }
@@ -235,7 +235,7 @@ impl MirToLlvmConversion for CpAsyncWaitGroupOp {
             rewriter,
             self.get_operation(),
             "wait_group",
-            "llvm_nvvm_cp_async_wait_group",
+            Intrinsic::new("llvm_nvvm_cp_async_wait_group", false),
         )
     }
 }
@@ -254,7 +254,7 @@ impl MirToLlvmConversion for CpAsyncMbarrierArriveOp {
             self.get_operation(),
             "arrive",
             "generic",
-            "llvm_nvvm_cp_async_mbarrier_arrive",
+            Intrinsic::new("llvm_nvvm_cp_async_mbarrier_arrive", true),
         )
     }
 }
@@ -273,7 +273,7 @@ impl MirToLlvmConversion for CpAsyncMbarrierArriveNoIncOp {
             self.get_operation(),
             "arrive_no_inc",
             "generic",
-            "llvm_nvvm_cp_async_mbarrier_arrive_noinc",
+            Intrinsic::new("llvm_nvvm_cp_async_mbarrier_arrive_noinc", true),
         )
     }
 }
@@ -292,7 +292,7 @@ impl MirToLlvmConversion for CpAsyncMbarrierArriveNoIncSharedOp {
             self.get_operation(),
             "arrive_no_inc",
             "shared",
-            "llvm_nvvm_cp_async_mbarrier_arrive_noinc_shared",
+            Intrinsic::new("llvm_nvvm_cp_async_mbarrier_arrive_noinc_shared", true),
         )
     }
 }
@@ -311,7 +311,7 @@ impl MirToLlvmConversion for CpAsyncMbarrierArriveSharedOp {
             self.get_operation(),
             "arrive",
             "shared",
-            "llvm_nvvm_cp_async_mbarrier_arrive_shared",
+            Intrinsic::new("llvm_nvvm_cp_async_mbarrier_arrive_shared", true),
         )
     }
 }

@@ -10,7 +10,7 @@
 //! Generated conversion interfaces: `warp_barrier` intrinsics.
 
 use crate::conversion_interface::MirToLlvmConversion;
-use crate::convert::intrinsics::warp::convert_bar_warp_sync;
+use crate::convert::intrinsics::{common::Intrinsic, warp::convert_bar_warp_sync};
 use dialect_nvvm::ops::BarWarpSyncOp;
 use pliron::context::Context;
 use pliron::derive::op_interface_impl;
@@ -26,6 +26,12 @@ impl MirToLlvmConversion for BarWarpSyncOp {
         rewriter: &mut DialectConversionRewriter,
         operands_info: &OperandsInfo,
     ) -> Result<()> {
-        convert_bar_warp_sync(ctx, rewriter, self.get_operation(), operands_info)
+        convert_bar_warp_sync(
+            ctx,
+            rewriter,
+            self.get_operation(),
+            operands_info,
+            Intrinsic::new("llvm_nvvm_bar_warp_sync", true),
+        )
     }
 }

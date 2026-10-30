@@ -264,9 +264,9 @@ fn grid_constant_legacy_compiles_to_exact_ptx_parameter_storage() {
     // #[inline(never)] alone does not constrain later LLVM/NVVM inlining.
     for noinline in [false, true] {
         let ir = if noinline {
-            let signature = "define i8 @read_last_byte(i8* %v0) #0";
+            let signature = "define i8 @read_last_byte(i8* %v0) {";
             assert!(ir.contains(signature), "{ir}");
-            ir.replace(signature, "define i8 @read_last_byte(i8* %v0) noinline #0")
+            ir.replace(signature, "define i8 @read_last_byte(i8* %v0) noinline {")
         } else {
             ir.clone()
         };

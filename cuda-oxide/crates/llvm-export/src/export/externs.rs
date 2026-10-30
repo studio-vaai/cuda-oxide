@@ -223,15 +223,12 @@ pub struct DeviceExternDecl {
     pub attrs: DeviceExternAttrs,
 }
 
-/// NVVM attributes for device extern declarations.
+/// Semantic requirements for device extern declarations.
 ///
-/// NOTE: These attributes are currently **not emitted** to the LLVM IR output.
-/// When linking LTOIR via nvJitLink, the external library's LTOIR already contains
-/// proper attributes (convergent, nounwind, memory, etc.) on the function DEFINITIONS.
-/// nvJitLink uses the definition's attributes during LTO, making attributes on
-/// declarations redundant.
-///
-/// This struct is retained for potential future use or for debugging/inspection.
+/// Convergence participates in call-graph analysis and is retained on emitted
+/// declarations before native optimization. Purity and read-only flags are
+/// preserved as metadata but are not emitted here; the external library's LTOIR
+/// supplies its memory attributes during linking. Neither flag proves non-convergence.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct DeviceExternAttrs {
     /// Function is convergent (all threads must execute together).

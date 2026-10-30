@@ -10,7 +10,7 @@
 //! Generated conversion interfaces: `ldmatrix` intrinsics.
 
 use crate::conversion_interface::MirToLlvmConversion;
-use crate::convert::intrinsics::ldmatrix::convert_generated_ldmatrix;
+use crate::convert::intrinsics::{common::Intrinsic, ldmatrix::convert_generated_ldmatrix};
 use dialect_nvvm::ops::{
     LdmatrixElementAttr, LdmatrixLayoutAttr, LdmatrixMultiplicityAttr, LdmatrixOp,
     LdmatrixShapeAttr, LdmatrixStateSpaceAttr, LdmatrixX1Op, LdmatrixX1TransOp, LdmatrixX2Op,
@@ -52,7 +52,10 @@ impl MirToLlvmConversion for LdmatrixOp {
                 ) => (
                     2,
                     "ldmatrix.sync.aligned.m16n16.x1.trans.shared.b8",
-                    "llvm_nvvm_ldmatrix_sync_aligned_m16n16_x1_trans_b8_p3",
+                    Intrinsic::new(
+                        "llvm_nvvm_ldmatrix_sync_aligned_m16n16_x1_trans_b8_p3",
+                        true,
+                    ),
                 ),
                 (
                     Some(&LdmatrixShapeAttr::M16n16),
@@ -63,7 +66,10 @@ impl MirToLlvmConversion for LdmatrixOp {
                 ) => (
                     2,
                     "ldmatrix.sync.aligned.m16n16.x1.trans.shared.b8x16.b4x16_p64",
-                    "llvm__nvvm_dldmatrix_dsync_daligned_dm16n16_dx1_dtrans_db8x16_db4x16_up64_dp3",
+                    Intrinsic::new(
+                        "llvm__nvvm_dldmatrix_dsync_daligned_dm16n16_dx1_dtrans_db8x16_db4x16_up64_dp3",
+                        true,
+                    ),
                 ),
                 (
                     Some(&LdmatrixShapeAttr::M16n16),
@@ -74,7 +80,10 @@ impl MirToLlvmConversion for LdmatrixOp {
                 ) => (
                     2,
                     "ldmatrix.sync.aligned.m16n16.x1.trans.shared.b8x16.b6x16_p32",
-                    "llvm__nvvm_dldmatrix_dsync_daligned_dm16n16_dx1_dtrans_db8x16_db6x16_up32_dp3",
+                    Intrinsic::new(
+                        "llvm__nvvm_dldmatrix_dsync_daligned_dm16n16_dx1_dtrans_db8x16_db6x16_up32_dp3",
+                        true,
+                    ),
                 ),
                 (
                     Some(&LdmatrixShapeAttr::M16n16),
@@ -85,7 +94,10 @@ impl MirToLlvmConversion for LdmatrixOp {
                 ) => (
                     4,
                     "ldmatrix.sync.aligned.m16n16.x2.trans.shared.b8",
-                    "llvm_nvvm_ldmatrix_sync_aligned_m16n16_x2_trans_b8_p3",
+                    Intrinsic::new(
+                        "llvm_nvvm_ldmatrix_sync_aligned_m16n16_x2_trans_b8_p3",
+                        true,
+                    ),
                 ),
                 (
                     Some(&LdmatrixShapeAttr::M16n16),
@@ -96,7 +108,10 @@ impl MirToLlvmConversion for LdmatrixOp {
                 ) => (
                     4,
                     "ldmatrix.sync.aligned.m16n16.x2.trans.shared.b8x16.b4x16_p64",
-                    "llvm__nvvm_dldmatrix_dsync_daligned_dm16n16_dx2_dtrans_db8x16_db4x16_up64_dp3",
+                    Intrinsic::new(
+                        "llvm__nvvm_dldmatrix_dsync_daligned_dm16n16_dx2_dtrans_db8x16_db4x16_up64_dp3",
+                        true,
+                    ),
                 ),
                 (
                     Some(&LdmatrixShapeAttr::M16n16),
@@ -107,7 +122,10 @@ impl MirToLlvmConversion for LdmatrixOp {
                 ) => (
                     4,
                     "ldmatrix.sync.aligned.m16n16.x2.trans.shared.b8x16.b6x16_p32",
-                    "llvm__nvvm_dldmatrix_dsync_daligned_dm16n16_dx2_dtrans_db8x16_db6x16_up32_dp3",
+                    Intrinsic::new(
+                        "llvm__nvvm_dldmatrix_dsync_daligned_dm16n16_dx2_dtrans_db8x16_db6x16_up32_dp3",
+                        true,
+                    ),
                 ),
                 (
                     Some(&LdmatrixShapeAttr::M8n16),
@@ -118,7 +136,10 @@ impl MirToLlvmConversion for LdmatrixOp {
                 ) => (
                     1,
                     "ldmatrix.sync.aligned.m8n16.x1.shared.b8x16.b4x16_p64",
-                    "llvm__nvvm_dldmatrix_dsync_daligned_dm8n16_dx1_db8x16_db4x16_up64_dp3",
+                    Intrinsic::new(
+                        "llvm__nvvm_dldmatrix_dsync_daligned_dm8n16_dx1_db8x16_db4x16_up64_dp3",
+                        true,
+                    ),
                 ),
                 (
                     Some(&LdmatrixShapeAttr::M8n16),
@@ -129,7 +150,10 @@ impl MirToLlvmConversion for LdmatrixOp {
                 ) => (
                     1,
                     "ldmatrix.sync.aligned.m8n16.x1.shared.b8x16.b6x16_p32",
-                    "llvm__nvvm_dldmatrix_dsync_daligned_dm8n16_dx1_db8x16_db6x16_up32_dp3",
+                    Intrinsic::new(
+                        "llvm__nvvm_dldmatrix_dsync_daligned_dm8n16_dx1_db8x16_db6x16_up32_dp3",
+                        true,
+                    ),
                 ),
                 (
                     Some(&LdmatrixShapeAttr::M8n16),
@@ -140,7 +164,10 @@ impl MirToLlvmConversion for LdmatrixOp {
                 ) => (
                     2,
                     "ldmatrix.sync.aligned.m8n16.x2.shared.b8x16.b4x16_p64",
-                    "llvm__nvvm_dldmatrix_dsync_daligned_dm8n16_dx2_db8x16_db4x16_up64_dp3",
+                    Intrinsic::new(
+                        "llvm__nvvm_dldmatrix_dsync_daligned_dm8n16_dx2_db8x16_db4x16_up64_dp3",
+                        true,
+                    ),
                 ),
                 (
                     Some(&LdmatrixShapeAttr::M8n16),
@@ -151,7 +178,10 @@ impl MirToLlvmConversion for LdmatrixOp {
                 ) => (
                     2,
                     "ldmatrix.sync.aligned.m8n16.x2.shared.b8x16.b6x16_p32",
-                    "llvm__nvvm_dldmatrix_dsync_daligned_dm8n16_dx2_db8x16_db6x16_up32_dp3",
+                    Intrinsic::new(
+                        "llvm__nvvm_dldmatrix_dsync_daligned_dm8n16_dx2_db8x16_db6x16_up32_dp3",
+                        true,
+                    ),
                 ),
                 (
                     Some(&LdmatrixShapeAttr::M8n16),
@@ -162,7 +192,10 @@ impl MirToLlvmConversion for LdmatrixOp {
                 ) => (
                     4,
                     "ldmatrix.sync.aligned.m8n16.x4.shared.b8x16.b4x16_p64",
-                    "llvm__nvvm_dldmatrix_dsync_daligned_dm8n16_dx4_db8x16_db4x16_up64_dp3",
+                    Intrinsic::new(
+                        "llvm__nvvm_dldmatrix_dsync_daligned_dm8n16_dx4_db8x16_db4x16_up64_dp3",
+                        true,
+                    ),
                 ),
                 (
                     Some(&LdmatrixShapeAttr::M8n16),
@@ -173,7 +206,10 @@ impl MirToLlvmConversion for LdmatrixOp {
                 ) => (
                     4,
                     "ldmatrix.sync.aligned.m8n16.x4.shared.b8x16.b6x16_p32",
-                    "llvm__nvvm_dldmatrix_dsync_daligned_dm8n16_dx4_db8x16_db6x16_up32_dp3",
+                    Intrinsic::new(
+                        "llvm__nvvm_dldmatrix_dsync_daligned_dm8n16_dx4_db8x16_db6x16_up32_dp3",
+                        true,
+                    ),
                 ),
                 (
                     Some(&LdmatrixShapeAttr::M8n8),
@@ -184,7 +220,7 @@ impl MirToLlvmConversion for LdmatrixOp {
                 ) => (
                     1,
                     "ldmatrix.sync.aligned.m8n8.x1.shared.b16",
-                    "llvm_nvvm_ldmatrix_sync_aligned_m8n8_x1_b16_p3",
+                    Intrinsic::new("llvm_nvvm_ldmatrix_sync_aligned_m8n8_x1_b16_p3", true),
                 ),
                 (
                     Some(&LdmatrixShapeAttr::M8n8),
@@ -195,7 +231,7 @@ impl MirToLlvmConversion for LdmatrixOp {
                 ) => (
                     1,
                     "ldmatrix.sync.aligned.m8n8.x1.trans.shared.b16",
-                    "llvm_nvvm_ldmatrix_sync_aligned_m8n8_x1_trans_b16_p3",
+                    Intrinsic::new("llvm_nvvm_ldmatrix_sync_aligned_m8n8_x1_trans_b16_p3", true),
                 ),
                 (
                     Some(&LdmatrixShapeAttr::M8n8),
@@ -206,7 +242,7 @@ impl MirToLlvmConversion for LdmatrixOp {
                 ) => (
                     2,
                     "ldmatrix.sync.aligned.m8n8.x2.shared.b16",
-                    "llvm_nvvm_ldmatrix_sync_aligned_m8n8_x2_b16_p3",
+                    Intrinsic::new("llvm_nvvm_ldmatrix_sync_aligned_m8n8_x2_b16_p3", true),
                 ),
                 (
                     Some(&LdmatrixShapeAttr::M8n8),
@@ -217,7 +253,7 @@ impl MirToLlvmConversion for LdmatrixOp {
                 ) => (
                     2,
                     "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16",
-                    "llvm_nvvm_ldmatrix_sync_aligned_m8n8_x2_trans_b16_p3",
+                    Intrinsic::new("llvm_nvvm_ldmatrix_sync_aligned_m8n8_x2_trans_b16_p3", true),
                 ),
                 (
                     Some(&LdmatrixShapeAttr::M8n8),
@@ -228,7 +264,7 @@ impl MirToLlvmConversion for LdmatrixOp {
                 ) => (
                     4,
                     "ldmatrix.sync.aligned.m8n8.x4.shared.b16",
-                    "llvm_nvvm_ldmatrix_sync_aligned_m8n8_x4_b16_p3",
+                    Intrinsic::new("llvm_nvvm_ldmatrix_sync_aligned_m8n8_x4_b16_p3", true),
                 ),
                 (
                     Some(&LdmatrixShapeAttr::M8n8),
@@ -239,7 +275,7 @@ impl MirToLlvmConversion for LdmatrixOp {
                 ) => (
                     4,
                     "ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16",
-                    "llvm_nvvm_ldmatrix_sync_aligned_m8n8_x4_trans_b16_p3",
+                    Intrinsic::new("llvm_nvvm_ldmatrix_sync_aligned_m8n8_x4_trans_b16_p3", true),
                 ),
                 _ => {
                     return pliron::input_err!(
@@ -274,7 +310,7 @@ impl MirToLlvmConversion for LdmatrixX1Op {
             self.get_operation(),
             1,
             "ldmatrix.sync.aligned.m8n8.x1.shared.b16",
-            "llvm_nvvm_ldmatrix_sync_aligned_m8n8_x1_b16_p3",
+            Intrinsic::new("llvm_nvvm_ldmatrix_sync_aligned_m8n8_x1_b16_p3", true),
         )
     }
 }
@@ -293,7 +329,7 @@ impl MirToLlvmConversion for LdmatrixX1TransOp {
             self.get_operation(),
             1,
             "ldmatrix.sync.aligned.m8n8.x1.trans.shared.b16",
-            "llvm_nvvm_ldmatrix_sync_aligned_m8n8_x1_trans_b16_p3",
+            Intrinsic::new("llvm_nvvm_ldmatrix_sync_aligned_m8n8_x1_trans_b16_p3", true),
         )
     }
 }
@@ -312,7 +348,7 @@ impl MirToLlvmConversion for LdmatrixX2Op {
             self.get_operation(),
             2,
             "ldmatrix.sync.aligned.m8n8.x2.shared.b16",
-            "llvm_nvvm_ldmatrix_sync_aligned_m8n8_x2_b16_p3",
+            Intrinsic::new("llvm_nvvm_ldmatrix_sync_aligned_m8n8_x2_b16_p3", true),
         )
     }
 }
@@ -331,7 +367,7 @@ impl MirToLlvmConversion for LdmatrixX2TransOp {
             self.get_operation(),
             2,
             "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16",
-            "llvm_nvvm_ldmatrix_sync_aligned_m8n8_x2_trans_b16_p3",
+            Intrinsic::new("llvm_nvvm_ldmatrix_sync_aligned_m8n8_x2_trans_b16_p3", true),
         )
     }
 }
@@ -350,7 +386,7 @@ impl MirToLlvmConversion for LdmatrixX4Op {
             self.get_operation(),
             4,
             "ldmatrix.sync.aligned.m8n8.x4.shared.b16",
-            "llvm_nvvm_ldmatrix_sync_aligned_m8n8_x4_b16_p3",
+            Intrinsic::new("llvm_nvvm_ldmatrix_sync_aligned_m8n8_x4_b16_p3", true),
         )
     }
 }
@@ -369,7 +405,7 @@ impl MirToLlvmConversion for LdmatrixX4TransOp {
             self.get_operation(),
             4,
             "ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16",
-            "llvm_nvvm_ldmatrix_sync_aligned_m8n8_x4_trans_b16_p3",
+            Intrinsic::new("llvm_nvvm_ldmatrix_sync_aligned_m8n8_x4_trans_b16_p3", true),
         )
     }
 }

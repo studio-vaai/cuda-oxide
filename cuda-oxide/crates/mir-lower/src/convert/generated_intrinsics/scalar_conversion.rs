@@ -10,7 +10,9 @@
 //! Generated conversion interfaces: `scalar_conversion` intrinsics.
 
 use crate::conversion_interface::MirToLlvmConversion;
-use crate::convert::intrinsics::scalar_conversion::convert_generated_scalar_conversion;
+use crate::convert::intrinsics::{
+    common::Intrinsic, scalar_conversion::convert_generated_scalar_conversion,
+};
 use dialect_nvvm::ops::{
     ScalarConversionOp, ScalarConversionRoundingAttr, ScalarConversionSaturationAttr,
 };
@@ -38,51 +40,72 @@ impl MirToLlvmConversion for ScalarConversionOp {
                 Some(&ScalarConversionRoundingAttr::NearestEven),
                 Some(&ScalarConversionSaturationAttr::ReluSatfinite),
             ) => (
-                "llvm_nvvm_f2tf32_rn_relu_satfinite",
+                Intrinsic::new("llvm_nvvm_f2tf32_rn_relu_satfinite", false),
                 "cvt.rn.relu.satfinite.tf32.f32",
             ),
             (
                 Some(&ScalarConversionRoundingAttr::NearestEven),
                 Some(&ScalarConversionSaturationAttr::Relu),
-            ) => ("llvm_nvvm_f2tf32_rn_relu", "cvt.rn.relu.tf32.f32"),
+            ) => (
+                Intrinsic::new("llvm_nvvm_f2tf32_rn_relu", false),
+                "cvt.rn.relu.tf32.f32",
+            ),
             (
                 Some(&ScalarConversionRoundingAttr::NearestEven),
                 Some(&ScalarConversionSaturationAttr::Satfinite),
-            ) => ("llvm_nvvm_f2tf32_rn_satfinite", "cvt.rn.satfinite.tf32.f32"),
+            ) => (
+                Intrinsic::new("llvm_nvvm_f2tf32_rn_satfinite", false),
+                "cvt.rn.satfinite.tf32.f32",
+            ),
             (
                 Some(&ScalarConversionRoundingAttr::NearestEven),
                 Some(&ScalarConversionSaturationAttr::None),
-            ) => ("llvm_nvvm_f2tf32_rn", "cvt.rn.tf32.f32"),
+            ) => (
+                Intrinsic::new("llvm_nvvm_f2tf32_rn", false),
+                "cvt.rn.tf32.f32",
+            ),
             (
                 Some(&ScalarConversionRoundingAttr::NearestAway),
                 Some(&ScalarConversionSaturationAttr::Satfinite),
             ) => (
-                "llvm_nvvm_f2tf32_rna_satfinite",
+                Intrinsic::new("llvm_nvvm_f2tf32_rna_satfinite", false),
                 "cvt.rna.satfinite.tf32.f32",
             ),
             (
                 Some(&ScalarConversionRoundingAttr::NearestAway),
                 Some(&ScalarConversionSaturationAttr::None),
-            ) => ("llvm_nvvm_f2tf32_rna", "cvt.rna.tf32.f32"),
+            ) => (
+                Intrinsic::new("llvm_nvvm_f2tf32_rna", false),
+                "cvt.rna.tf32.f32",
+            ),
             (
                 Some(&ScalarConversionRoundingAttr::TowardZero),
                 Some(&ScalarConversionSaturationAttr::ReluSatfinite),
             ) => (
-                "llvm_nvvm_f2tf32_rz_relu_satfinite",
+                Intrinsic::new("llvm_nvvm_f2tf32_rz_relu_satfinite", false),
                 "cvt.rz.relu.satfinite.tf32.f32",
             ),
             (
                 Some(&ScalarConversionRoundingAttr::TowardZero),
                 Some(&ScalarConversionSaturationAttr::Relu),
-            ) => ("llvm_nvvm_f2tf32_rz_relu", "cvt.rz.relu.tf32.f32"),
+            ) => (
+                Intrinsic::new("llvm_nvvm_f2tf32_rz_relu", false),
+                "cvt.rz.relu.tf32.f32",
+            ),
             (
                 Some(&ScalarConversionRoundingAttr::TowardZero),
                 Some(&ScalarConversionSaturationAttr::Satfinite),
-            ) => ("llvm_nvvm_f2tf32_rz_satfinite", "cvt.rz.satfinite.tf32.f32"),
+            ) => (
+                Intrinsic::new("llvm_nvvm_f2tf32_rz_satfinite", false),
+                "cvt.rz.satfinite.tf32.f32",
+            ),
             (
                 Some(&ScalarConversionRoundingAttr::TowardZero),
                 Some(&ScalarConversionSaturationAttr::None),
-            ) => ("llvm_nvvm_f2tf32_rz", "cvt.rz.tf32.f32"),
+            ) => (
+                Intrinsic::new("llvm_nvvm_f2tf32_rz", false),
+                "cvt.rz.tf32.f32",
+            ),
             _ => {
                 return pliron::input_err!(
                     self.get_operation().deref(ctx).loc(),

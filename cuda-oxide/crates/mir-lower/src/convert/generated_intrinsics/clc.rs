@@ -11,7 +11,7 @@
 
 use crate::conversion_interface::MirToLlvmConversion;
 use crate::convert::intrinsics::{
-    clc::convert_generated_clc_query, clc::convert_generated_clc_try_cancel,
+    clc::convert_generated_clc_query, clc::convert_generated_clc_try_cancel, common::Intrinsic,
 };
 use dialect_nvvm::ops::{
     ClcQueryGetFirstCtaidXOp, ClcQueryGetFirstCtaidYOp, ClcQueryGetFirstCtaidZOp,
@@ -36,7 +36,10 @@ impl MirToLlvmConversion for ClcQueryGetFirstCtaidXOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm__nvvm_dclusterlaunchcontrol_dquery_ucancel_dget_ufirst_uctaid_dx",
+            Intrinsic::new(
+                "llvm__nvvm_dclusterlaunchcontrol_dquery_ucancel_dget_ufirst_uctaid_dx",
+                false,
+            ),
             false,
         )
     }
@@ -55,7 +58,10 @@ impl MirToLlvmConversion for ClcQueryGetFirstCtaidYOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm__nvvm_dclusterlaunchcontrol_dquery_ucancel_dget_ufirst_uctaid_dy",
+            Intrinsic::new(
+                "llvm__nvvm_dclusterlaunchcontrol_dquery_ucancel_dget_ufirst_uctaid_dy",
+                false,
+            ),
             false,
         )
     }
@@ -74,7 +80,10 @@ impl MirToLlvmConversion for ClcQueryGetFirstCtaidZOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm__nvvm_dclusterlaunchcontrol_dquery_ucancel_dget_ufirst_uctaid_dz",
+            Intrinsic::new(
+                "llvm__nvvm_dclusterlaunchcontrol_dquery_ucancel_dget_ufirst_uctaid_dz",
+                false,
+            ),
             false,
         )
     }
@@ -93,7 +102,10 @@ impl MirToLlvmConversion for ClcQueryIsCanceledOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm__nvvm_dclusterlaunchcontrol_dquery_ucancel_dis_ucanceled",
+            Intrinsic::new(
+                "llvm__nvvm_dclusterlaunchcontrol_dquery_ucancel_dis_ucanceled",
+                false,
+            ),
             true,
         )
     }
@@ -112,7 +124,10 @@ impl MirToLlvmConversion for ClcTryCancelOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm__nvvm_dclusterlaunchcontrol_dtry_ucancel_dasync_dshared",
+            Intrinsic::new(
+                "llvm__nvvm_dclusterlaunchcontrol_dtry_ucancel_dasync_dshared",
+                false,
+            ),
         )
     }
 }
@@ -130,7 +145,10 @@ impl MirToLlvmConversion for ClcTryCancelMulticastOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm__nvvm_dclusterlaunchcontrol_dtry_ucancel_dasync_dmulticast_dshared",
+            Intrinsic::new(
+                "llvm__nvvm_dclusterlaunchcontrol_dtry_ucancel_dasync_dmulticast_dshared",
+                false,
+            ),
         )
     }
 }

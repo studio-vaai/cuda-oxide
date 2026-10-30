@@ -585,8 +585,10 @@ pub(super) fn export_module_with_externs_impl(
         config.function_local_static_placement(),
     );
     index_module_symbols(&mut state, module)?;
-    prepare_debug_shared_function_scopes(&mut state, module)?;
     index_device_externs(&mut state, device_externs)?;
+    state.convergence =
+        super::convergence::analyze_convergence(ctx, module, state.device_externs.values())?;
+    prepare_debug_shared_function_scopes(&mut state, module)?;
 
     // 1. Header
     writeln!(
@@ -610,14 +612,9 @@ pub(super) fn export_module_with_externs_impl(
     writeln!(&mut output, "target triple = \"nvptx64-nvidia-cuda\"").unwrap();
     writeln!(&mut output).unwrap();
 
-    // 2. Device extern declarations (before function definitions)
-    //
-    // NOTE: We intentionally do NOT emit LLVM attributes on these declarations.
-    // The external LTOIR (from nvcc -dc -dlto) already contains proper attributes
-    // (convergent, nounwind, memory, etc.) on the function DEFINITIONS.
-    // When nvJitLink performs LTO linking, it uses the definition's attributes.
-    // Attributes on declarations are redundant and were causing issues where
-    // all externs incorrectly got the same attribute group.
+    // 2. Device extern declarations use the same completed convergence result
+    // as normal LLVM declarations and calls. Link-time attributes cannot protect
+    // an earlier native optimization pass, so retain convergence here as well.
     if !device_externs.is_empty() {
         writeln!(
             &mut output,
@@ -645,7 +642,13 @@ pub(super) fn export_module_with_externs_impl(
                 }
                 param.write_llvm_with_attr(&mut output, state.legacy_typed_pointers())?;
             }
-            writeln!(&mut output, ")").unwrap();
+            write!(&mut output, ")").unwrap();
+            state.export_llvm_attributes(
+                None,
+                state.convergence.function_is_convergent(&decl.export_name),
+                &mut output,
+            )?;
+            writeln!(&mut output).unwrap();
         }
         writeln!(&mut output).unwrap();
     }
@@ -713,7 +716,6 @@ pub(super) fn export_module_with_externs_impl(
     }
 
     // 6. Emit attribute groups for convergent intrinsics used by module functions
-    // Note: Device extern declarations no longer get attribute groups - see section 2 comment.
     if state.convergent_used {
         writeln!(&mut output).unwrap();
         writeln!(&mut output, "attributes #0 = {{ convergent }}").unwrap();
@@ -782,6 +784,8 @@ pub(super) fn export_module_to_string_with_config(
         config.function_local_static_placement(),
     );
     index_module_symbols(&mut state, module)?;
+    state.convergence =
+        super::convergence::analyze_convergence(ctx, module, state.device_externs.values())?;
     prepare_debug_shared_function_scopes(&mut state, module)?;
 
     // 1. Header

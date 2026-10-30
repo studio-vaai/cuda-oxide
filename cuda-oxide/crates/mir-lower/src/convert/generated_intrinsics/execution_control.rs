@@ -11,8 +11,8 @@
 
 use crate::conversion_interface::MirToLlvmConversion;
 use crate::convert::intrinsics::{
-    execution_control::convert_counted_barrier, execution_control::convert_grid_dependency,
-    execution_control::convert_setmaxnreg,
+    common::Intrinsic, execution_control::convert_counted_barrier,
+    execution_control::convert_grid_dependency, execution_control::convert_setmaxnreg,
 };
 use dialect_nvvm::ops::{
     BarrierCtaArriveAlignedCountOp, BarrierCtaArriveCountOp, BarrierCtaSyncAlignedCountOp,
@@ -38,7 +38,7 @@ impl MirToLlvmConversion for BarrierCtaArriveCountOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_barrier_cta_arrive_count",
+            Intrinsic::new("llvm_nvvm_barrier_cta_arrive_count", true),
             "barrier.arrive $0, $1;",
         )
     }
@@ -57,7 +57,7 @@ impl MirToLlvmConversion for BarrierCtaArriveAlignedCountOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_barrier_cta_arrive_aligned_count",
+            Intrinsic::new("llvm_nvvm_barrier_cta_arrive_aligned_count", true),
             "bar.arrive $0, $1;",
         )
     }
@@ -76,7 +76,7 @@ impl MirToLlvmConversion for BarrierCtaSyncCountOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_barrier_cta_sync_count",
+            Intrinsic::new("llvm_nvvm_barrier_cta_sync_count", true),
             "barrier.sync $0, $1;",
         )
     }
@@ -95,7 +95,7 @@ impl MirToLlvmConversion for BarrierCtaSyncAlignedCountOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_barrier_cta_sync_aligned_count",
+            Intrinsic::new("llvm_nvvm_barrier_cta_sync_aligned_count", true),
             "bar.sync $0, $1;",
         )
     }
@@ -114,7 +114,7 @@ impl MirToLlvmConversion for GridDependencyLaunchDependentsOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_griddepcontrol_launch_dependents",
+            Intrinsic::new("llvm_nvvm_griddepcontrol_launch_dependents", false),
             "griddepcontrol.launch_dependents;",
         )
     }
@@ -133,7 +133,7 @@ impl MirToLlvmConversion for GridDependencyWaitOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_griddepcontrol_wait",
+            Intrinsic::new("llvm_nvvm_griddepcontrol_wait", false),
             "griddepcontrol.wait;",
         )
     }
@@ -156,7 +156,7 @@ impl MirToLlvmConversion for SetMaxNRegDecOp {
             self.get_operation(),
             operands_info,
             register_count,
-            "llvm_nvvm_setmaxnreg_dec_sync_aligned_u32",
+            Intrinsic::new("llvm_nvvm_setmaxnreg_dec_sync_aligned_u32", true),
             "dec",
         )
     }
@@ -179,7 +179,7 @@ impl MirToLlvmConversion for SetMaxNRegIncOp {
             self.get_operation(),
             operands_info,
             register_count,
-            "llvm_nvvm_setmaxnreg_inc_sync_aligned_u32",
+            Intrinsic::new("llvm_nvvm_setmaxnreg_inc_sync_aligned_u32", true),
             "inc",
         )
     }

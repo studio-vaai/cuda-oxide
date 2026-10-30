@@ -26,6 +26,7 @@
 //! # Module Structure
 //!
 //! - `config`: backend configuration trait and built-in implementations
+//! - `convergence`: read-only call-graph analysis and intrinsic semantic policy
 //! - `externs`: device extern declaration types for FFI with external LTOIR
 //! - `state`: exporter state and kernel bookkeeping
 //! - `names`: value names, block labels, symbol normalization
@@ -37,6 +38,7 @@
 //! - `metadata`: nvvm annotations and version, llvm.used
 
 mod config;
+mod convergence;
 mod debug;
 mod externs;
 mod function;

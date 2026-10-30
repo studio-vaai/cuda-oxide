@@ -10,7 +10,9 @@
 //! Generated conversion interfaces: `active_mask` intrinsics.
 
 use crate::conversion_interface::MirToLlvmConversion;
-use crate::convert::intrinsics::{common::inline_asm_convergent, warp::convert_active_mask};
+use crate::convert::intrinsics::{
+    common::Intrinsic, common::inline_asm_convergent, warp::convert_active_mask,
+};
 use crate::{IntrinsicBackend, context};
 use dialect_nvvm::ops::ActiveMaskOp;
 use pliron::builtin::types::{IntegerType, Signedness};
@@ -31,7 +33,13 @@ impl MirToLlvmConversion for ActiveMaskOp {
     ) -> Result<()> {
         let op = self.get_operation();
         match context::lowering_options(ctx).intrinsic_backend {
-            IntrinsicBackend::LlvmNvptx => convert_active_mask(ctx, rewriter, op, operands_info),
+            IntrinsicBackend::LlvmNvptx => convert_active_mask(
+                ctx,
+                rewriter,
+                op,
+                operands_info,
+                Intrinsic::new("llvm_nvvm_activemask", true),
+            ),
             IntrinsicBackend::LibNvvm => {
                 let i32_ty = IntegerType::get(ctx, 32, Signedness::Signless);
                 let inline_asm = inline_asm_convergent(

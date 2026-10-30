@@ -11,6 +11,7 @@
 //! boundary; the libNVVM route passes the u32 address directly to inline PTX.
 
 use crate::convert::intrinsics::common::{call_intrinsic, inline_asm_convergent};
+use crate::helpers::Intrinsic;
 use crate::{IntrinsicBackend, context};
 use llvm_export::op_interfaces::CastOpInterface;
 use llvm_export::{ops as llvm, types as llvm_types};
@@ -50,7 +51,7 @@ pub(crate) fn convert_generated_ldmatrix<I: LdmatrixInstructionHead>(
     op: Ptr<Operation>,
     register_count: usize,
     instruction_head: I,
-    typed_intrinsic_name: &str,
+    typed_intrinsic_name: Intrinsic<'_>,
 ) -> Result<()> {
     let name = "ldmatrix";
     if !matches!(register_count, 1 | 2 | 4) {
@@ -172,7 +173,7 @@ fn lower_with_llvm_intrinsic(
     op: Ptr<Operation>,
     shared_address: SharedAddress,
     result_ty: TypeHandle,
-    typed_intrinsic_name: &str,
+    typed_intrinsic_name: Intrinsic<'_>,
 ) -> Result<Ptr<Operation>> {
     let shared_ty = llvm_types::PointerType::get(ctx, llvm_types::address_space::SHARED);
     let shared_pointer = match shared_address {

@@ -224,7 +224,7 @@ fn ldmatrix_family_lowering_uses_one_attribute_dispatch_impl() {
             1
         );
         assert!(rendered.contains(&format!(
-            "self.get_operation(), {count}, {instruction_head:?}, {intrinsic:?}"
+            "self.get_operation(), {count}, {instruction_head:?}, Intrinsic::new({intrinsic:?}, true)"
         )));
     }
 

@@ -11,10 +11,10 @@
 
 use crate::conversion_interface::MirToLlvmConversion;
 use crate::convert::intrinsics::{
-    tma::PrefetchTileConfig, tma::ReduceConfig, tma::convert_control, tma::convert_g2s,
-    tma::convert_g2s_cta, tma::convert_g2s_multicast_cg2, tma::convert_prefetch_tensormap,
-    tma::convert_prefetch_tile, tma::convert_reduce_s2g, tma::convert_s2g,
-    tma::convert_tensormap_fence, tma::convert_tensormap_replace,
+    common::Intrinsic, tma::PrefetchTileConfig, tma::ReduceConfig, tma::convert_control,
+    tma::convert_g2s, tma::convert_g2s_cta, tma::convert_g2s_multicast_cg2,
+    tma::convert_prefetch_tensormap, tma::convert_prefetch_tile, tma::convert_reduce_s2g,
+    tma::convert_s2g, tma::convert_tensormap_fence, tma::convert_tensormap_replace,
 };
 use dialect_nvvm::ops::{
     CpAsyncBulkCommitGroupOp, CpAsyncBulkPrefetchTensor1dL2CacheHintOp,
@@ -92,7 +92,7 @@ impl MirToLlvmConversion for CpAsyncBulkCommitGroupOp {
             self.get_operation(),
             operands_info,
             "commit_group",
-            "llvm_nvvm_cp_async_bulk_commit_group",
+            Intrinsic::new("llvm_nvvm_cp_async_bulk_commit_group", false),
         )
     }
 }
@@ -114,7 +114,7 @@ impl MirToLlvmConversion for CpAsyncBulkPrefetchTensor1dL2Op {
                 1,
                 false,
                 false,
-                "llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_1d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_1d", true),
             ),
         )
     }
@@ -137,7 +137,7 @@ impl MirToLlvmConversion for CpAsyncBulkPrefetchTensor1dL2CacheHintOp {
                 1,
                 false,
                 true,
-                "llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_1d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_1d", true),
             ),
         )
     }
@@ -160,7 +160,7 @@ impl MirToLlvmConversion for CpAsyncBulkPrefetchTensor2dL2Op {
                 2,
                 false,
                 false,
-                "llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_2d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_2d", true),
             ),
         )
     }
@@ -183,7 +183,7 @@ impl MirToLlvmConversion for CpAsyncBulkPrefetchTensor2dL2CacheHintOp {
                 2,
                 false,
                 true,
-                "llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_2d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_2d", true),
             ),
         )
     }
@@ -206,7 +206,7 @@ impl MirToLlvmConversion for CpAsyncBulkPrefetchTensor3dL2Op {
                 3,
                 false,
                 false,
-                "llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_3d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_3d", true),
             ),
         )
     }
@@ -229,7 +229,7 @@ impl MirToLlvmConversion for CpAsyncBulkPrefetchTensor3dL2CacheHintOp {
                 3,
                 false,
                 true,
-                "llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_3d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_3d", true),
             ),
         )
     }
@@ -252,7 +252,7 @@ impl MirToLlvmConversion for CpAsyncBulkPrefetchTensor4dL2Op {
                 4,
                 false,
                 false,
-                "llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_4d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_4d", true),
             ),
         )
     }
@@ -275,7 +275,7 @@ impl MirToLlvmConversion for CpAsyncBulkPrefetchTensor4dL2CacheHintOp {
                 4,
                 false,
                 true,
-                "llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_4d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_4d", true),
             ),
         )
     }
@@ -298,7 +298,7 @@ impl MirToLlvmConversion for CpAsyncBulkPrefetchTensor5dL2Op {
                 5,
                 false,
                 false,
-                "llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_5d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_5d", true),
             ),
         )
     }
@@ -321,7 +321,7 @@ impl MirToLlvmConversion for CpAsyncBulkPrefetchTensor5dL2CacheHintOp {
                 5,
                 false,
                 true,
-                "llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_5d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_5d", true),
             ),
         )
     }
@@ -344,7 +344,10 @@ impl MirToLlvmConversion for CpAsyncBulkPrefetchTensorGather4TwoDimensionalL2Op 
                 5,
                 true,
                 false,
-                "llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_gather4_2d",
+                Intrinsic::new(
+                    "llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_gather4_2d",
+                    true,
+                ),
             ),
         )
     }
@@ -367,7 +370,10 @@ impl MirToLlvmConversion for CpAsyncBulkPrefetchTensorGather4TwoDimensionalL2Cac
                 5,
                 true,
                 true,
-                "llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_gather4_2d",
+                Intrinsic::new(
+                    "llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_gather4_2d",
+                    true,
+                ),
             ),
         )
     }
@@ -594,7 +600,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceAddIm2col3dOp {
                 3,
                 "add",
                 "im2col",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_add_im2col_3d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_add_im2col_3d", true),
             ),
         )
     }
@@ -617,7 +623,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceAddIm2col4dOp {
                 4,
                 "add",
                 "im2col",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_add_im2col_4d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_add_im2col_4d", true),
             ),
         )
     }
@@ -640,7 +646,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceAddIm2col5dOp {
                 5,
                 "add",
                 "im2col",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_add_im2col_5d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_add_im2col_5d", true),
             ),
         )
     }
@@ -663,7 +669,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceAddTile1dOp {
                 1,
                 "add",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_add_tile_1d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_add_tile_1d", true),
             ),
         )
     }
@@ -686,7 +692,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceAddTile2dOp {
                 2,
                 "add",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_add_tile_2d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_add_tile_2d", true),
             ),
         )
     }
@@ -709,7 +715,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceAddTile3dOp {
                 3,
                 "add",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_add_tile_3d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_add_tile_3d", true),
             ),
         )
     }
@@ -732,7 +738,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceAddTile4dOp {
                 4,
                 "add",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_add_tile_4d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_add_tile_4d", true),
             ),
         )
     }
@@ -755,7 +761,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceAddTile5dOp {
                 5,
                 "add",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_add_tile_5d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_add_tile_5d", true),
             ),
         )
     }
@@ -778,7 +784,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceAndIm2col3dOp {
                 3,
                 "and",
                 "im2col",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_and_im2col_3d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_and_im2col_3d", true),
             ),
         )
     }
@@ -801,7 +807,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceAndIm2col4dOp {
                 4,
                 "and",
                 "im2col",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_and_im2col_4d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_and_im2col_4d", true),
             ),
         )
     }
@@ -824,7 +830,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceAndIm2col5dOp {
                 5,
                 "and",
                 "im2col",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_and_im2col_5d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_and_im2col_5d", true),
             ),
         )
     }
@@ -847,7 +853,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceAndTile1dOp {
                 1,
                 "and",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_and_tile_1d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_and_tile_1d", true),
             ),
         )
     }
@@ -870,7 +876,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceAndTile2dOp {
                 2,
                 "and",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_and_tile_2d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_and_tile_2d", true),
             ),
         )
     }
@@ -893,7 +899,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceAndTile3dOp {
                 3,
                 "and",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_and_tile_3d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_and_tile_3d", true),
             ),
         )
     }
@@ -916,7 +922,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceAndTile4dOp {
                 4,
                 "and",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_and_tile_4d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_and_tile_4d", true),
             ),
         )
     }
@@ -939,7 +945,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceAndTile5dOp {
                 5,
                 "and",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_and_tile_5d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_and_tile_5d", true),
             ),
         )
     }
@@ -962,7 +968,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceDecIm2col3dOp {
                 3,
                 "dec",
                 "im2col",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_dec_im2col_3d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_dec_im2col_3d", true),
             ),
         )
     }
@@ -985,7 +991,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceDecIm2col4dOp {
                 4,
                 "dec",
                 "im2col",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_dec_im2col_4d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_dec_im2col_4d", true),
             ),
         )
     }
@@ -1008,7 +1014,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceDecIm2col5dOp {
                 5,
                 "dec",
                 "im2col",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_dec_im2col_5d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_dec_im2col_5d", true),
             ),
         )
     }
@@ -1031,7 +1037,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceDecTile1dOp {
                 1,
                 "dec",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_dec_tile_1d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_dec_tile_1d", true),
             ),
         )
     }
@@ -1054,7 +1060,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceDecTile2dOp {
                 2,
                 "dec",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_dec_tile_2d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_dec_tile_2d", true),
             ),
         )
     }
@@ -1077,7 +1083,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceDecTile3dOp {
                 3,
                 "dec",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_dec_tile_3d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_dec_tile_3d", true),
             ),
         )
     }
@@ -1100,7 +1106,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceDecTile4dOp {
                 4,
                 "dec",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_dec_tile_4d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_dec_tile_4d", true),
             ),
         )
     }
@@ -1123,7 +1129,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceDecTile5dOp {
                 5,
                 "dec",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_dec_tile_5d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_dec_tile_5d", true),
             ),
         )
     }
@@ -1146,7 +1152,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceIncIm2col3dOp {
                 3,
                 "inc",
                 "im2col",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_inc_im2col_3d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_inc_im2col_3d", true),
             ),
         )
     }
@@ -1169,7 +1175,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceIncIm2col4dOp {
                 4,
                 "inc",
                 "im2col",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_inc_im2col_4d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_inc_im2col_4d", true),
             ),
         )
     }
@@ -1192,7 +1198,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceIncIm2col5dOp {
                 5,
                 "inc",
                 "im2col",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_inc_im2col_5d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_inc_im2col_5d", true),
             ),
         )
     }
@@ -1215,7 +1221,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceIncTile1dOp {
                 1,
                 "inc",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_inc_tile_1d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_inc_tile_1d", true),
             ),
         )
     }
@@ -1238,7 +1244,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceIncTile2dOp {
                 2,
                 "inc",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_inc_tile_2d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_inc_tile_2d", true),
             ),
         )
     }
@@ -1261,7 +1267,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceIncTile3dOp {
                 3,
                 "inc",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_inc_tile_3d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_inc_tile_3d", true),
             ),
         )
     }
@@ -1284,7 +1290,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceIncTile4dOp {
                 4,
                 "inc",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_inc_tile_4d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_inc_tile_4d", true),
             ),
         )
     }
@@ -1307,7 +1313,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceIncTile5dOp {
                 5,
                 "inc",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_inc_tile_5d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_inc_tile_5d", true),
             ),
         )
     }
@@ -1330,7 +1336,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceMaxIm2col3dOp {
                 3,
                 "max",
                 "im2col",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_max_im2col_3d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_max_im2col_3d", true),
             ),
         )
     }
@@ -1353,7 +1359,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceMaxIm2col4dOp {
                 4,
                 "max",
                 "im2col",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_max_im2col_4d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_max_im2col_4d", true),
             ),
         )
     }
@@ -1376,7 +1382,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceMaxIm2col5dOp {
                 5,
                 "max",
                 "im2col",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_max_im2col_5d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_max_im2col_5d", true),
             ),
         )
     }
@@ -1399,7 +1405,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceMaxTile1dOp {
                 1,
                 "max",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_max_tile_1d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_max_tile_1d", true),
             ),
         )
     }
@@ -1422,7 +1428,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceMaxTile2dOp {
                 2,
                 "max",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_max_tile_2d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_max_tile_2d", true),
             ),
         )
     }
@@ -1445,7 +1451,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceMaxTile3dOp {
                 3,
                 "max",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_max_tile_3d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_max_tile_3d", true),
             ),
         )
     }
@@ -1468,7 +1474,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceMaxTile4dOp {
                 4,
                 "max",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_max_tile_4d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_max_tile_4d", true),
             ),
         )
     }
@@ -1491,7 +1497,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceMaxTile5dOp {
                 5,
                 "max",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_max_tile_5d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_max_tile_5d", true),
             ),
         )
     }
@@ -1514,7 +1520,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceMinIm2col3dOp {
                 3,
                 "min",
                 "im2col",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_min_im2col_3d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_min_im2col_3d", true),
             ),
         )
     }
@@ -1537,7 +1543,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceMinIm2col4dOp {
                 4,
                 "min",
                 "im2col",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_min_im2col_4d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_min_im2col_4d", true),
             ),
         )
     }
@@ -1560,7 +1566,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceMinIm2col5dOp {
                 5,
                 "min",
                 "im2col",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_min_im2col_5d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_min_im2col_5d", true),
             ),
         )
     }
@@ -1583,7 +1589,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceMinTile1dOp {
                 1,
                 "min",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_min_tile_1d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_min_tile_1d", true),
             ),
         )
     }
@@ -1606,7 +1612,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceMinTile2dOp {
                 2,
                 "min",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_min_tile_2d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_min_tile_2d", true),
             ),
         )
     }
@@ -1629,7 +1635,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceMinTile3dOp {
                 3,
                 "min",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_min_tile_3d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_min_tile_3d", true),
             ),
         )
     }
@@ -1652,7 +1658,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceMinTile4dOp {
                 4,
                 "min",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_min_tile_4d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_min_tile_4d", true),
             ),
         )
     }
@@ -1675,7 +1681,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceMinTile5dOp {
                 5,
                 "min",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_min_tile_5d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_min_tile_5d", true),
             ),
         )
     }
@@ -1698,7 +1704,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceOrIm2col3dOp {
                 3,
                 "or",
                 "im2col",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_or_im2col_3d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_or_im2col_3d", true),
             ),
         )
     }
@@ -1721,7 +1727,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceOrIm2col4dOp {
                 4,
                 "or",
                 "im2col",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_or_im2col_4d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_or_im2col_4d", true),
             ),
         )
     }
@@ -1744,7 +1750,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceOrIm2col5dOp {
                 5,
                 "or",
                 "im2col",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_or_im2col_5d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_or_im2col_5d", true),
             ),
         )
     }
@@ -1767,7 +1773,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceOrTile1dOp {
                 1,
                 "or",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_or_tile_1d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_or_tile_1d", true),
             ),
         )
     }
@@ -1790,7 +1796,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceOrTile2dOp {
                 2,
                 "or",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_or_tile_2d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_or_tile_2d", true),
             ),
         )
     }
@@ -1813,7 +1819,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceOrTile3dOp {
                 3,
                 "or",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_or_tile_3d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_or_tile_3d", true),
             ),
         )
     }
@@ -1836,7 +1842,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceOrTile4dOp {
                 4,
                 "or",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_or_tile_4d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_or_tile_4d", true),
             ),
         )
     }
@@ -1859,7 +1865,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceOrTile5dOp {
                 5,
                 "or",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_or_tile_5d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_or_tile_5d", true),
             ),
         )
     }
@@ -1882,7 +1888,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceXorIm2col3dOp {
                 3,
                 "xor",
                 "im2col",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_xor_im2col_3d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_xor_im2col_3d", true),
             ),
         )
     }
@@ -1905,7 +1911,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceXorIm2col4dOp {
                 4,
                 "xor",
                 "im2col",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_xor_im2col_4d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_xor_im2col_4d", true),
             ),
         )
     }
@@ -1928,7 +1934,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceXorIm2col5dOp {
                 5,
                 "xor",
                 "im2col",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_xor_im2col_5d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_xor_im2col_5d", true),
             ),
         )
     }
@@ -1951,7 +1957,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceXorTile1dOp {
                 1,
                 "xor",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_xor_tile_1d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_xor_tile_1d", true),
             ),
         )
     }
@@ -1974,7 +1980,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceXorTile2dOp {
                 2,
                 "xor",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_xor_tile_2d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_xor_tile_2d", true),
             ),
         )
     }
@@ -1997,7 +2003,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceXorTile3dOp {
                 3,
                 "xor",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_xor_tile_3d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_xor_tile_3d", true),
             ),
         )
     }
@@ -2020,7 +2026,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceXorTile4dOp {
                 4,
                 "xor",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_xor_tile_4d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_xor_tile_4d", true),
             ),
         )
     }
@@ -2043,7 +2049,7 @@ impl MirToLlvmConversion for CpAsyncBulkTensorReduceXorTile5dOp {
                 5,
                 "xor",
                 "tile",
-                "llvm_nvvm_cp_async_bulk_tensor_reduce_xor_tile_5d",
+                Intrinsic::new("llvm_nvvm_cp_async_bulk_tensor_reduce_xor_tile_5d", true),
             ),
         )
     }
@@ -2063,7 +2069,7 @@ impl MirToLlvmConversion for CpAsyncBulkWaitGroupOp {
             self.get_operation(),
             operands_info,
             "wait_group",
-            "llvm_nvvm_cp_async_bulk_wait_group",
+            Intrinsic::new("llvm_nvvm_cp_async_bulk_wait_group", false),
         )
     }
 }
@@ -2082,7 +2088,7 @@ impl MirToLlvmConversion for CpAsyncBulkWaitGroupReadOp {
             self.get_operation(),
             operands_info,
             "wait_group_read",
-            "llvm_nvvm_cp_async_bulk_wait_group_read",
+            Intrinsic::new("llvm_nvvm_cp_async_bulk_wait_group_read", false),
         )
     }
 }
@@ -2100,7 +2106,10 @@ impl MirToLlvmConversion for FenceProxyTensorMapGenericAcquireClusterOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm__nvvm_dfence_dproxy_dtensormap_ugeneric_dacquire_dcluster",
+            Intrinsic::new(
+                "llvm__nvvm_dfence_dproxy_dtensormap_ugeneric_dacquire_dcluster",
+                false,
+            ),
             true,
             "cluster",
         )
@@ -2120,7 +2129,10 @@ impl MirToLlvmConversion for FenceProxyTensorMapGenericAcquireCtaOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm__nvvm_dfence_dproxy_dtensormap_ugeneric_dacquire_dcta",
+            Intrinsic::new(
+                "llvm__nvvm_dfence_dproxy_dtensormap_ugeneric_dacquire_dcta",
+                false,
+            ),
             true,
             "cta",
         )
@@ -2140,7 +2152,10 @@ impl MirToLlvmConversion for FenceProxyTensorMapGenericAcquireGpuOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm__nvvm_dfence_dproxy_dtensormap_ugeneric_dacquire_dgpu",
+            Intrinsic::new(
+                "llvm__nvvm_dfence_dproxy_dtensormap_ugeneric_dacquire_dgpu",
+                false,
+            ),
             true,
             "gpu",
         )
@@ -2160,7 +2175,10 @@ impl MirToLlvmConversion for FenceProxyTensorMapGenericAcquireSystemOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm__nvvm_dfence_dproxy_dtensormap_ugeneric_dacquire_dsys",
+            Intrinsic::new(
+                "llvm__nvvm_dfence_dproxy_dtensormap_ugeneric_dacquire_dsys",
+                false,
+            ),
             true,
             "sys",
         )
@@ -2180,7 +2198,10 @@ impl MirToLlvmConversion for FenceProxyTensorMapGenericReleaseClusterOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm__nvvm_dfence_dproxy_dtensormap_ugeneric_drelease_dcluster",
+            Intrinsic::new(
+                "llvm__nvvm_dfence_dproxy_dtensormap_ugeneric_drelease_dcluster",
+                false,
+            ),
             false,
             "cluster",
         )
@@ -2200,7 +2221,10 @@ impl MirToLlvmConversion for FenceProxyTensorMapGenericReleaseCtaOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm__nvvm_dfence_dproxy_dtensormap_ugeneric_drelease_dcta",
+            Intrinsic::new(
+                "llvm__nvvm_dfence_dproxy_dtensormap_ugeneric_drelease_dcta",
+                false,
+            ),
             false,
             "cta",
         )
@@ -2220,7 +2244,10 @@ impl MirToLlvmConversion for FenceProxyTensorMapGenericReleaseGpuOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm__nvvm_dfence_dproxy_dtensormap_ugeneric_drelease_dgpu",
+            Intrinsic::new(
+                "llvm__nvvm_dfence_dproxy_dtensormap_ugeneric_drelease_dgpu",
+                false,
+            ),
             false,
             "gpu",
         )
@@ -2240,7 +2267,10 @@ impl MirToLlvmConversion for FenceProxyTensorMapGenericReleaseSystemOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm__nvvm_dfence_dproxy_dtensormap_ugeneric_drelease_dsys",
+            Intrinsic::new(
+                "llvm__nvvm_dfence_dproxy_dtensormap_ugeneric_drelease_dsys",
+                false,
+            ),
             false,
             "sys",
         )
@@ -2260,7 +2290,7 @@ impl MirToLlvmConversion for PrefetchTensorMapOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_prefetch_tensormap_p0",
+            Intrinsic::new("llvm_nvvm_prefetch_tensormap_p0", false),
         )
     }
 }
@@ -2278,7 +2308,7 @@ impl MirToLlvmConversion for ReplaceTensorMapBoxDimOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_tensormap_replace_box_dim",
+            Intrinsic::new("llvm_nvvm_tensormap_replace_box_dim", false),
             "box_dim",
             "u32",
             true,
@@ -2300,7 +2330,7 @@ impl MirToLlvmConversion for ReplaceTensorMapElementStrideOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_tensormap_replace_element_stride",
+            Intrinsic::new("llvm_nvvm_tensormap_replace_element_stride", false),
             "element_stride",
             "u32",
             true,
@@ -2322,7 +2352,7 @@ impl MirToLlvmConversion for ReplaceTensorMapElementTypeOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_tensormap_replace_elemtype",
+            Intrinsic::new("llvm_nvvm_tensormap_replace_elemtype", false),
             "elemtype",
             "u32",
             false,
@@ -2344,7 +2374,7 @@ impl MirToLlvmConversion for ReplaceTensorMapFillModeOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_tensormap_replace_fill_mode",
+            Intrinsic::new("llvm_nvvm_tensormap_replace_fill_mode", false),
             "fill_mode",
             "u32",
             false,
@@ -2366,7 +2396,7 @@ impl MirToLlvmConversion for ReplaceTensorMapGlobalAddressOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_tensormap_replace_global_address",
+            Intrinsic::new("llvm_nvvm_tensormap_replace_global_address", false),
             "global_address",
             "address",
             false,
@@ -2388,7 +2418,7 @@ impl MirToLlvmConversion for ReplaceTensorMapGlobalDimOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_tensormap_replace_global_dim",
+            Intrinsic::new("llvm_nvvm_tensormap_replace_global_dim", false),
             "global_dim",
             "u32",
             true,
@@ -2410,7 +2440,7 @@ impl MirToLlvmConversion for ReplaceTensorMapGlobalStrideOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_tensormap_replace_global_stride",
+            Intrinsic::new("llvm_nvvm_tensormap_replace_global_stride", false),
             "global_stride",
             "u64",
             true,
@@ -2432,7 +2462,7 @@ impl MirToLlvmConversion for ReplaceTensorMapInterleaveLayoutOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_tensormap_replace_interleave_layout",
+            Intrinsic::new("llvm_nvvm_tensormap_replace_interleave_layout", false),
             "interleave_layout",
             "u32",
             false,
@@ -2454,7 +2484,7 @@ impl MirToLlvmConversion for ReplaceTensorMapRankOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_tensormap_replace_rank",
+            Intrinsic::new("llvm_nvvm_tensormap_replace_rank", false),
             "rank",
             "u32",
             false,
@@ -2476,7 +2506,7 @@ impl MirToLlvmConversion for ReplaceTensorMapSwizzleAtomicityOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_tensormap_replace_swizzle_atomicity",
+            Intrinsic::new("llvm_nvvm_tensormap_replace_swizzle_atomicity", false),
             "swizzle_atomicity",
             "u32",
             false,
@@ -2498,7 +2528,7 @@ impl MirToLlvmConversion for ReplaceTensorMapSwizzleModeOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_tensormap_replace_swizzle_mode",
+            Intrinsic::new("llvm_nvvm_tensormap_replace_swizzle_mode", false),
             "swizzle_mode",
             "u32",
             false,

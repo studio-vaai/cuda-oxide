@@ -10,7 +10,9 @@
 //! Generated conversion interfaces: `wgmma_control` intrinsics.
 
 use crate::conversion_interface::MirToLlvmConversion;
-use crate::convert::intrinsics::{common::call_intrinsic, common::inline_asm_convergent};
+use crate::convert::intrinsics::{
+    common::Intrinsic, common::call_intrinsic, common::inline_asm_convergent,
+};
 use crate::{IntrinsicBackend, context};
 use dialect_nvvm::ops::{
     WgmmaCommitGroupSyncAlignedOp, WgmmaFenceSyncAlignedOp, WgmmaWaitGroupSyncAlignedOp,
@@ -29,7 +31,7 @@ fn convert_generated_wgmma_control(
     ctx: &mut Context,
     rewriter: &mut DialectConversionRewriter,
     op: Ptr<Operation>,
-    intrinsic_name: &str,
+    intrinsic_name: Intrinsic<'_>,
     ptx: &str,
     has_immediate: bool,
 ) -> Result<()> {
@@ -84,7 +86,7 @@ impl MirToLlvmConversion for WgmmaCommitGroupSyncAlignedOp {
             ctx,
             rewriter,
             self.get_operation(),
-            "llvm__nvvm_dwgmma_dcommit_ugroup_dsync_daligned",
+            Intrinsic::new("llvm__nvvm_dwgmma_dcommit_ugroup_dsync_daligned", true),
             "wgmma.commit_group.sync.aligned;",
             false,
         )
@@ -103,7 +105,7 @@ impl MirToLlvmConversion for WgmmaFenceSyncAlignedOp {
             ctx,
             rewriter,
             self.get_operation(),
-            "llvm_nvvm_wgmma_fence_sync_aligned",
+            Intrinsic::new("llvm_nvvm_wgmma_fence_sync_aligned", true),
             "wgmma.fence.sync.aligned;",
             false,
         )
@@ -122,7 +124,7 @@ impl MirToLlvmConversion for WgmmaWaitGroupSyncAlignedOp {
             ctx,
             rewriter,
             self.get_operation(),
-            "llvm__nvvm_dwgmma_dwait_ugroup_dsync_daligned",
+            Intrinsic::new("llvm__nvvm_dwgmma_dwait_ugroup_dsync_daligned", true),
             "wgmma.wait_group.sync.aligned $0;",
             true,
         )

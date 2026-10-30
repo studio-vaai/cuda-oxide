@@ -10,7 +10,9 @@
 //! Generated conversion interfaces: `elect` intrinsics.
 
 use crate::conversion_interface::MirToLlvmConversion;
-use crate::convert::intrinsics::{warp::convert_elect_sync_inline, warp::convert_elect_sync_typed};
+use crate::convert::intrinsics::{
+    common::Intrinsic, warp::convert_elect_sync_inline, warp::convert_elect_sync_typed,
+};
 use crate::{IntrinsicBackend, context};
 use dialect_nvvm::ops::ElectSyncOp;
 use pliron::context::Context;
@@ -33,7 +35,7 @@ impl MirToLlvmConversion for ElectSyncOp {
                 rewriter,
                 self.get_operation(),
                 operands_info,
-                "llvm_nvvm_elect_sync",
+                Intrinsic::new("llvm_nvvm_elect_sync", true),
             ),
             IntrinsicBackend::LibNvvm => {
                 convert_elect_sync_inline(ctx, rewriter, self.get_operation(), operands_info)

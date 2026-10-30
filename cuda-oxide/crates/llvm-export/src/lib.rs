@@ -21,6 +21,10 @@
 
 pub mod export;
 
+/// Typed intrinsic facts carried from lowering to read-only LLVM analysis.
+/// These internal facts are never printed as LLVM function attributes.
+pub mod intrinsics;
+
 /// Stable marker used when an operation must remain in a debug-scoped LLVM
 /// function but does not correspond to user-written source.
 pub const ARTIFICIAL_DEBUG_LOCATION_NAME: &str = "cuda_oxide.artificial";

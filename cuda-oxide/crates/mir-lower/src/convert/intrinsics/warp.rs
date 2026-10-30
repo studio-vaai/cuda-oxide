@@ -33,6 +33,7 @@
 
 use crate::convert::intrinsics::common::*;
 use crate::convert::types::convert_type;
+use crate::helpers::Intrinsic;
 use llvm_export::types as llvm_types;
 use pliron::builtin::types::{FP32Type, IntegerType, Signedness};
 use pliron::context::{Context, Ptr};
@@ -55,7 +56,7 @@ pub(crate) fn convert_shuffle_i32(
     rewriter: &mut DialectConversionRewriter,
     op: Ptr<Operation>,
     _operands_info: &OperandsInfo,
-    intrinsic_name: &str,
+    intrinsic_name: Intrinsic<'_>,
     clamp: i32,
 ) -> Result<()> {
     let i32_ty = IntegerType::get(ctx, 32, Signedness::Signless);
@@ -98,7 +99,7 @@ pub(crate) fn convert_shuffle_f32(
     rewriter: &mut DialectConversionRewriter,
     op: Ptr<Operation>,
     _operands_info: &OperandsInfo,
-    intrinsic_name: &str,
+    intrinsic_name: Intrinsic<'_>,
     clamp: i32,
 ) -> Result<()> {
     let i32_ty = IntegerType::get(ctx, 32, Signedness::Signless);
@@ -196,7 +197,7 @@ pub(crate) fn convert_vote(
     rewriter: &mut DialectConversionRewriter,
     op: Ptr<Operation>,
     _operands_info: &OperandsInfo,
-    intrinsic_name: &str,
+    intrinsic_name: Intrinsic<'_>,
 ) -> Result<()> {
     let i32_ty = IntegerType::get(ctx, 32, Signedness::Signless);
     let i1_ty = IntegerType::get(ctx, 1, Signedness::Signless);
@@ -207,7 +208,7 @@ pub(crate) fn convert_vote(
     }
     let (mask, predicate) = (operands[0], operands[1]);
 
-    let result_ty: pliron::r#type::TypeHandle = if intrinsic_name.contains("ballot") {
+    let result_ty: pliron::r#type::TypeHandle = if intrinsic_name.name.contains("ballot") {
         i32_ty.into()
     } else {
         i1_ty.into()
@@ -236,7 +237,7 @@ pub(crate) fn convert_match_any(
     rewriter: &mut DialectConversionRewriter,
     op: Ptr<Operation>,
     _operands_info: &OperandsInfo,
-    intrinsic_name: &str,
+    intrinsic_name: Intrinsic<'_>,
     value_ty: pliron::r#type::TypeHandle,
 ) -> Result<()> {
     let i32_ty = IntegerType::get(ctx, 32, Signedness::Signless);
@@ -278,7 +279,7 @@ pub(crate) fn convert_redux(
     rewriter: &mut DialectConversionRewriter,
     op: Ptr<Operation>,
     _operands_info: &OperandsInfo,
-    intrinsic_name: &str,
+    intrinsic_name: Intrinsic<'_>,
 ) -> Result<()> {
     let i32_ty = IntegerType::get(ctx, 32, Signedness::Signless);
 
@@ -315,12 +316,13 @@ pub(crate) fn convert_active_mask(
     rewriter: &mut DialectConversionRewriter,
     op: Ptr<Operation>,
     _operands_info: &OperandsInfo,
+    intrinsic_name: Intrinsic<'_>,
 ) -> Result<()> {
     let i32_ty = IntegerType::get(ctx, 32, Signedness::Signless);
 
     let func_ty = llvm_types::FuncType::get(ctx, i32_ty.into(), vec![], false);
 
-    let call_op = call_intrinsic(ctx, rewriter, op, "llvm_nvvm_activemask", func_ty, vec![])?;
+    let call_op = call_intrinsic(ctx, rewriter, op, intrinsic_name, func_ty, vec![])?;
     rewriter.replace_operation(ctx, op, call_op);
     Ok(())
 }
@@ -334,6 +336,7 @@ pub(crate) fn convert_bar_warp_sync(
     rewriter: &mut DialectConversionRewriter,
     op: Ptr<Operation>,
     _operands_info: &OperandsInfo,
+    intrinsic_name: Intrinsic<'_>,
 ) -> Result<()> {
     let i32_ty = IntegerType::get(ctx, 32, Signedness::Signless);
     let void_ty = llvm_types::VoidType::get(ctx);
@@ -345,14 +348,7 @@ pub(crate) fn convert_bar_warp_sync(
     let mask = operands[0];
 
     let func_ty = llvm_types::FuncType::get(ctx, void_ty.into(), vec![i32_ty.into()], false);
-    call_intrinsic(
-        ctx,
-        rewriter,
-        op,
-        "llvm_nvvm_bar_warp_sync",
-        func_ty,
-        vec![mask],
-    )?;
+    call_intrinsic(ctx, rewriter, op, intrinsic_name, func_ty, vec![mask])?;
     rewriter.erase_operation(ctx, op);
     Ok(())
 }
@@ -368,7 +364,7 @@ pub(crate) fn convert_match_all(
     rewriter: &mut DialectConversionRewriter,
     op: Ptr<Operation>,
     _operands_info: &OperandsInfo,
-    intrinsic_name: &str,
+    intrinsic_name: Intrinsic<'_>,
     value_ty: pliron::r#type::TypeHandle,
 ) -> Result<()> {
     use llvm_export::ops::ExtractValueOp;
@@ -417,7 +413,7 @@ pub(crate) fn convert_elect_sync_typed(
     rewriter: &mut DialectConversionRewriter,
     op: Ptr<Operation>,
     _operands_info: &OperandsInfo,
-    intrinsic_name: &str,
+    intrinsic_name: Intrinsic<'_>,
 ) -> Result<()> {
     use llvm_export::ops::ExtractValueOp;
 

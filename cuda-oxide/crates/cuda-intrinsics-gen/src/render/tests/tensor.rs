@@ -501,22 +501,22 @@ fn tma_rendering_preserves_api_and_injects_backend_defaults() {
         lowering.contains("convert_s2g(ctx, rewriter, self.get_operation(), operands_info, 5)")
     );
     assert!(lowering.contains(
-            "convert_control(ctx, rewriter, self.get_operation(), operands_info, \"commit_group\", \"llvm_nvvm_cp_async_bulk_commit_group\")"
+            "convert_control(ctx, rewriter, self.get_operation(), operands_info, \"commit_group\", Intrinsic::new(\"llvm_nvvm_cp_async_bulk_commit_group\", false))"
         ));
     assert!(lowering.contains(
-            "convert_reduce_s2g(ctx, rewriter, self.get_operation(), operands_info, ReduceConfig::new(2, \"add\", \"tile\", \"llvm_nvvm_cp_async_bulk_tensor_reduce_add_tile_2d\"))"
+            "convert_reduce_s2g(ctx, rewriter, self.get_operation(), operands_info, ReduceConfig::new(2, \"add\", \"tile\", Intrinsic::new(\"llvm_nvvm_cp_async_bulk_tensor_reduce_add_tile_2d\", true)))"
         ));
     assert!(lowering.contains(
-            "convert_prefetch_tile(ctx, rewriter, self.get_operation(), operands_info, PrefetchTileConfig::new(5, false, false, \"llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_5d\"))"
+            "convert_prefetch_tile(ctx, rewriter, self.get_operation(), operands_info, PrefetchTileConfig::new(5, false, false, Intrinsic::new(\"llvm_nvvm_cp_async_bulk_tensor_prefetch_tile_5d\", true)))"
         ));
     assert!(lowering.contains(
-            "convert_tensormap_replace(ctx, rewriter, self.get_operation(), operands_info, \"llvm_nvvm_tensormap_replace_global_address\", \"global_address\", \"address\", false, false)"
+            "convert_tensormap_replace(ctx, rewriter, self.get_operation(), operands_info, Intrinsic::new(\"llvm_nvvm_tensormap_replace_global_address\", false), \"global_address\", \"address\", false, false)"
         ));
     let release_system = tma_intrinsics(&catalog)
         .find(|record| record.id == "fence_proxy_tensormap_generic_release_system")
         .unwrap();
     assert!(lowering.contains(&format!(
-            "convert_tensormap_fence(ctx, rewriter, self.get_operation(), operands_info, {:?}, false, \"sys\")",
+            "convert_tensormap_fence(ctx, rewriter, self.get_operation(), operands_info, Intrinsic::new({:?}, false), false, \"sys\")",
             release_system.resolved_llvm_identifier()
         )));
 

@@ -308,7 +308,7 @@ fn active_mask_and_warp_match_rendering_preserves_backend_and_abi_contracts() {
 
     let lowering = render_lowering(&catalog, "test-hash");
     assert!(lowering.contains("IntrinsicBackend::LlvmNvptx => {"));
-    assert!(lowering.contains("convert_active_mask(ctx, rewriter, op, operands_info)"));
+    assert!(lowering.contains("convert_active_mask(ctx, rewriter, op, operands_info, Intrinsic::new(\"llvm_nvvm_activemask\", true))"));
     assert!(lowering.contains("IntrinsicBackend::LibNvvm =>"));
     assert!(lowering.contains("\"activemask.b32 $0;\""));
     assert!(lowering.contains("\"=r,~{memory}\""));
@@ -372,7 +372,7 @@ fn warp_barrier_rendering_preserves_mask_and_void_contracts() {
     assert!(lowering.contains("impl MirToLlvmConversion for BarWarpSyncOp"));
     assert!(
         lowering
-            .contains("convert_bar_warp_sync(ctx, rewriter, self.get_operation(), operands_info)")
+            .contains("convert_bar_warp_sync(ctx, rewriter, self.get_operation(), operands_info, Intrinsic::new(\"llvm_nvvm_bar_warp_sync\", true))")
     );
 
     let probe = render_probe(&catalog, record, "test-hash");
@@ -462,10 +462,10 @@ fn warp_shuffle_rendering_owns_all_i32_f32_and_i64_modes() {
     let lowering = render_lowering(&catalog, "test-hash");
     assert!(lowering.contains("impl MirToLlvmConversion for ShflSyncIdxI32Op"));
     assert!(lowering.contains("convert_shuffle_i32(ctx, rewriter"));
-    assert!(lowering.contains("\"llvm_nvvm_shfl_sync_idx_i32\", 31)"));
+    assert!(lowering.contains("Intrinsic::new(\"llvm_nvvm_shfl_sync_idx_i32\", true), 31)"));
     assert!(lowering.contains("impl MirToLlvmConversion for ShflSyncUpF32Op"));
     assert!(lowering.contains("convert_shuffle_f32(ctx, rewriter"));
-    assert!(lowering.contains("\"llvm_nvvm_shfl_sync_up_f32\", 0)"));
+    assert!(lowering.contains("Intrinsic::new(\"llvm_nvvm_shfl_sync_up_f32\", true), 0)"));
 
     for (op, mode, clamp) in [
         ("ShflSyncIdxI64Op", "idx", 31),

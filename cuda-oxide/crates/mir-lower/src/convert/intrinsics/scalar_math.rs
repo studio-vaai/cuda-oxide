@@ -6,6 +6,7 @@
 //! Lowering helper for generated unary scalar floating-point math.
 
 use super::common::call_intrinsic;
+use crate::helpers::Intrinsic;
 use crate::{IntrinsicBackend, context};
 use llvm_export::{
     ops::{self as llvm, AsmKind, InlineAsmOpExt},
@@ -28,7 +29,7 @@ pub(crate) fn convert_generated_scalar_math(
     ctx: &mut Context,
     rewriter: &mut DialectConversionRewriter,
     op: Ptr<Operation>,
-    intrinsic_name: &str,
+    intrinsic_name: Intrinsic<'_>,
     ptx_mnemonic: &str,
     is_f16: bool,
     is_f64: bool,
@@ -72,7 +73,7 @@ pub(crate) fn convert_generated_scalar_math(
             // PTX-native scalar math ops (tanh) have no typed intrinsic and
             // are always generated with llvm_inline_ptx set, so an empty
             // name can only mean a corrupted generated table.
-            if intrinsic_name.is_empty() {
+            if intrinsic_name.name.is_empty() {
                 return pliron::input_err_noloc!(
                     "generated scalar math op has no typed LLVM intrinsic"
                 );

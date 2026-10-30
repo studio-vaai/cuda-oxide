@@ -10,7 +10,7 @@
 //! Generated conversion interfaces: `dotprod` intrinsics.
 
 use crate::conversion_interface::MirToLlvmConversion;
-use crate::convert::intrinsics::dotprod::convert_generated_dot_product;
+use crate::convert::intrinsics::{common::Intrinsic, dotprod::convert_generated_dot_product};
 use dialect_nvvm::ops::{Dp2aS32Op, Dp2aU32Op, Dp4aS32Op, Dp4aU32Op};
 use pliron::context::Context;
 use pliron::derive::op_interface_impl;
@@ -30,7 +30,7 @@ impl MirToLlvmConversion for Dp2aS32Op {
             ctx,
             rewriter,
             self.get_operation(),
-            "llvm_nvvm_idp2a_s_s",
+            Intrinsic::new("llvm_nvvm_idp2a_s_s", false),
             "dp2a.lo.s32.s32 $0, $1, $2, $3;",
             true,
         )
@@ -49,7 +49,7 @@ impl MirToLlvmConversion for Dp2aU32Op {
             ctx,
             rewriter,
             self.get_operation(),
-            "llvm_nvvm_idp2a_u_u",
+            Intrinsic::new("llvm_nvvm_idp2a_u_u", false),
             "dp2a.lo.u32.u32 $0, $1, $2, $3;",
             true,
         )
@@ -68,7 +68,7 @@ impl MirToLlvmConversion for Dp4aS32Op {
             ctx,
             rewriter,
             self.get_operation(),
-            "llvm_nvvm_idp4a_s_s",
+            Intrinsic::new("llvm_nvvm_idp4a_s_s", false),
             "dp4a.s32.s32 $0, $1, $2, $3;",
             false,
         )
@@ -87,7 +87,7 @@ impl MirToLlvmConversion for Dp4aU32Op {
             ctx,
             rewriter,
             self.get_operation(),
-            "llvm_nvvm_idp4a_u_u",
+            Intrinsic::new("llvm_nvvm_idp4a_u_u", false),
             "dp4a.u32.u32 $0, $1, $2, $3;",
             false,
         )

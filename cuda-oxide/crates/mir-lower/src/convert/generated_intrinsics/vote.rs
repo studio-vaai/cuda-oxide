@@ -10,7 +10,7 @@
 //! Generated conversion interfaces: `vote` intrinsics.
 
 use crate::conversion_interface::MirToLlvmConversion;
-use crate::convert::intrinsics::warp::convert_vote;
+use crate::convert::intrinsics::{common::Intrinsic, warp::convert_vote};
 use dialect_nvvm::ops::{VoteSyncAllOp, VoteSyncAnyOp, VoteSyncBallotOp, VoteSyncUniOp};
 use pliron::context::Context;
 use pliron::derive::op_interface_impl;
@@ -31,7 +31,7 @@ impl MirToLlvmConversion for VoteSyncAllOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_vote_all_sync",
+            Intrinsic::new("llvm_nvvm_vote_all_sync", true),
         )
     }
 }
@@ -49,7 +49,7 @@ impl MirToLlvmConversion for VoteSyncAnyOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_vote_any_sync",
+            Intrinsic::new("llvm_nvvm_vote_any_sync", true),
         )
     }
 }
@@ -67,7 +67,7 @@ impl MirToLlvmConversion for VoteSyncBallotOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_vote_ballot_sync",
+            Intrinsic::new("llvm_nvvm_vote_ballot_sync", true),
         )
     }
 }
@@ -85,7 +85,7 @@ impl MirToLlvmConversion for VoteSyncUniOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_vote_uni_sync",
+            Intrinsic::new("llvm_nvvm_vote_uni_sync", true),
         )
     }
 }

@@ -6,6 +6,7 @@
 //! Lowering helper for generated scalar conversions.
 
 use super::common::call_intrinsic;
+use crate::helpers::Intrinsic;
 use crate::{IntrinsicBackend, context};
 use llvm_export::{
     ops::{self as llvm, AsmKind, InlineAsmOpExt},
@@ -26,7 +27,7 @@ pub(crate) fn convert_generated_scalar_conversion(
     ctx: &mut Context,
     rewriter: &mut DialectConversionRewriter,
     op: Ptr<Operation>,
-    intrinsic_name: &str,
+    intrinsic_name: Intrinsic<'_>,
     ptx_mnemonic: &str,
 ) -> Result<()> {
     let operands: Vec<_> = op.deref(ctx).operands().collect();

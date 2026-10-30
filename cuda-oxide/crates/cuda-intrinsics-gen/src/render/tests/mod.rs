@@ -13,6 +13,9 @@ use crate::model::{
 };
 use std::path::Path;
 
+/// Verify exact catalog convergence facts and ambiguous-route rejection.
+/// This follows the renderer's shared test-module layout.
+mod convergence;
 mod mma;
 mod scalar_misc;
 mod tensor;

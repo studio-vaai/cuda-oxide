@@ -11,7 +11,8 @@
 
 use crate::conversion_interface::MirToLlvmConversion;
 use crate::convert::intrinsics::{
-    common::call_intrinsic, common::create_i32_const, common::inline_asm_convergent,
+    common::Intrinsic, common::call_intrinsic, common::create_i32_const,
+    common::inline_asm_convergent,
 };
 use crate::{IntrinsicBackend, context};
 use dialect_nvvm::ops::{Barrier0Op, ThreadfenceBlockOp, ThreadfenceOp, ThreadfenceSystemOp};
@@ -44,7 +45,7 @@ impl MirToLlvmConversion for Barrier0Op {
                     ctx,
                     rewriter,
                     op,
-                    "llvm_nvvm_barrier_cta_sync_aligned_all",
+                    Intrinsic::new("llvm_nvvm_barrier_cta_sync_aligned_all", true),
                     function_ty,
                     vec![barrier_id],
                 )?;
@@ -81,7 +82,7 @@ impl MirToLlvmConversion for ThreadfenceOp {
             ctx,
             rewriter,
             op,
-            "llvm_nvvm_membar_gl",
+            Intrinsic::new("llvm_nvvm_membar_gl", false),
             function_ty,
             vec![],
         )?;
@@ -105,7 +106,7 @@ impl MirToLlvmConversion for ThreadfenceBlockOp {
             ctx,
             rewriter,
             op,
-            "llvm_nvvm_membar_cta",
+            Intrinsic::new("llvm_nvvm_membar_cta", false),
             function_ty,
             vec![],
         )?;
@@ -129,7 +130,7 @@ impl MirToLlvmConversion for ThreadfenceSystemOp {
             ctx,
             rewriter,
             op,
-            "llvm_nvvm_membar_sys",
+            Intrinsic::new("llvm_nvvm_membar_sys", false),
             function_ty,
             vec![],
         )?;

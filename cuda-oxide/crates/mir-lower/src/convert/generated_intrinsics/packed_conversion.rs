@@ -11,7 +11,8 @@
 
 use crate::conversion_interface::MirToLlvmConversion;
 use crate::convert::intrinsics::{
-    packed::convert_generated_packed_f32x2, packed::convert_generated_packed_unary,
+    common::Intrinsic, packed::convert_generated_packed_f32x2,
+    packed::convert_generated_packed_unary,
 };
 use dialect_nvvm::ops::{
     CvtF16x2F32Op, CvtF32x2Bf16x2Op, CvtRnF16x2E4m3x2Op, CvtRnF16x2E5m2x2Op, CvtRnReluBf16x2F32Op,
@@ -231,7 +232,7 @@ impl MirToLlvmConversion for CvtRnSatfiniteE4m3x2F32Op {
             ctx,
             rewriter,
             self.get_operation(),
-            Some("llvm_nvvm_ff_to_e4m3x2_rn"),
+            Some(Intrinsic::new("llvm_nvvm_ff_to_e4m3x2_rn", false)),
             "cvt.rn.satfinite.e4m3x2.f32",
             16,
         )
@@ -288,7 +289,7 @@ impl MirToLlvmConversion for CvtRnSatfiniteE5m2x2F32Op {
             ctx,
             rewriter,
             self.get_operation(),
-            Some("llvm_nvvm_ff_to_e5m2x2_rn"),
+            Some(Intrinsic::new("llvm_nvvm_ff_to_e5m2x2_rn", false)),
             "cvt.rn.satfinite.e5m2x2.f32",
             16,
         )
@@ -345,7 +346,7 @@ impl MirToLlvmConversion for CvtRnSatfiniteReluE4m3x2F32Op {
             ctx,
             rewriter,
             self.get_operation(),
-            Some("llvm_nvvm_ff_to_e4m3x2_rn_relu"),
+            Some(Intrinsic::new("llvm_nvvm_ff_to_e4m3x2_rn_relu", false)),
             "cvt.rn.satfinite.relu.e4m3x2.f32",
             16,
         )
@@ -402,7 +403,7 @@ impl MirToLlvmConversion for CvtRnSatfiniteReluE5m2x2F32Op {
             ctx,
             rewriter,
             self.get_operation(),
-            Some("llvm_nvvm_ff_to_e5m2x2_rn_relu"),
+            Some(Intrinsic::new("llvm_nvvm_ff_to_e5m2x2_rn_relu", false)),
             "cvt.rn.satfinite.relu.e5m2x2.f32",
             16,
         )

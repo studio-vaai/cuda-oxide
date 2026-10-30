@@ -239,7 +239,7 @@ fn packed_alu_and_conversion_render_exact_pure_inline_ptx_adapters() {
         ),
     ] {
         assert!(lowering.contains(&format!(
-                "convert_generated_packed_f32x2(ctx, rewriter, self.get_operation(), Some(\"{intrinsic}\"), \"{mnemonic}\", 16)"
+                "convert_generated_packed_f32x2(ctx, rewriter, self.get_operation(), Some(Intrinsic::new(\"{intrinsic}\", false)), \"{mnemonic}\", 16)"
             )));
     }
 
@@ -676,10 +676,10 @@ fn clc_rendering_preserves_api_and_uses_typed_llvm_routes() {
     assert!(lowering.contains("clc::convert_generated_clc_query"));
     assert!(lowering.contains("clc::convert_generated_clc_try_cancel"));
     assert!(lowering.contains(
-            "convert_generated_clc_try_cancel(ctx, rewriter, self.get_operation(), operands_info, \"llvm__nvvm_dclusterlaunchcontrol_dtry_ucancel_dasync_dshared\")"
+            "convert_generated_clc_try_cancel(ctx, rewriter, self.get_operation(), operands_info, Intrinsic::new(\"llvm__nvvm_dclusterlaunchcontrol_dtry_ucancel_dasync_dshared\", false))"
         ));
     assert!(lowering.contains(
-            "convert_generated_clc_query(ctx, rewriter, self.get_operation(), operands_info, \"llvm__nvvm_dclusterlaunchcontrol_dquery_ucancel_dis_ucanceled\", true)"
+            "convert_generated_clc_query(ctx, rewriter, self.get_operation(), operands_info, Intrinsic::new(\"llvm__nvvm_dclusterlaunchcontrol_dquery_ucancel_dis_ucanceled\", false), true)"
         ));
 
     let request = clc_intrinsics(&catalog)

@@ -11,6 +11,7 @@
 
 use super::convert_generated_stmatrix;
 use crate::conversion_interface::MirToLlvmConversion;
+use crate::convert::intrinsics::common::Intrinsic;
 use dialect_nvvm::ops::{
     StmatrixM8n8X2Op, StmatrixM8n8X2TransOp, StmatrixM8n8X4Op, StmatrixM8n8X4TransOp,
 };
@@ -34,7 +35,7 @@ impl MirToLlvmConversion for StmatrixM8n8X2Op {
             self.get_operation(),
             2,
             false,
-            "llvm_nvvm_stmatrix_sync_aligned_m8n8_x2_b16_p3",
+            Intrinsic::new("llvm_nvvm_stmatrix_sync_aligned_m8n8_x2_b16_p3", true),
         )
     }
 }
@@ -53,7 +54,7 @@ impl MirToLlvmConversion for StmatrixM8n8X2TransOp {
             self.get_operation(),
             2,
             true,
-            "llvm_nvvm_stmatrix_sync_aligned_m8n8_x2_trans_b16_p3",
+            Intrinsic::new("llvm_nvvm_stmatrix_sync_aligned_m8n8_x2_trans_b16_p3", true),
         )
     }
 }
@@ -72,7 +73,7 @@ impl MirToLlvmConversion for StmatrixM8n8X4Op {
             self.get_operation(),
             4,
             false,
-            "llvm_nvvm_stmatrix_sync_aligned_m8n8_x4_b16_p3",
+            Intrinsic::new("llvm_nvvm_stmatrix_sync_aligned_m8n8_x4_b16_p3", true),
         )
     }
 }
@@ -91,7 +92,7 @@ impl MirToLlvmConversion for StmatrixM8n8X4TransOp {
             self.get_operation(),
             4,
             true,
-            "llvm_nvvm_stmatrix_sync_aligned_m8n8_x4_trans_b16_p3",
+            Intrinsic::new("llvm_nvvm_stmatrix_sync_aligned_m8n8_x4_trans_b16_p3", true),
         )
     }
 }

@@ -10,7 +10,9 @@
 //! Generated conversion interfaces: `cluster_barrier` intrinsics.
 
 use crate::conversion_interface::MirToLlvmConversion;
-use crate::convert::intrinsics::{common::call_intrinsic, common::inline_asm_convergent};
+use crate::convert::intrinsics::{
+    common::Intrinsic, common::call_intrinsic, common::inline_asm_convergent,
+};
 use crate::{IntrinsicBackend, context};
 use dialect_nvvm::ops::{ClusterBarrierModeAttr, ClusterBarrierOp, ClusterSyncOp};
 use llvm_export::types as llvm_types;
@@ -31,26 +33,27 @@ impl MirToLlvmConversion for ClusterBarrierOp {
     ) -> Result<()> {
         let recipe = match self.get_attr_nvvm_cluster_barrier_mode(ctx).as_deref() {
             Some(&ClusterBarrierModeAttr::Arrive) => (
-                "llvm_nvvm_barrier_cluster_arrive",
+                Intrinsic::new("llvm_nvvm_barrier_cluster_arrive", true),
                 "barrier.cluster.arrive;",
             ),
             Some(&ClusterBarrierModeAttr::ArriveAligned) => (
-                "llvm_nvvm_barrier_cluster_arrive_aligned",
+                Intrinsic::new("llvm_nvvm_barrier_cluster_arrive_aligned", true),
                 "barrier.cluster.arrive.aligned;",
             ),
             Some(&ClusterBarrierModeAttr::ArriveRelaxed) => (
-                "llvm_nvvm_barrier_cluster_arrive_relaxed",
+                Intrinsic::new("llvm_nvvm_barrier_cluster_arrive_relaxed", true),
                 "barrier.cluster.arrive.relaxed;",
             ),
             Some(&ClusterBarrierModeAttr::ArriveRelaxedAligned) => (
-                "llvm_nvvm_barrier_cluster_arrive_relaxed_aligned",
+                Intrinsic::new("llvm_nvvm_barrier_cluster_arrive_relaxed_aligned", true),
                 "barrier.cluster.arrive.relaxed.aligned;",
             ),
-            Some(&ClusterBarrierModeAttr::Wait) => {
-                ("llvm_nvvm_barrier_cluster_wait", "barrier.cluster.wait;")
-            }
+            Some(&ClusterBarrierModeAttr::Wait) => (
+                Intrinsic::new("llvm_nvvm_barrier_cluster_wait", true),
+                "barrier.cluster.wait;",
+            ),
             Some(&ClusterBarrierModeAttr::WaitAligned) => (
-                "llvm_nvvm_barrier_cluster_wait_aligned",
+                Intrinsic::new("llvm_nvvm_barrier_cluster_wait_aligned", true),
                 "barrier.cluster.wait.aligned;",
             ),
             _ => {
@@ -101,7 +104,7 @@ impl MirToLlvmConversion for ClusterSyncOp {
                     ctx,
                     rewriter,
                     op,
-                    "llvm_nvvm_barrier_cluster_arrive_aligned",
+                    Intrinsic::new("llvm_nvvm_barrier_cluster_arrive_aligned", true),
                     function_ty,
                     vec![],
                 )?;
@@ -109,7 +112,7 @@ impl MirToLlvmConversion for ClusterSyncOp {
                     ctx,
                     rewriter,
                     op,
-                    "llvm_nvvm_barrier_cluster_wait_aligned",
+                    Intrinsic::new("llvm_nvvm_barrier_cluster_wait_aligned", true),
                     function_ty,
                     vec![],
                 )?;

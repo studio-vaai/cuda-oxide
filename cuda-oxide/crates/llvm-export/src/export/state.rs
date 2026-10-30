@@ -108,6 +108,9 @@ pub(super) struct ModuleExportState<'a> {
     pub(super) ctx: &'a pliron::context::Context,
     /// Track if any convergent operations were used (for emitting attributes section)
     pub(super) convergent_used: bool,
+    /// Read-only convergence requirements computed before textual emission.
+    /// Analysis construction is independent of serializer bookkeeping.
+    pub(super) convergence: super::convergence::ConvergenceAnalysis,
     /// Track kernels with cluster configurations for nvvm.annotations metadata
     pub(super) cluster_kernels: Vec<KernelClusterConfig>,
     /// Track kernels with launch bounds for nvvm.annotations metadata
@@ -247,6 +250,7 @@ impl<'a> ModuleExportState<'a> {
         Self {
             ctx,
             convergent_used: false,
+            convergence: super::convergence::ConvergenceAnalysis::default(),
             cluster_kernels: Vec::new(),
             launch_bounds_kernels: Vec::new(),
             all_kernels: Vec::new(),
@@ -320,169 +324,5 @@ impl<'a> ModuleExportState<'a> {
     #[cfg(test)]
     pub(super) fn next_metadata_id(&self) -> usize {
         self.next_metadata_id
-    }
-
-    /// Check if a function name is a known convergent intrinsic.
-    ///
-    /// These intrinsics require warp-synchronous execution semantics and must
-    /// be marked convergent to prevent LLVM from applying optimizations that
-    /// would break GPU synchronization (like duplicating them into divergent branches).
-    pub(super) fn is_convergent_intrinsic(name: &str) -> bool {
-        // Block-level barriers
-        name == "llvm.nvvm.barrier0"
-            || name.starts_with("llvm.nvvm.barrier")
-            // mbarrier operations
-            || name.starts_with("llvm.nvvm.mbarrier")
-            // Warp shuffles (though LLVM usually handles these)
-            || name.starts_with("llvm.nvvm.shfl")
-            // Warp votes
-            || name.starts_with("llvm.nvvm.vote")
-            // Warp match collectives (match.{any,all}.sync.*)
-            || name.starts_with("llvm.nvvm.match")
-            // Warp-level barrier (bar.warp.sync). Note the block-level
-            // `barrier` prefix above does not match the `bar.` spelling.
-            || name == "llvm.nvvm.bar.warp.sync"
-            // Active-lane mask query; its result depends on warp convergence.
-            || name == "llvm.nvvm.activemask"
-            // Warp reductions (redux.sync.*)
-            || name.starts_with("llvm.nvvm.redux")
-            // Async bulk operations (TMA)
-            || name.starts_with("llvm.nvvm.cp.async.bulk")
-            // Warpgroup register reconfiguration
-            // (setmaxnreg.{inc,dec}.sync.aligned.u32): all warps of the
-            // warpgroup must execute it together, so it is convergent and
-            // side-effecting and must not be sunk into divergent branches.
-            || name.starts_with("llvm.nvvm.setmaxnreg")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::ModuleExportState;
-
-    #[test]
-    fn warp_match_collectives_are_convergent() {
-        // `match.{any,all}.sync.*` are warp collectives: every participating
-        // lane must execute together, so the exported declaration must carry
-        // the `convergent` attribute. These are the exact dotted names produced
-        // when lowering the `match_*_sync_*` ops (underscores -> dots on export).
-        for name in [
-            "llvm.nvvm.match.any.sync.i32",
-            "llvm.nvvm.match.any.sync.i64",
-            "llvm.nvvm.match.all.sync.i32p",
-            "llvm.nvvm.match.all.sync.i64p",
-        ] {
-            assert!(
-                ModuleExportState::is_convergent_intrinsic(name),
-                "{name} should be flagged convergent"
-            );
-        }
-    }
-
-    #[test]
-    fn bar_warp_sync_is_convergent() {
-        // `bar.warp.sync` is a warp-level barrier; the `barrier` prefix used
-        // for block-level barriers does not match the `bar.` spelling, so it
-        // needs its own coverage.
-        assert!(ModuleExportState::is_convergent_intrinsic(
-            "llvm.nvvm.bar.warp.sync"
-        ));
-    }
-
-    #[test]
-    fn activemask_is_convergent() {
-        // `activemask` returns the set of currently converged lanes, so its
-        // result depends on the convergence state and must not be moved.
-        assert!(ModuleExportState::is_convergent_intrinsic(
-            "llvm.nvvm.activemask"
-        ));
-    }
-
-    #[test]
-    fn non_collective_intrinsics_are_not_convergent() {
-        // Plain ALU/special-register intrinsics must NOT be flagged convergent.
-        // The lane-position masks are read-only sregs (dotted names produced by
-        // lowering `lanemask_*`: underscores -> dots on export), so despite
-        // being warp-related they carry no convergence constraint.
-        for name in [
-            "llvm.nvvm.read.ptx.sreg.tid.x",
-            "llvm.nvvm.read.ptx.sreg.laneid",
-            "llvm.nvvm.read.ptx.sreg.lanemask.lt",
-            "llvm.nvvm.read.ptx.sreg.lanemask.le",
-            "llvm.nvvm.read.ptx.sreg.lanemask.eq",
-            "llvm.nvvm.read.ptx.sreg.lanemask.ge",
-            "llvm.nvvm.read.ptx.sreg.lanemask.gt",
-        ] {
-            assert!(
-                !ModuleExportState::is_convergent_intrinsic(name),
-                "{name} should not be flagged convergent"
-            );
-        }
-    }
-
-    #[test]
-    fn setmaxnreg_is_convergent() {
-        // `setmaxnreg.{inc,dec}.sync.aligned.u32` reconfigures the register
-        // file for the whole warpgroup; every warp must execute it together,
-        // so the exported declaration must carry `convergent`.
-        for name in [
-            "llvm.nvvm.setmaxnreg.inc.sync.aligned.u32",
-            "llvm.nvvm.setmaxnreg.dec.sync.aligned.u32",
-        ] {
-            assert!(
-                ModuleExportState::is_convergent_intrinsic(name),
-                "{name} should be flagged convergent"
-            );
-        }
-    }
-
-    #[test]
-    fn counted_cta_barriers_are_convergent() {
-        // The counted CTA barrier family (barrier.cta.{sync,arrive} with a
-        // thread count, aligned or not) is covered by the `llvm.nvvm.barrier`
-        // prefix; this checks that coverage against the exact names the
-        // generated lowerings produce.
-        for name in [
-            "llvm.nvvm.barrier.cta.sync.count",
-            "llvm.nvvm.barrier.cta.sync.aligned.count",
-            "llvm.nvvm.barrier.cta.arrive.count",
-            "llvm.nvvm.barrier.cta.arrive.aligned.count",
-            "llvm.nvvm.barrier.cta.sync.aligned.all",
-        ] {
-            assert!(
-                ModuleExportState::is_convergent_intrinsic(name),
-                "{name} should be flagged convergent"
-            );
-        }
-    }
-
-    #[test]
-    fn redux_sync_intrinsics_are_convergent() {
-        // The exact name produced when lowering `redux_sync_add`
-        // (`llvm_nvvm_redux_sync_add` -> dotted form on export).
-        assert!(ModuleExportState::is_convergent_intrinsic(
-            "llvm.nvvm.redux.sync.add"
-        ));
-        // The whole redux.sync integer family is a warp collective and must be
-        // flagged convergent (the `llvm.nvvm.redux` prefix covers every name
-        // lowered by the redux ops).
-        for name in [
-            "llvm.nvvm.redux.sync.umin",
-            "llvm.nvvm.redux.sync.min",
-            "llvm.nvvm.redux.sync.umax",
-            "llvm.nvvm.redux.sync.max",
-            "llvm.nvvm.redux.sync.and",
-            "llvm.nvvm.redux.sync.or",
-            "llvm.nvvm.redux.sync.xor",
-        ] {
-            assert!(
-                ModuleExportState::is_convergent_intrinsic(name),
-                "{name} should be convergent"
-            );
-        }
-        // A plain ALU/sreg intrinsic must NOT be flagged convergent.
-        assert!(!ModuleExportState::is_convergent_intrinsic(
-            "llvm.nvvm.read.ptx.sreg.tid.x"
-        ));
     }
 }

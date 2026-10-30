@@ -7,6 +7,7 @@
 
 use crate::convert::intrinsics::common::*;
 use crate::helpers;
+use crate::helpers::Intrinsic;
 use crate::{IntrinsicBackend, context};
 use llvm_export::op_interfaces::CastOpInterface;
 use llvm_export::ops as llvm;
@@ -435,7 +436,7 @@ pub(crate) struct ReduceConfig<'a> {
     dims: usize,
     reduction: &'a str,
     load_mode: &'a str,
-    intrinsic_name: &'a str,
+    intrinsic_name: Intrinsic<'a>,
 }
 
 impl<'a> ReduceConfig<'a> {
@@ -443,7 +444,7 @@ impl<'a> ReduceConfig<'a> {
         dims: usize,
         reduction: &'a str,
         load_mode: &'a str,
-        intrinsic_name: &'a str,
+        intrinsic_name: Intrinsic<'a>,
     ) -> Self {
         Self {
             dims,
@@ -582,7 +583,7 @@ pub(crate) fn convert_prefetch_tensormap(
     rewriter: &mut DialectConversionRewriter,
     op: Ptr<Operation>,
     _operands_info: &OperandsInfo,
-    intrinsic_name: &str,
+    intrinsic_name: Intrinsic<'_>,
 ) -> Result<()> {
     let operands: Vec<_> = op.deref(ctx).operands().collect();
     if operands.len() != 1 || op.deref(ctx).get_num_results() != 0 {
@@ -617,7 +618,7 @@ pub(crate) struct PrefetchTileConfig<'a> {
     coordinate_count: usize,
     gather4: bool,
     use_cache_hint: bool,
-    intrinsic_name: &'a str,
+    intrinsic_name: Intrinsic<'a>,
 }
 
 impl<'a> PrefetchTileConfig<'a> {
@@ -625,7 +626,7 @@ impl<'a> PrefetchTileConfig<'a> {
         coordinate_count: usize,
         gather4: bool,
         use_cache_hint: bool,
-        intrinsic_name: &'a str,
+        intrinsic_name: Intrinsic<'a>,
     ) -> Self {
         Self {
             coordinate_count,
@@ -735,7 +736,7 @@ pub(crate) fn convert_tensormap_replace(
     rewriter: &mut DialectConversionRewriter,
     op: Ptr<Operation>,
     _operands_info: &OperandsInfo,
-    _intrinsic_name: &str,
+    _intrinsic_name: Intrinsic<'_>,
     field: &str,
     value_kind: &str,
     ordinal: bool,
@@ -793,7 +794,7 @@ pub(crate) fn convert_tensormap_fence(
     rewriter: &mut DialectConversionRewriter,
     op: Ptr<Operation>,
     _operands_info: &OperandsInfo,
-    intrinsic_name: &str,
+    intrinsic_name: Intrinsic<'_>,
     acquire: bool,
     scope: &str,
 ) -> Result<()> {
@@ -853,7 +854,7 @@ pub(crate) fn convert_control(
     op: Ptr<Operation>,
     _operands_info: &OperandsInfo,
     operation: &str,
-    intrinsic_name: &str,
+    intrinsic_name: Intrinsic<'_>,
 ) -> Result<()> {
     let operands: Vec<_> = op.deref(ctx).operands().collect();
     let expected_operands = match operation {

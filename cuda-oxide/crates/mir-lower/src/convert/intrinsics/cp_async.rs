@@ -8,6 +8,7 @@
 use crate::convert::intrinsics::common::{
     call_intrinsic, inline_asm_convergent, inline_asm_sideeffect,
 };
+use crate::helpers::Intrinsic;
 use crate::{IntrinsicBackend, context};
 use llvm_export::op_interfaces::CastOpInterface;
 use llvm_export::{ops as llvm, types as llvm_types};
@@ -30,7 +31,7 @@ pub(crate) fn convert_generated_cp_async_copy(
     cache_policy: &str,
     copy_size: u32,
     has_source_size: bool,
-    typed_intrinsic_name: &str,
+    typed_intrinsic_name: Intrinsic<'_>,
 ) -> Result<()> {
     validate_copy_shape(ctx, op, cache_policy, copy_size, has_source_size)?;
     let operands: Vec<_> = op.deref(ctx).operands().collect();
@@ -65,7 +66,7 @@ pub(crate) fn convert_generated_cp_async_control(
     rewriter: &mut DialectConversionRewriter,
     op: Ptr<Operation>,
     operation: &str,
-    typed_intrinsic_name: &str,
+    typed_intrinsic_name: Intrinsic<'_>,
 ) -> Result<()> {
     let operands: Vec<_> = op.deref(ctx).operands().collect();
     let expected_operands = match operation {
@@ -106,7 +107,7 @@ pub(crate) fn convert_generated_cp_async_mbarrier(
     op: Ptr<Operation>,
     operation: &str,
     state_space: &str,
-    typed_intrinsic_name: &str,
+    typed_intrinsic_name: Intrinsic<'_>,
 ) -> Result<()> {
     let operands: Vec<_> = op.deref(ctx).operands().collect();
     if operands.len() != 1 || op.deref(ctx).get_num_results() != 0 {
@@ -224,7 +225,7 @@ fn lower_copy_with_llvm_intrinsic(
     op: Ptr<Operation>,
     operands: Vec<Value>,
     has_source_size: bool,
-    intrinsic_name: &str,
+    intrinsic_name: Intrinsic<'_>,
 ) -> Result<()> {
     let shared_pointer = normalize_copy_pointer(
         ctx,
@@ -360,7 +361,7 @@ fn lower_control_with_llvm_intrinsic(
     rewriter: &mut DialectConversionRewriter,
     op: Ptr<Operation>,
     operands: Vec<Value>,
-    intrinsic_name: &str,
+    intrinsic_name: Intrinsic<'_>,
 ) -> Result<()> {
     let argument_types = if operands.is_empty() {
         vec![]

@@ -10,7 +10,7 @@
 //! Generated conversion interfaces: `prmt` intrinsics.
 
 use crate::conversion_interface::MirToLlvmConversion;
-use crate::convert::intrinsics::prmt::convert_generated_prmt;
+use crate::convert::intrinsics::{common::Intrinsic, prmt::convert_generated_prmt};
 use dialect_nvvm::ops::{PrmtModeAttr, PrmtOp};
 use pliron::context::Context;
 use pliron::derive::op_interface_impl;
@@ -27,13 +27,34 @@ impl MirToLlvmConversion for PrmtOp {
         _operands_info: &OperandsInfo,
     ) -> Result<()> {
         let recipe = match self.get_attr_nvvm_prmt_mode(ctx).as_deref() {
-            Some(&PrmtModeAttr::Generic) => ("llvm_nvvm_prmt", "prmt.b32 $0, $1, $2, $3;"),
-            Some(&PrmtModeAttr::B4e) => ("llvm_nvvm_prmt_b4e", "prmt.b32.b4e $0, $1, $2, $3;"),
-            Some(&PrmtModeAttr::Ecl) => ("llvm_nvvm_prmt_ecl", "prmt.b32.ecl $0, $1, 0, $2;"),
-            Some(&PrmtModeAttr::Ecr) => ("llvm_nvvm_prmt_ecr", "prmt.b32.ecr $0, $1, 0, $2;"),
-            Some(&PrmtModeAttr::F4e) => ("llvm_nvvm_prmt_f4e", "prmt.b32.f4e $0, $1, $2, $3;"),
-            Some(&PrmtModeAttr::Rc16) => ("llvm_nvvm_prmt_rc16", "prmt.b32.rc16 $0, $1, 0, $2;"),
-            Some(&PrmtModeAttr::Rc8) => ("llvm_nvvm_prmt_rc8", "prmt.b32.rc8 $0, $1, 0, $2;"),
+            Some(&PrmtModeAttr::Generic) => (
+                Intrinsic::new("llvm_nvvm_prmt", false),
+                "prmt.b32 $0, $1, $2, $3;",
+            ),
+            Some(&PrmtModeAttr::B4e) => (
+                Intrinsic::new("llvm_nvvm_prmt_b4e", false),
+                "prmt.b32.b4e $0, $1, $2, $3;",
+            ),
+            Some(&PrmtModeAttr::Ecl) => (
+                Intrinsic::new("llvm_nvvm_prmt_ecl", false),
+                "prmt.b32.ecl $0, $1, 0, $2;",
+            ),
+            Some(&PrmtModeAttr::Ecr) => (
+                Intrinsic::new("llvm_nvvm_prmt_ecr", false),
+                "prmt.b32.ecr $0, $1, 0, $2;",
+            ),
+            Some(&PrmtModeAttr::F4e) => (
+                Intrinsic::new("llvm_nvvm_prmt_f4e", false),
+                "prmt.b32.f4e $0, $1, $2, $3;",
+            ),
+            Some(&PrmtModeAttr::Rc16) => (
+                Intrinsic::new("llvm_nvvm_prmt_rc16", false),
+                "prmt.b32.rc16 $0, $1, 0, $2;",
+            ),
+            Some(&PrmtModeAttr::Rc8) => (
+                Intrinsic::new("llvm_nvvm_prmt_rc8", false),
+                "prmt.b32.rc8 $0, $1, 0, $2;",
+            ),
             _ => {
                 return pliron::input_err!(
                     self.get_operation().deref(ctx).loc(),

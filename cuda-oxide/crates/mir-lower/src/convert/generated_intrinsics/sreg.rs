@@ -11,7 +11,7 @@
 
 use super::convert_zero_operand_scalar_direct;
 use crate::conversion_interface::MirToLlvmConversion;
-use crate::convert::intrinsics::basic::convert_sreg_read_inline;
+use crate::convert::intrinsics::{basic::convert_sreg_read_inline, common::Intrinsic};
 use crate::{IntrinsicBackend, context};
 use dialect_nvvm::ops::{
     ReadPtxSregClock64Op, ReadPtxSregClockOp, ReadPtxSregClusterCtaidXOp,
@@ -48,7 +48,7 @@ impl MirToLlvmConversion for ReadPtxSregNtidXOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_ntid_x",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_ntid_x", false),
         )
     }
 }
@@ -66,7 +66,7 @@ impl MirToLlvmConversion for ReadPtxSregNtidYOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_ntid_y",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_ntid_y", false),
         )
     }
 }
@@ -84,7 +84,7 @@ impl MirToLlvmConversion for ReadPtxSregNtidZOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_ntid_z",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_ntid_z", false),
         )
     }
 }
@@ -102,7 +102,7 @@ impl MirToLlvmConversion for ReadPtxSregCtaidXOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_ctaid_x",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_ctaid_x", false),
         )
     }
 }
@@ -120,7 +120,7 @@ impl MirToLlvmConversion for ReadPtxSregCtaidYOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_ctaid_y",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_ctaid_y", false),
         )
     }
 }
@@ -138,7 +138,7 @@ impl MirToLlvmConversion for ReadPtxSregCtaidZOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_ctaid_z",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_ctaid_z", false),
         )
     }
 }
@@ -157,14 +157,14 @@ impl MirToLlvmConversion for ReadPtxSregClockOp {
                 rewriter,
                 self.get_operation(),
                 32,
-                "llvm_nvvm_read_ptx_sreg_clock",
+                Intrinsic::new("llvm_nvvm_read_ptx_sreg_clock", false),
             ),
             IntrinsicBackend::LibNvvm => convert_zero_operand_scalar_direct(
                 ctx,
                 rewriter,
                 self.get_operation(),
                 32,
-                "llvm_nvvm_read_ptx_sreg_clock",
+                Intrinsic::new("llvm_nvvm_read_ptx_sreg_clock", false),
             ),
         }
     }
@@ -184,14 +184,14 @@ impl MirToLlvmConversion for ReadPtxSregClock64Op {
                 rewriter,
                 self.get_operation(),
                 64,
-                "llvm_nvvm_read_ptx_sreg_clock64",
+                Intrinsic::new("llvm_nvvm_read_ptx_sreg_clock64", false),
             ),
             IntrinsicBackend::LibNvvm => convert_zero_operand_scalar_direct(
                 ctx,
                 rewriter,
                 self.get_operation(),
                 64,
-                "llvm_nvvm_read_ptx_sreg_clock64",
+                Intrinsic::new("llvm_nvvm_read_ptx_sreg_clock64", false),
             ),
         }
     }
@@ -210,7 +210,7 @@ impl MirToLlvmConversion for ReadPtxSregClusterNctarankOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_cluster_nctarank",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_cluster_nctarank", false),
         )
     }
 }
@@ -228,7 +228,7 @@ impl MirToLlvmConversion for ReadPtxSregClusterCtaidXOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_cluster_ctaid_x",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_cluster_ctaid_x", false),
         )
     }
 }
@@ -246,7 +246,7 @@ impl MirToLlvmConversion for ReadPtxSregClusterCtaidYOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_cluster_ctaid_y",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_cluster_ctaid_y", false),
         )
     }
 }
@@ -264,7 +264,7 @@ impl MirToLlvmConversion for ReadPtxSregClusterCtaidZOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_cluster_ctaid_z",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_cluster_ctaid_z", false),
         )
     }
 }
@@ -282,7 +282,7 @@ impl MirToLlvmConversion for ReadPtxSregClusterCtarankOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_cluster_ctarank",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_cluster_ctarank", false),
         )
     }
 }
@@ -300,7 +300,7 @@ impl MirToLlvmConversion for ReadPtxSregClusterNctaidXOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_cluster_nctaid_x",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_cluster_nctaid_x", false),
         )
     }
 }
@@ -318,7 +318,7 @@ impl MirToLlvmConversion for ReadPtxSregClusterNctaidYOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_cluster_nctaid_y",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_cluster_nctaid_y", false),
         )
     }
 }
@@ -336,7 +336,7 @@ impl MirToLlvmConversion for ReadPtxSregClusterNctaidZOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_cluster_nctaid_z",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_cluster_nctaid_z", false),
         )
     }
 }
@@ -354,7 +354,7 @@ impl MirToLlvmConversion for ReadPtxSregNclusterIdXOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_nclusterid_x",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_nclusterid_x", false),
         )
     }
 }
@@ -372,7 +372,7 @@ impl MirToLlvmConversion for ReadPtxSregNclusterIdYOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_nclusterid_y",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_nclusterid_y", false),
         )
     }
 }
@@ -390,7 +390,7 @@ impl MirToLlvmConversion for ReadPtxSregNclusterIdZOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_nclusterid_z",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_nclusterid_z", false),
         )
     }
 }
@@ -408,7 +408,7 @@ impl MirToLlvmConversion for ReadPtxSregClusterIdXOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_clusterid_x",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_clusterid_x", false),
         )
     }
 }
@@ -426,7 +426,7 @@ impl MirToLlvmConversion for ReadPtxSregClusterIdYOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_clusterid_y",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_clusterid_y", false),
         )
     }
 }
@@ -444,7 +444,7 @@ impl MirToLlvmConversion for ReadPtxSregClusterIdZOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_clusterid_z",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_clusterid_z", false),
         )
     }
 }
@@ -494,14 +494,14 @@ impl MirToLlvmConversion for ReadPtxSregEnvReg1Op {
                 rewriter,
                 self.get_operation(),
                 32,
-                "llvm_nvvm_read_ptx_sreg_envreg1",
+                Intrinsic::new("llvm_nvvm_read_ptx_sreg_envreg1", false),
             ),
             IntrinsicBackend::LibNvvm => convert_zero_operand_scalar_direct(
                 ctx,
                 rewriter,
                 self.get_operation(),
                 32,
-                "llvm_nvvm_read_ptx_sreg_envreg1",
+                Intrinsic::new("llvm_nvvm_read_ptx_sreg_envreg1", false),
             ),
         }
     }
@@ -521,14 +521,14 @@ impl MirToLlvmConversion for ReadPtxSregEnvReg2Op {
                 rewriter,
                 self.get_operation(),
                 32,
-                "llvm_nvvm_read_ptx_sreg_envreg2",
+                Intrinsic::new("llvm_nvvm_read_ptx_sreg_envreg2", false),
             ),
             IntrinsicBackend::LibNvvm => convert_zero_operand_scalar_direct(
                 ctx,
                 rewriter,
                 self.get_operation(),
                 32,
-                "llvm_nvvm_read_ptx_sreg_envreg2",
+                Intrinsic::new("llvm_nvvm_read_ptx_sreg_envreg2", false),
             ),
         }
     }
@@ -548,7 +548,7 @@ impl MirToLlvmConversion for ReadPtxSregGlobaltimerOp {
                 rewriter,
                 self.get_operation(),
                 64,
-                "llvm_nvvm_read_ptx_sreg_globaltimer",
+                Intrinsic::new("llvm_nvvm_read_ptx_sreg_globaltimer", false),
             ),
             IntrinsicBackend::LibNvvm => convert_sreg_read_inline(
                 ctx,
@@ -576,7 +576,7 @@ impl MirToLlvmConversion for ReadPtxSregNctaidXOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_nctaid_x",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_nctaid_x", false),
         )
     }
 }
@@ -594,7 +594,7 @@ impl MirToLlvmConversion for ReadPtxSregNctaidYOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_nctaid_y",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_nctaid_y", false),
         )
     }
 }
@@ -612,7 +612,7 @@ impl MirToLlvmConversion for ReadPtxSregNctaidZOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_nctaid_z",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_nctaid_z", false),
         )
     }
 }
@@ -661,7 +661,7 @@ impl MirToLlvmConversion for ReadPtxSregLaneIdOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_laneid",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_laneid", false),
         )
     }
 }
@@ -679,7 +679,7 @@ impl MirToLlvmConversion for ReadPtxSregLanemaskEqOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_lanemask_eq",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_lanemask_eq", false),
         )
     }
 }
@@ -697,7 +697,7 @@ impl MirToLlvmConversion for ReadPtxSregLanemaskGeOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_lanemask_ge",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_lanemask_ge", false),
         )
     }
 }
@@ -715,7 +715,7 @@ impl MirToLlvmConversion for ReadPtxSregLanemaskGtOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_lanemask_gt",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_lanemask_gt", false),
         )
     }
 }
@@ -733,7 +733,7 @@ impl MirToLlvmConversion for ReadPtxSregLanemaskLeOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_lanemask_le",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_lanemask_le", false),
         )
     }
 }
@@ -751,7 +751,7 @@ impl MirToLlvmConversion for ReadPtxSregLanemaskLtOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_lanemask_lt",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_lanemask_lt", false),
         )
     }
 }
@@ -770,14 +770,14 @@ impl MirToLlvmConversion for ReadPtxSregNsmIdOp {
                 rewriter,
                 self.get_operation(),
                 32,
-                "llvm_nvvm_read_ptx_sreg_nsmid",
+                Intrinsic::new("llvm_nvvm_read_ptx_sreg_nsmid", false),
             ),
             IntrinsicBackend::LibNvvm => convert_zero_operand_scalar_direct(
                 ctx,
                 rewriter,
                 self.get_operation(),
                 32,
-                "llvm_nvvm_read_ptx_sreg_nsmid",
+                Intrinsic::new("llvm_nvvm_read_ptx_sreg_nsmid", false),
             ),
         }
     }
@@ -797,14 +797,14 @@ impl MirToLlvmConversion for ReadPtxSregNwarpIdOp {
                 rewriter,
                 self.get_operation(),
                 32,
-                "llvm_nvvm_read_ptx_sreg_nwarpid",
+                Intrinsic::new("llvm_nvvm_read_ptx_sreg_nwarpid", false),
             ),
             IntrinsicBackend::LibNvvm => convert_zero_operand_scalar_direct(
                 ctx,
                 rewriter,
                 self.get_operation(),
                 32,
-                "llvm_nvvm_read_ptx_sreg_nwarpid",
+                Intrinsic::new("llvm_nvvm_read_ptx_sreg_nwarpid", false),
             ),
         }
     }
@@ -854,7 +854,7 @@ impl MirToLlvmConversion for ReadPtxSregTidXOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_tid_x",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_tid_x", false),
         )
     }
 }
@@ -872,7 +872,7 @@ impl MirToLlvmConversion for ReadPtxSregTidYOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_tid_y",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_tid_y", false),
         )
     }
 }
@@ -890,7 +890,7 @@ impl MirToLlvmConversion for ReadPtxSregTidZOp {
             rewriter,
             self.get_operation(),
             32,
-            "llvm_nvvm_read_ptx_sreg_tid_z",
+            Intrinsic::new("llvm_nvvm_read_ptx_sreg_tid_z", false),
         )
     }
 }

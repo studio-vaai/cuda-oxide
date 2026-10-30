@@ -75,9 +75,30 @@ exporter casts it to the exact pointer type needed by a load, store, GEP, call,
 or other typed operation.
 
 The export handles block-arg to PHI-node translation, grouped intrinsic
-declarations, `convergent` attribute on synchronization ops, kernel metadata
+declarations, transitive convergence requirements, kernel metadata
 (`!nvvm.annotations`), launch bounds, cluster config, and device extern FFI
 declarations.
+
+### Convergence analysis
+
+Before printing, a read-only analysis computes requirements over the complete
+lowered LLVM call graph. Explicit function/call attributes and convergent inline
+assembly seed protection, which propagates from callees to callers, including
+recursive components. A call-site annotation protects that caller without
+changing the target function or its other callers. The analysis does not modify
+the input IR. A shared attribute renderer combines explicit attributes with
+inferred protection for definitions, declarations, calls, and inline assembly,
+without duplicating an explicit `convergent` attribute.
+
+`cuda-intrinsics-gen` embeds catalog convergence facts in each generated lowering
+recipe. The shared intrinsic declaration builder carries them as typed internal
+IR metadata and rejects conflicting facts when reusing a declaration. The exporter
+reads this metadata directly, without an NVVM name lookup or runtime catalog.
+An absent fact stays unknown; an explicit LLVM `convergent` attribute always adds
+protection. Core LLVM intrinsic policy lives alongside the analysis.
+Unknown intrinsics, external declarations, and indirect calls stay conservative;
+purity or read-only memory effects do not prove non-convergence. Both export
+entry points use the same analysis in modern and legacy NVVM modes.
 
 ### Target Configuration
 
@@ -105,9 +126,15 @@ let ctx = Context::default();  // ops, types, and attributes are already registe
 ```text
 src/
 ├── lib.rs              # Shim: re-exports pliron-llvm + GPU-specific extensions
+├── intrinsics/
+│   └── mod.rs          # Typed primitive facts carried on LLVM declarations
 └── export/
     ├── mod.rs          # Export entry points + backend configs
     ├── config.rs       # PtxExportConfig / NvvmExportConfig
+    ├── convergence/
+    │   ├── mod.rs              # Read-only call-graph analysis and completed result
+    │   ├── intrinsics.rs       # Core LLVM intrinsic policy
+    │   └── tests.rs            # Conservative unknown-name regressions
     ├── module.rs       # Top-level module emission
     ├── function.rs     # Function bodies, block-arg to PHI translation
     ├── ops.rs          # Per-op textual emission

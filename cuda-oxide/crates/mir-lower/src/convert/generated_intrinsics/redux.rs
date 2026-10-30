@@ -10,7 +10,7 @@
 //! Generated conversion interfaces: `redux` intrinsics.
 
 use crate::conversion_interface::MirToLlvmConversion;
-use crate::convert::intrinsics::warp::convert_redux;
+use crate::convert::intrinsics::{common::Intrinsic, warp::convert_redux};
 use dialect_nvvm::ops::{
     ReduxSyncAddOp, ReduxSyncAndOp, ReduxSyncFmaxAbsNanOp, ReduxSyncFmaxAbsOp, ReduxSyncFmaxNanOp,
     ReduxSyncFmaxOp, ReduxSyncFminAbsNanOp, ReduxSyncFminAbsOp, ReduxSyncFminNanOp,
@@ -36,7 +36,7 @@ impl MirToLlvmConversion for ReduxSyncAddOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_redux_sync_add",
+            Intrinsic::new("llvm_nvvm_redux_sync_add", true),
         )
     }
 }
@@ -54,7 +54,7 @@ impl MirToLlvmConversion for ReduxSyncAndOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_redux_sync_and",
+            Intrinsic::new("llvm_nvvm_redux_sync_and", true),
         )
     }
 }
@@ -72,7 +72,7 @@ impl MirToLlvmConversion for ReduxSyncFmaxAbsOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_redux_sync_fmax_abs",
+            Intrinsic::new("llvm_nvvm_redux_sync_fmax_abs", true),
         )
     }
 }
@@ -90,7 +90,7 @@ impl MirToLlvmConversion for ReduxSyncFmaxAbsNanOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_redux_sync_fmax_abs_NaN",
+            Intrinsic::new("llvm_nvvm_redux_sync_fmax_abs_NaN", true),
         )
     }
 }
@@ -108,7 +108,7 @@ impl MirToLlvmConversion for ReduxSyncFmaxOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_redux_sync_fmax",
+            Intrinsic::new("llvm_nvvm_redux_sync_fmax", true),
         )
     }
 }
@@ -126,7 +126,7 @@ impl MirToLlvmConversion for ReduxSyncMaxOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_redux_sync_max",
+            Intrinsic::new("llvm_nvvm_redux_sync_max", true),
         )
     }
 }
@@ -144,7 +144,7 @@ impl MirToLlvmConversion for ReduxSyncFmaxNanOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_redux_sync_fmax_NaN",
+            Intrinsic::new("llvm_nvvm_redux_sync_fmax_NaN", true),
         )
     }
 }
@@ -162,7 +162,7 @@ impl MirToLlvmConversion for ReduxSyncUmaxOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_redux_sync_umax",
+            Intrinsic::new("llvm_nvvm_redux_sync_umax", true),
         )
     }
 }
@@ -180,7 +180,7 @@ impl MirToLlvmConversion for ReduxSyncFminAbsOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_redux_sync_fmin_abs",
+            Intrinsic::new("llvm_nvvm_redux_sync_fmin_abs", true),
         )
     }
 }
@@ -198,7 +198,7 @@ impl MirToLlvmConversion for ReduxSyncFminAbsNanOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_redux_sync_fmin_abs_NaN",
+            Intrinsic::new("llvm_nvvm_redux_sync_fmin_abs_NaN", true),
         )
     }
 }
@@ -216,7 +216,7 @@ impl MirToLlvmConversion for ReduxSyncFminOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_redux_sync_fmin",
+            Intrinsic::new("llvm_nvvm_redux_sync_fmin", true),
         )
     }
 }
@@ -234,7 +234,7 @@ impl MirToLlvmConversion for ReduxSyncMinOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_redux_sync_min",
+            Intrinsic::new("llvm_nvvm_redux_sync_min", true),
         )
     }
 }
@@ -252,7 +252,7 @@ impl MirToLlvmConversion for ReduxSyncFminNanOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_redux_sync_fmin_NaN",
+            Intrinsic::new("llvm_nvvm_redux_sync_fmin_NaN", true),
         )
     }
 }
@@ -270,7 +270,7 @@ impl MirToLlvmConversion for ReduxSyncUminOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_redux_sync_umin",
+            Intrinsic::new("llvm_nvvm_redux_sync_umin", true),
         )
     }
 }
@@ -288,7 +288,7 @@ impl MirToLlvmConversion for ReduxSyncOrOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_redux_sync_or",
+            Intrinsic::new("llvm_nvvm_redux_sync_or", true),
         )
     }
 }
@@ -306,7 +306,7 @@ impl MirToLlvmConversion for ReduxSyncXorOp {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_redux_sync_xor",
+            Intrinsic::new("llvm_nvvm_redux_sync_xor", true),
         )
     }
 }

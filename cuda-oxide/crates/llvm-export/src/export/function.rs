@@ -1110,18 +1110,12 @@ impl<'a> ModuleExportState<'a> {
                 }
             }
             write!(output, ")").unwrap();
-            if let Some(attrs) = llvm_func_attrs.as_deref() {
-                self.export_llvm_attributes(attrs, output)?;
-            }
-
-            // Check if this is a known convergent intrinsic
-            let is_convergent_intrinsic = Self::is_convergent_intrinsic(&fixed_func_name);
-            if is_convergent_intrinsic {
-                writeln!(output, " #0").unwrap();
-                self.convergent_used = true;
-            } else {
-                writeln!(output).unwrap();
-            }
+            self.export_llvm_attributes(
+                llvm_func_attrs.as_deref(),
+                self.convergence.function_is_convergent(&fixed_func_name),
+                output,
+            )?;
+            writeln!(output).unwrap();
             // No extra newline after declarations to keep them grouped
             return Ok(());
         }
@@ -1204,27 +1198,16 @@ impl<'a> ModuleExportState<'a> {
                 next_value_id += 1;
             }
             write!(output, ")").unwrap();
-            if let Some(attrs) = llvm_func_attrs.as_deref() {
-                self.export_llvm_attributes(attrs, output)?;
-            }
-
-            // Mark every emitted device function `convergent` (attr group #0).
-            // GPU code is convergent-by-default, as in Clang/nvcc: a function
-            // that (transitively) performs a barrier / shuffle / vote must not
-            // have those ops sunk or duplicated into divergent control flow by
-            // `opt -O2`. Without this, an inlined `grid::sync()` / warp collective
-            // gets its `bar.sync.aligned` pushed into a `tid`-dependent branch
-            // and deadlocks. opt's FunctionAttrs strips `convergent` from
-            // functions it proves never reach a convergent op.
-            // Function attributes (an `#[inline]` keyword among them, set by
-            // `mir-lower` in `llvm_func_attrs`) precede the convergent attr
-            // group #0, then the debug scope.
+            self.export_llvm_attributes(
+                llvm_func_attrs.as_deref(),
+                self.convergence.function_is_convergent(&fixed_func_name),
+                output,
+            )?;
             if let Some(scope_id) = debug_scope {
-                writeln!(output, " #0 !dbg !{scope_id} {{").unwrap();
+                writeln!(output, " !dbg !{scope_id} {{").unwrap();
             } else {
-                writeln!(output, " #0 {{").unwrap();
+                writeln!(output, " {{").unwrap();
             }
-            self.convergent_used = true;
 
             // Assign labels to all blocks
             let mut block_labels = FxHashMap::default();

@@ -10,7 +10,8 @@
 //! Generated conversion interfaces for admitted CUDA intrinsic families.
 
 use crate::convert::intrinsics::{
-    common::call_intrinsic, common::cast_to_shared_addrspace, common::inline_asm_convergent,
+    common::Intrinsic, common::call_intrinsic, common::cast_to_shared_addrspace,
+    common::inline_asm_convergent,
 };
 use crate::{IntrinsicBackend, context};
 use llvm_export::{ops as llvm_ops, types as llvm_types};
@@ -64,7 +65,7 @@ fn convert_zero_operand_scalar_direct(
     rewriter: &mut DialectConversionRewriter,
     op: Ptr<Operation>,
     width: u32,
-    intrinsic_name: &str,
+    intrinsic_name: Intrinsic<'_>,
 ) -> Result<()> {
     let result_ty = IntegerType::get(ctx, width, Signedness::Signless);
     let function_ty = llvm_types::FuncType::get(ctx, result_ty.into(), vec![], false);
@@ -176,7 +177,7 @@ fn convert_generated_stmatrix(
     op: Ptr<Operation>,
     register_count: usize,
     transposed: bool,
-    typed_intrinsic_name: &str,
+    typed_intrinsic_name: Intrinsic<'_>,
 ) -> Result<()> {
     let operands: Vec<_> = op.deref(ctx).operands().collect();
     if operands.len() != register_count + 1 || !matches!(register_count, 2 | 4) {

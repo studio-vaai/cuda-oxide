@@ -143,7 +143,7 @@ fn nvvm_metadata_version_uses_next_allocated_metadata_id() {
 #[test]
 fn export_inline_intent_function_attribute_uses_llvm_define_syntax() {
     // `mir-lower` places an `#[inline]` keyword in `llvm_func_attrs`; the generic
-    // attribute renderer writes it after the parameter list, before attr group #0.
+    // attribute renderer writes it after the parameter list.
     // The keywords are listed here as plain text: this crate renders whatever
     // attribute it is handed and does not depend on the MIR dialect's enum.
     for keyword in ["inlinehint", "alwaysinline", "noinline"] {
@@ -168,12 +168,12 @@ fn export_inline_intent_function_attribute_uses_llvm_define_syntax() {
             .expect("inline helper definition");
         assert_eq!(
             define_line,
-            format!("define void @inline_helper() {keyword} #0 {{"),
-            "{keyword} must be emitted after the parameter list, before attr group #0:\n{ir}"
+            format!("define void @inline_helper() {keyword} {{"),
+            "{keyword} must be emitted after the parameter list:\n{ir}"
         );
         assert!(
-            ir.contains("attributes #0 = { convergent }"),
-            "convergent attribute group must still be emitted:\n{ir}"
+            !ir.contains("attributes #0 = { convergent }"),
+            "arithmetic-only helpers need no convergent attribute group:\n{ir}"
         );
     }
 }

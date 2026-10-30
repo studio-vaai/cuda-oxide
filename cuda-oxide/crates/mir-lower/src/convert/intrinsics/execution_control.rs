@@ -8,6 +8,7 @@
 use crate::convert::intrinsics::common::{
     call_intrinsic, create_i32_const, inline_asm_convergent, inline_asm_sideeffect,
 };
+use crate::helpers::Intrinsic;
 use crate::{IntrinsicBackend, context};
 use llvm_export::types as llvm_types;
 use pliron::builtin::types::{IntegerType, Signedness};
@@ -22,7 +23,7 @@ pub(crate) fn convert_counted_barrier(
     rewriter: &mut DialectConversionRewriter,
     op: Ptr<Operation>,
     _operands_info: &OperandsInfo,
-    intrinsic_name: &str,
+    intrinsic_name: Intrinsic<'_>,
     ptx: &str,
 ) -> Result<()> {
     let operands: Vec<_> = op.deref(ctx).operands().collect();
@@ -61,7 +62,7 @@ pub(crate) fn convert_grid_dependency(
     rewriter: &mut DialectConversionRewriter,
     op: Ptr<Operation>,
     _operands_info: &OperandsInfo,
-    intrinsic_name: &str,
+    intrinsic_name: Intrinsic<'_>,
     ptx: &str,
 ) -> Result<()> {
     if op.deref(ctx).get_num_operands() != 0 || op.deref(ctx).get_num_results() != 0 {
@@ -84,7 +85,7 @@ pub(crate) fn convert_setmaxnreg(
     op: Ptr<Operation>,
     _operands_info: &OperandsInfo,
     register_count: u32,
-    intrinsic_name: &str,
+    intrinsic_name: Intrinsic<'_>,
     direction: &str,
 ) -> Result<()> {
     if !(24..=256).contains(&register_count)

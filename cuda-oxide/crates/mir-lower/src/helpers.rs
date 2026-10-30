@@ -60,6 +60,48 @@ use pliron::linked_list::ContainsLinkedList;
 use pliron::op::Op;
 use pliron::value::Value;
 
+/// An exact LLVM intrinsic name and the semantics proven by its lowering recipe.
+/// Catalog generation supplies a fact; handwritten string callers remain unknown.
+#[derive(Clone, Copy, Debug)]
+pub struct Intrinsic<'a> {
+    /// Encoded LLVM symbol selected by this recipe, including overload suffixes.
+    /// The declaration builder uses this name without family-based inference.
+    pub name: &'a str,
+    /// A proven primitive requirement, or none when the caller supplied no proof.
+    /// Missing facts preserve the exporter's conservative external-call behavior.
+    convergence: Option<bool>,
+}
+
+impl<'a> Intrinsic<'a> {
+    /// Construct a descriptor from an exact catalog-selected intrinsic and its fact.
+    /// Both true and false are explicit proofs, independent of memory semantics.
+    pub const fn new(name: &'a str, convergent: bool) -> Self {
+        Self {
+            name,
+            convergence: Some(convergent),
+        }
+    }
+}
+
+impl<'a> From<&'a str> for Intrinsic<'a> {
+    /// Preserve a handwritten name without inventing primitive semantics.
+    /// The missing fact keeps unknown calls conservative during export.
+    fn from(name: &'a str) -> Self {
+        Self {
+            name,
+            convergence: None,
+        }
+    }
+}
+
+impl<'a> From<&'a String> for Intrinsic<'a> {
+    /// Borrow a dynamically constructed name without adding an unproved fact.
+    /// The descriptor cannot outlive the string that owns its symbol.
+    fn from(name: &'a String) -> Self {
+        Self::from(name.as_str())
+    }
+}
+
 // ============================================================================
 // Constant Creation
 // ============================================================================
@@ -294,12 +336,14 @@ pub fn create_i64_constant(
 /// translated to the standard LLVM intrinsic names with dots when exported to
 /// LLVM IR (e.g., `llvm.nvvm.read.ptx.sreg.tid.x`).
 /// Escape-mode identifiers preserve literal underscores with `_u`.
-pub fn ensure_intrinsic_declared(
+pub fn ensure_intrinsic_declared<'a>(
     ctx: &mut Context,
     llvm_block: Ptr<BasicBlock>,
-    intrinsic_name: &str,
+    intrinsic: impl Into<Intrinsic<'a>>,
     func_ty: pliron::r#type::TypedHandle<llvm_export::types::FuncType>,
 ) -> Result<Ptr<pliron::operation::Operation>, anyhow::Error> {
+    let intrinsic = intrinsic.into();
+    let intrinsic_name = intrinsic.name;
     // Navigate from block to parent function
     let func_op = llvm_block
         .deref(ctx)
@@ -339,14 +383,34 @@ pub fn ensure_intrinsic_declared(
 
     // If not declared, create a function declaration (no body)
     if let Some(existing_declaration) = existing_declaration {
+        attach_intrinsic_convergence(ctx, existing_declaration, intrinsic)?;
         return Ok(existing_declaration);
     }
 
     let func_decl = llvm::FuncOp::new(ctx, sym_name, func_ty);
     let func_decl_op = func_decl.get_operation();
+    attach_intrinsic_convergence(ctx, func_decl_op, intrinsic)?;
     func_decl_op.insert_before(ctx, func_op);
 
     Ok(func_decl_op)
+}
+
+/// Transfer a catalog proof onto a new or reused intrinsic declaration.
+/// The typed setter rejects conflicting recipes without overwriting earlier facts.
+fn attach_intrinsic_convergence(
+    ctx: &mut Context,
+    declaration: Ptr<pliron::operation::Operation>,
+    intrinsic: Intrinsic<'_>,
+) -> anyhow::Result<()> {
+    if let Some(convergent) = intrinsic.convergence {
+        llvm_export::intrinsics::set_intrinsic_convergence(
+            ctx,
+            declaration,
+            llvm_export::intrinsics::IntrinsicConvergenceAttr { convergent },
+        )
+        .map_err(|error| anyhow::anyhow!("intrinsic `{}`: {error}", intrinsic.name))?;
+    }
+    Ok(())
 }
 
 // ============================================================================
@@ -444,7 +508,67 @@ pub fn get_module_from_block(
 
 #[cfg(test)]
 mod tests {
-    // Note: Testing these helpers requires a full pliron context with
-    // dialects registered, which is complex to set up. Integration tests
-    // in the `tests/` directory cover these functions indirectly.
+    use super::*;
+    use llvm_export::{
+        intrinsics::intrinsic_convergence,
+        types::{FuncType, VoidType},
+    };
+    use pliron::builtin::ops::ModuleOp;
+
+    /// Declaration reuse preserves exact facts and rejects conflicts in both orders.
+    /// Unannotated callers neither invent a proof nor erase one supplied by a recipe.
+    #[test]
+    fn intrinsic_declarations_transport_and_merge_recipe_facts() {
+        for convergent in [false, true] {
+            let mut ctx = Context::new();
+            let module = ModuleOp::new(&mut ctx, "facts".try_into().unwrap());
+            let ty = FuncType::get(&ctx, VoidType::get(&ctx).into(), vec![], false);
+            let function = llvm::FuncOp::new(&mut ctx, "caller".try_into().unwrap(), ty);
+            let module_block = module
+                .get_operation()
+                .deref(&ctx)
+                .get_region(0)
+                .deref(&ctx)
+                .iter(&ctx)
+                .next()
+                .unwrap();
+            function.get_operation().insert_at_back(module_block, &ctx);
+            let entry = function.get_or_create_entry_block(&mut ctx);
+            let declaration =
+                ensure_intrinsic_declared(&mut ctx, entry, "llvm_nvvm_primitive", ty).unwrap();
+            assert!(intrinsic_convergence(&ctx, declaration).unwrap().is_none());
+            let descriptor = Intrinsic::new("llvm_nvvm_primitive", convergent);
+            assert_eq!(
+                ensure_intrinsic_declared(&mut ctx, entry, descriptor, ty).unwrap(),
+                declaration
+            );
+            assert_eq!(
+                ensure_intrinsic_declared(&mut ctx, entry, descriptor, ty).unwrap(),
+                declaration
+            );
+            ensure_intrinsic_declared(&mut ctx, entry, "llvm_nvvm_primitive", ty).unwrap();
+            assert_eq!(
+                intrinsic_convergence(&ctx, declaration)
+                    .unwrap()
+                    .unwrap()
+                    .convergent,
+                convergent
+            );
+            let error = ensure_intrinsic_declared(
+                &mut ctx,
+                entry,
+                Intrinsic::new("llvm_nvvm_primitive", !convergent),
+                ty,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("conflicting convergence facts"));
+            assert_eq!(
+                intrinsic_convergence(&ctx, declaration)
+                    .unwrap()
+                    .unwrap()
+                    .convergent,
+                convergent
+            );
+        }
+    }
 }

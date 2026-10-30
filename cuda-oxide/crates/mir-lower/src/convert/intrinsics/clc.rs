@@ -8,6 +8,7 @@
 use crate::convert::intrinsics::common::{
     call_intrinsic, cast_to_shared_addrspace, create_i64_const,
 };
+use crate::helpers::Intrinsic;
 use llvm_export::attributes::IntegerOverflowFlagsAttr;
 use llvm_export::op_interfaces::{
     ATTR_KEY_INTEGER_OVERFLOW_FLAGS, BinArithOp, CastOpWithNNegInterface,
@@ -30,7 +31,7 @@ pub(crate) fn convert_generated_clc_try_cancel(
     rewriter: &mut DialectConversionRewriter,
     op: Ptr<Operation>,
     _operands_info: &OperandsInfo,
-    intrinsic_name: &str,
+    intrinsic_name: Intrinsic<'_>,
 ) -> Result<()> {
     let operands: Vec<_> = op.deref(ctx).operands().collect();
     if operands.len() != 2 || op.deref(ctx).get_num_results() != 0 {
@@ -62,7 +63,7 @@ pub(crate) fn convert_generated_clc_query(
     rewriter: &mut DialectConversionRewriter,
     op: Ptr<Operation>,
     _operands_info: &OperandsInfo,
-    intrinsic_name: &str,
+    intrinsic_name: Intrinsic<'_>,
     bool_result: bool,
 ) -> Result<()> {
     let operands: Vec<_> = op.deref(ctx).operands().collect();

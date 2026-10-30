@@ -11,7 +11,8 @@
 
 use crate::conversion_interface::MirToLlvmConversion;
 use crate::convert::intrinsics::{
-    warp::convert_shuffle_f32, warp::convert_shuffle_i32, warp::convert_shuffle_i64,
+    common::Intrinsic, warp::convert_shuffle_f32, warp::convert_shuffle_i32,
+    warp::convert_shuffle_i64,
 };
 use dialect_nvvm::ops::{
     ShflSyncBflyF32Op, ShflSyncBflyI32Op, ShflSyncBflyI64Op, ShflSyncDownF32Op, ShflSyncDownI32Op,
@@ -37,7 +38,7 @@ impl MirToLlvmConversion for ShflSyncDownF32Op {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_shfl_sync_down_f32",
+            Intrinsic::new("llvm_nvvm_shfl_sync_down_f32", true),
             31,
         )
     }
@@ -56,7 +57,7 @@ impl MirToLlvmConversion for ShflSyncDownI32Op {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_shfl_sync_down_i32",
+            Intrinsic::new("llvm_nvvm_shfl_sync_down_i32", true),
             31,
         )
     }
@@ -94,7 +95,7 @@ impl MirToLlvmConversion for ShflSyncIdxF32Op {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_shfl_sync_idx_f32",
+            Intrinsic::new("llvm_nvvm_shfl_sync_idx_f32", true),
             31,
         )
     }
@@ -113,7 +114,7 @@ impl MirToLlvmConversion for ShflSyncIdxI32Op {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_shfl_sync_idx_i32",
+            Intrinsic::new("llvm_nvvm_shfl_sync_idx_i32", true),
             31,
         )
     }
@@ -151,7 +152,7 @@ impl MirToLlvmConversion for ShflSyncUpF32Op {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_shfl_sync_up_f32",
+            Intrinsic::new("llvm_nvvm_shfl_sync_up_f32", true),
             0,
         )
     }
@@ -170,7 +171,7 @@ impl MirToLlvmConversion for ShflSyncUpI32Op {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_shfl_sync_up_i32",
+            Intrinsic::new("llvm_nvvm_shfl_sync_up_i32", true),
             0,
         )
     }
@@ -201,7 +202,7 @@ impl MirToLlvmConversion for ShflSyncBflyF32Op {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_shfl_sync_bfly_f32",
+            Intrinsic::new("llvm_nvvm_shfl_sync_bfly_f32", true),
             31,
         )
     }
@@ -220,7 +221,7 @@ impl MirToLlvmConversion for ShflSyncBflyI32Op {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_shfl_sync_bfly_i32",
+            Intrinsic::new("llvm_nvvm_shfl_sync_bfly_i32", true),
             31,
         )
     }

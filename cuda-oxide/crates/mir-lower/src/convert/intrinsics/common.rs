@@ -14,6 +14,10 @@
 //! - Creating inline PTX assembly with convergent attribute
 //! - Type conversions for intrinsic results
 
+/// Exact catalog-selected intrinsic descriptor shared by generated lowering.
+/// String-based callers retain unknown primitive semantics.
+pub use crate::helpers::Intrinsic;
+
 use crate::helpers;
 use llvm_export::op_interfaces::CastOpInterface;
 use llvm_export::ops as llvm;
@@ -125,16 +129,18 @@ pub fn cast_to_cluster_shared_addrspace(
 ///
 /// Ensures the intrinsic is declared in the module, then creates a call.
 /// `current_op` is the MIR op being converted (used to find the parent module).
-pub fn call_intrinsic(
+pub fn call_intrinsic<'a>(
     ctx: &mut Context,
     rewriter: &mut DialectConversionRewriter,
     current_op: Ptr<Operation>,
-    intrinsic_name: &str,
+    intrinsic: impl Into<Intrinsic<'a>>,
     func_ty: pliron::r#type::TypedHandle<llvm_types::FuncType>,
     args: Vec<Value>,
 ) -> Result<Ptr<Operation>> {
+    let intrinsic = intrinsic.into();
+    let intrinsic_name = intrinsic.name;
     let parent_block = current_op.deref(ctx).get_parent_block().unwrap();
-    helpers::ensure_intrinsic_declared(ctx, parent_block, intrinsic_name, func_ty)
+    helpers::ensure_intrinsic_declared(ctx, parent_block, intrinsic, func_ty)
         .map_err(|e| pliron::input_error_noloc!("{}", e))?;
 
     let sym_name: pliron::identifier::Identifier = intrinsic_name.try_into().unwrap();

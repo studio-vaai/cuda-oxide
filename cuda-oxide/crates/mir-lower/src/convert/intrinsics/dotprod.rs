@@ -6,6 +6,7 @@
 //! Lower generated packed integer dot products through the selected backend.
 
 use crate::convert::intrinsics::common::{call_intrinsic, create_i1_const};
+use crate::helpers::Intrinsic;
 use crate::{IntrinsicBackend, context};
 use llvm_export::ops::{self as llvm, AsmKind, InlineAsmOpExt};
 use llvm_export::types as llvm_types;
@@ -23,7 +24,7 @@ pub(crate) fn convert_generated_dot_product(
     ctx: &mut Context,
     rewriter: &mut DialectConversionRewriter,
     op: Ptr<Operation>,
-    typed_intrinsic_name: &str,
+    typed_intrinsic_name: Intrinsic<'_>,
     inline_ptx: &str,
     insert_low_half_selector: bool,
 ) -> Result<()> {
@@ -66,7 +67,7 @@ fn lower_with_llvm_intrinsic(
     rewriter: &mut DialectConversionRewriter,
     op: Ptr<Operation>,
     operands: Vec<pliron::value::Value>,
-    intrinsic_name: &str,
+    intrinsic_name: Intrinsic<'_>,
     insert_low_half_selector: bool,
 ) -> Result<()> {
     let i32_ty = IntegerType::get(ctx, 32, Signedness::Signless);

@@ -4,15 +4,15 @@
  */
 
 use crate::model::{
-    ActiveMaskAdapter, BackendLoweringMechanism, CatalogFile, ClcOperation, ClusterBarrierMode,
-    ClusterMemoryOperation, CpAsyncCachePolicy, CpAsyncControlOperation, CpAsyncMbarrierOperation,
-    CpAsyncMbarrierStateSpace, CpAsyncSourceSize, DebugControlOperation, DotProductAdapter,
-    ExecutionControlOperation, IntrinsicBackend, MbarrierBasicAdapter, MbarrierBasicOperation,
-    MbarrierExtendedAdapter, PackedConversionAdapter, PackedConversionSourceFormat, PrmtAdapter,
-    PrmtMode, ReduxAdapter, ScalarArithmeticFormat, ScalarMathFormat, StmatrixLayout,
-    Tcgen05Operation, TmaOperation, TmaReductionLoadMode, TmaReductionOperation, VoteAdapter,
-    WarpBarrierAdapter, WarpMatchAdapter, WarpShuffleAdapter, WarpShuffleMode,
-    WarpShuffleValueKind, WgmmaControlMode,
+    ActiveMaskAdapter, BackendLoweringMechanism, CatalogFile, CatalogIntrinsic, ClcOperation,
+    ClusterBarrierMode, ClusterMemoryOperation, CpAsyncCachePolicy, CpAsyncControlOperation,
+    CpAsyncMbarrierOperation, CpAsyncMbarrierStateSpace, CpAsyncSourceSize, DebugControlOperation,
+    DotProductAdapter, ExecutionControlOperation, IntrinsicBackend, MbarrierBasicAdapter,
+    MbarrierBasicOperation, MbarrierExtendedAdapter, PackedConversionAdapter,
+    PackedConversionSourceFormat, PrmtAdapter, PrmtMode, ReduxAdapter, ScalarArithmeticFormat,
+    ScalarMathFormat, StmatrixLayout, Tcgen05Operation, TmaOperation, TmaReductionLoadMode,
+    TmaReductionOperation, VoteAdapter, WarpBarrierAdapter, WarpMatchAdapter, WarpShuffleAdapter,
+    WarpShuffleMode, WarpShuffleValueKind, WgmmaControlMode,
 };
 use crate::render::common::{rust_header, uses_identifier};
 use crate::render::families::{
@@ -49,10 +49,21 @@ use crate::render::families::{
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
+/// Render a descriptor directly at the recipe selecting this catalog record.
+/// No symbol lookup survives generation; convergence travels with the exact name.
+fn lowering_intrinsic(record: &CatalogIntrinsic, resolved: bool) -> String {
+    let name = if resolved {
+        record.resolved_llvm_identifier()
+    } else {
+        record.llvm_identifier()
+    };
+    format!("Intrinsic::new({name:?}, {})", record.semantics.convergent)
+}
+
 fn lowering_shared_converters(catalog: &CatalogFile) -> String {
     let mut output = String::new();
     output.push_str(
-        "fn convert_zero_operand_scalar_direct(\n    ctx: &mut Context,\n    rewriter: &mut DialectConversionRewriter,\n    op: Ptr<Operation>,\n    width: u32,\n    intrinsic_name: &str,\n) -> Result<()> {\n    let result_ty = IntegerType::get(ctx, width, Signedness::Signless);\n    let function_ty = llvm_types::FuncType::get(ctx, result_ty.into(), vec![], false);\n    let call = call_intrinsic(ctx, rewriter, op, intrinsic_name, function_ty, vec![])?;\n    rewriter.replace_operation(ctx, op, call);\n    Ok(())\n}\n\n",
+        "fn convert_zero_operand_scalar_direct(\n    ctx: &mut Context,\n    rewriter: &mut DialectConversionRewriter,\n    op: Ptr<Operation>,\n    width: u32,\n    intrinsic_name: Intrinsic<'_>,\n) -> Result<()> {\n    let result_ty = IntegerType::get(ctx, width, Signedness::Signless);\n    let function_ty = llvm_types::FuncType::get(ctx, result_ty.into(), vec![], false);\n    let call = call_intrinsic(ctx, rewriter, op, intrinsic_name, function_ty, vec![])?;\n    rewriter.replace_operation(ctx, op, call);\n    Ok(())\n}\n\n",
     );
     if tcgen05_intrinsics(catalog).next().is_some() {
         output.push_str(
@@ -160,7 +171,7 @@ fn convert_generated_tcgen05_load(
     op: Ptr<Operation>,
     register_count: usize,
     transposed: bool,
-    typed_intrinsic_name: &str,
+    typed_intrinsic_name: Intrinsic<'_>,
 ) -> Result<()> {
     let operands: Vec<_> = op.deref(ctx).operands().collect();
     if operands.len() != register_count + 1 || !matches!(register_count, 2 | 4) {
@@ -248,9 +259,9 @@ fn sreg_impls(catalog: &CatalogFile) -> String {
         if record.special_register.is_none() {
             writeln!(
                 output,
-                "        convert_zero_operand_scalar_direct(ctx, rewriter, self.get_operation(), {}, {:?})",
+                "        convert_zero_operand_scalar_direct(ctx, rewriter, self.get_operation(), {}, {})",
                 record.scalar_width().unwrap(),
-                record.llvm_identifier()
+                lowering_intrinsic(record, false)
             )
             .unwrap();
         } else {
@@ -267,9 +278,9 @@ fn sreg_impls(catalog: &CatalogFile) -> String {
                 match special_register_backend_mechanism(record, backend) {
                     BackendLoweringMechanism::TypedNvvm => writeln!(
                         output,
-                        "                convert_zero_operand_scalar_direct(ctx, rewriter, self.get_operation(), {}, {:?})",
+                        "                convert_zero_operand_scalar_direct(ctx, rewriter, self.get_operation(), {}, {})",
                         record.scalar_width().unwrap(),
-                        record.llvm_identifier()
+                        lowering_intrinsic(record, false)
                     )
                     .unwrap(),
                     BackendLoweringMechanism::InlinePtx => writeln!(
@@ -304,9 +315,14 @@ fn active_mask_impls(catalog: &CatalogFile) -> String {
             record.dialect.op_type
         )
         .unwrap();
-        output.push_str(
-            "    fn convert(\n        &self,\n        ctx: &mut Context,\n        rewriter: &mut DialectConversionRewriter,\n        operands_info: &OperandsInfo,\n    ) -> Result<()> {\n        let op = self.get_operation();\n        match context::lowering_options(ctx).intrinsic_backend {\n            IntrinsicBackend::LlvmNvptx => {\n                convert_active_mask(ctx, rewriter, op, operands_info)\n            }\n            IntrinsicBackend::LibNvvm => {\n                let i32_ty = IntegerType::get(ctx, 32, Signedness::Signless);\n                let inline_asm = inline_asm_convergent(\n                    ctx,\n                    rewriter,\n                    op,\n                    i32_ty.into(),\n                    vec![],\n                    \"activemask.b32 $0;\",\n                    \"=r,~{memory}\",\n                );\n                rewriter.replace_operation(ctx, op, inline_asm);\n                Ok(())\n            }\n        }\n    }\n}\n\n",
-        );
+        output.push_str("    fn convert(\n        &self,\n        ctx: &mut Context,\n        rewriter: &mut DialectConversionRewriter,\n        operands_info: &OperandsInfo,\n    ) -> Result<()> {\n        let op = self.get_operation();\n        match context::lowering_options(ctx).intrinsic_backend {\n            IntrinsicBackend::LlvmNvptx => {\n");
+        writeln!(
+            output,
+            "                convert_active_mask(ctx, rewriter, op, operands_info, {})",
+            lowering_intrinsic(record, false)
+        )
+        .unwrap();
+        output.push_str("            }\n            IntrinsicBackend::LibNvvm => {\n                let i32_ty = IntegerType::get(ctx, 32, Signedness::Signless);\n                let inline_asm = inline_asm_convergent(\n                    ctx,\n                    rewriter,\n                    op,\n                    i32_ty.into(),\n                    vec![],\n                    \"activemask.b32 $0;\",\n                    \"=r,~{memory}\",\n                );\n                rewriter.replace_operation(ctx, op, inline_asm);\n                Ok(())\n            }\n        }\n    }\n}\n\n");
     }
     output
 }
@@ -323,10 +339,10 @@ fn ldmatrix_impls(catalog: &CatalogFile) -> String {
             let variant = &record.ldmatrix.as_ref().unwrap().variant;
             let register_count = variant.register_count();
             let instruction_head = expected_ptx_head(record);
-            let intrinsic_name = record.resolved_llvm_identifier();
+            let intrinsic_name = lowering_intrinsic(record, true);
             writeln!(
                 output,
-                "                (Some(&{shape}), Some(&{multiplicity}), Some(&{layout}), Some(&{element}), Some(&{state_space})) => ({register_count}, {instruction_head:?}, {intrinsic_name:?}),"
+                "                (Some(&{shape}), Some(&{multiplicity}), Some(&{layout}), Some(&{element}), Some(&{state_space})) => ({register_count}, {instruction_head:?}, {intrinsic_name}),"
             )
             .unwrap();
         }
@@ -344,10 +360,10 @@ fn ldmatrix_impls(catalog: &CatalogFile) -> String {
                 .variant;
             let register_count = variant.register_count();
             let instruction_head = expected_ptx_head(record);
-            let intrinsic_name = record.resolved_llvm_identifier();
+            let intrinsic_name = lowering_intrinsic(record, true);
             writeln!(
                 output,
-                "#[op_interface_impl]\nimpl MirToLlvmConversion for {op_type} {{\n    fn convert(\n        &self,\n        ctx: &mut Context,\n        rewriter: &mut DialectConversionRewriter,\n        _operands_info: &OperandsInfo,\n    ) -> Result<()> {{\n        convert_generated_ldmatrix(\n            ctx, rewriter, self.get_operation(), {register_count}, {instruction_head:?}, {intrinsic_name:?},\n        )\n    }}\n}}\n"
+                "#[op_interface_impl]\nimpl MirToLlvmConversion for {op_type} {{\n    fn convert(\n        &self,\n        ctx: &mut Context,\n        rewriter: &mut DialectConversionRewriter,\n        _operands_info: &OperandsInfo,\n    ) -> Result<()> {{\n        convert_generated_ldmatrix(\n            ctx, rewriter, self.get_operation(), {register_count}, {instruction_head:?}, {intrinsic_name},\n        )\n    }}\n}}\n"
             )
             .unwrap();
         }
@@ -361,7 +377,7 @@ fn stmatrix_impls(catalog: &CatalogFile) -> String {
         let (multiplicity, layout) = stmatrix_variant(record).expect("stmatrix variant");
         let count = multiplicity.register_count();
         let transposed = layout == StmatrixLayout::Transposed;
-        let intrinsic_name = record.resolved_llvm_identifier();
+        let intrinsic_name = lowering_intrinsic(record, true);
         writeln!(
             output,
             "#[op_interface_impl]\nimpl MirToLlvmConversion for {} {{",
@@ -370,7 +386,7 @@ fn stmatrix_impls(catalog: &CatalogFile) -> String {
         .unwrap();
         writeln!(
             output,
-            "    fn convert(\n        &self,\n        ctx: &mut Context,\n        rewriter: &mut DialectConversionRewriter,\n        _operands_info: &OperandsInfo,\n    ) -> Result<()> {{\n        convert_generated_stmatrix(\n            ctx, rewriter, self.get_operation(), {count}, {transposed}, {intrinsic_name:?},\n        )\n    }}\n}}\n"
+            "    fn convert(\n        &self,\n        ctx: &mut Context,\n        rewriter: &mut DialectConversionRewriter,\n        _operands_info: &OperandsInfo,\n    ) -> Result<()> {{\n        convert_generated_stmatrix(\n            ctx, rewriter, self.get_operation(), {count}, {transposed}, {intrinsic_name},\n        )\n    }}\n}}\n"
         )
         .unwrap();
     }
@@ -515,8 +531,8 @@ fn prmt_impls(catalog: &CatalogFile) -> String {
             };
             writeln!(
                 output,
-                "            Some(&{mode}) => ({:?}, {:?}),",
-                record.llvm_identifier(),
+                "            Some(&{mode}) => ({}, {:?}),",
+                lowering_intrinsic(record, false),
                 template
             )
             .unwrap();
@@ -537,10 +553,10 @@ fn scalar_conversion_impls(catalog: &CatalogFile) -> String {
         for record in scalar_conversions(catalog) {
             writeln!(
                 output,
-                "            (Some(&{}), Some(&{})) => ({:?}, {:?}),",
+                "            (Some(&{}), Some(&{})) => ({}, {:?}),",
                 scalar_conversion_rounding_attr(record),
                 scalar_conversion_saturation_attr(record),
-                record.llvm_identifier(),
+                lowering_intrinsic(record, false),
                 scalar_conversion_ptx_mnemonic(record),
             )
             .unwrap();
@@ -561,13 +577,13 @@ fn scalar_arithmetic_impls(catalog: &CatalogFile) -> String {
         for record in scalar_arithmetics(catalog) {
             writeln!(
                 output,
-                "            (Some(&{}), Some(&{}), Some(&{}), Some(&{}), Some(&{})) => ({:?}, {:?}, {}, {}),",
+                "            (Some(&{}), Some(&{}), Some(&{}), Some(&{}), Some(&{})) => ({}, {:?}, {}, {}),",
                 scalar_arithmetic_format_attr(record),
                 scalar_arithmetic_operation_attr(record),
                 scalar_arithmetic_rounding_attr(record),
                 scalar_arithmetic_subnormal_attr(record),
                 scalar_arithmetic_saturation_attr(record),
-                record.llvm_identifier(),
+                lowering_intrinsic(record, false),
                 scalar_arithmetic_ptx_mnemonic(record),
                 scalar_arithmetic_contract(record).format == ScalarArithmeticFormat::F64,
                 scalar_arithmetic_llvm_mechanism(record)
@@ -594,13 +610,13 @@ fn scalar_math_impls(catalog: &CatalogFile) -> String {
             // take (their mechanism is always inline PTX), so render an
             // empty name; the lowering helper rejects it defensively.
             let intrinsic_name = if record.llvm.is_some() {
-                record.llvm_identifier()
+                lowering_intrinsic(record, false)
             } else {
-                String::new()
+                format!("Intrinsic::new(\"\", {})", record.semantics.convergent)
             };
             writeln!(
                 output,
-                "            (Some(&{}), Some(&{}), Some(&{}), Some(&{})) => ({:?}, {:?}, {}, {}, {}),",
+                "            (Some(&{}), Some(&{}), Some(&{}), Some(&{})) => ({}, {:?}, {}, {}, {}),",
                 scalar_math_format_attr(record),
                 scalar_math_operation_attr(record),
                 scalar_math_precision_attr(record),
@@ -656,9 +672,9 @@ fn cluster_barrier_impls(catalog: &CatalogFile) -> String {
         for record in cluster_barriers(catalog) {
             writeln!(
                 output,
-                "            Some(&{}) => ({:?}, {:?}),",
+                "            Some(&{}) => ({}, {:?}),",
                 cluster_barrier_attr(record),
-                record.llvm_identifier(),
+                lowering_intrinsic(record, false),
                 cluster_barrier_template(record)
             )
             .unwrap();
@@ -688,14 +704,14 @@ fn cluster_barrier_impls(catalog: &CatalogFile) -> String {
         );
         writeln!(
             output,
-            "                call_intrinsic(ctx, rewriter, op, {:?}, function_ty, vec![])?;",
-            arrive.llvm_identifier()
+            "                call_intrinsic(ctx, rewriter, op, {}, function_ty, vec![])?;",
+            lowering_intrinsic(arrive, false)
         )
         .unwrap();
         writeln!(
             output,
-            "                call_intrinsic(ctx, rewriter, op, {:?}, function_ty, vec![])?;",
-            wait.llvm_identifier()
+            "                call_intrinsic(ctx, rewriter, op, {}, function_ty, vec![])?;",
+            lowering_intrinsic(wait, false)
         )
         .unwrap();
         output.push_str("            }\n            IntrinsicBackend::LibNvvm => {\n");
@@ -724,7 +740,7 @@ fn wgmma_control_impls(catalog: &CatalogFile) -> String {
                  ctx: &mut Context,\n\
                  rewriter: &mut DialectConversionRewriter,\n\
                  op: Ptr<Operation>,\n\
-                 intrinsic_name: &str,\n\
+                 intrinsic_name: Intrinsic<'_>,\n\
                  ptx: &str,\n\
                  has_immediate: bool,\n\
              ) -> Result<()> {\n\
@@ -772,9 +788,9 @@ fn wgmma_control_impls(catalog: &CatalogFile) -> String {
                 .is_some_and(|control| control.mode == WgmmaControlMode::WaitGroup);
             writeln!(
                 output,
-                "#[op_interface_impl]\nimpl MirToLlvmConversion for {} {{\n    fn convert(\n        &self,\n        ctx: &mut Context,\n        rewriter: &mut DialectConversionRewriter,\n        _operands_info: &OperandsInfo,\n    ) -> Result<()> {{\n        convert_generated_wgmma_control(\n            ctx, rewriter, self.get_operation(), {:?}, {:?}, {has_immediate},\n        )\n    }}\n}}\n",
+                "#[op_interface_impl]\nimpl MirToLlvmConversion for {} {{\n    fn convert(\n        &self,\n        ctx: &mut Context,\n        rewriter: &mut DialectConversionRewriter,\n        _operands_info: &OperandsInfo,\n    ) -> Result<()> {{\n        convert_generated_wgmma_control(\n            ctx, rewriter, self.get_operation(), {}, {:?}, {has_immediate},\n        )\n    }}\n}}\n",
                 record.dialect.op_type,
-                record.llvm_identifier(),
+                lowering_intrinsic(record, false),
                 wgmma_control_template(record),
             )
             .unwrap();
@@ -818,8 +834,8 @@ fn redux_impls(catalog: &CatalogFile) -> String {
         );
         writeln!(
             output,
-            "        convert_redux(ctx, rewriter, self.get_operation(), operands_info, {:?})",
-            record.llvm_identifier()
+            "        convert_redux(ctx, rewriter, self.get_operation(), operands_info, {})",
+            lowering_intrinsic(record, false)
         )
         .unwrap();
         output.push_str("    }\n}\n\n");
@@ -845,8 +861,8 @@ fn vote_impls(catalog: &CatalogFile) -> String {
         );
         writeln!(
             output,
-            "        convert_vote(ctx, rewriter, self.get_operation(), operands_info, {:?})",
-            record.llvm_identifier()
+            "        convert_vote(ctx, rewriter, self.get_operation(), operands_info, {})",
+            lowering_intrinsic(record, false)
         )
         .unwrap();
         output.push_str("    }\n}\n\n");
@@ -879,8 +895,8 @@ fn warp_match_impls(catalog: &CatalogFile) -> String {
         .unwrap();
         writeln!(
             output,
-            "        {helper}(ctx, rewriter, self.get_operation(), operands_info, {:?}, value_ty.into())",
-            record.llvm_identifier()
+            "        {helper}(ctx, rewriter, self.get_operation(), operands_info, {}, value_ty.into())",
+            lowering_intrinsic(record, false)
         )
         .unwrap();
         output.push_str("    }\n}\n\n");
@@ -914,8 +930,8 @@ fn elect_impls(catalog: &CatalogFile) -> String {
             match mechanism {
                 BackendLoweringMechanism::TypedNvvm => writeln!(
                     output,
-                    "                convert_elect_sync_typed(ctx, rewriter, self.get_operation(), operands_info, {:?})",
-                    record.llvm_identifier()
+                    "                convert_elect_sync_typed(ctx, rewriter, self.get_operation(), operands_info, {})",
+                    lowering_intrinsic(record, false)
                 )
                 .unwrap(),
                 BackendLoweringMechanism::InlinePtx => output.push_str(
@@ -942,9 +958,14 @@ fn warp_barrier_impls(catalog: &CatalogFile) -> String {
             record.dialect.op_type
         )
         .unwrap();
-        output.push_str(
-            "    fn convert(\n        &self,\n        ctx: &mut Context,\n        rewriter: &mut DialectConversionRewriter,\n        operands_info: &OperandsInfo,\n    ) -> Result<()> {\n        convert_bar_warp_sync(ctx, rewriter, self.get_operation(), operands_info)\n    }\n}\n\n",
-        );
+        output.push_str("    fn convert(\n        &self,\n        ctx: &mut Context,\n        rewriter: &mut DialectConversionRewriter,\n        operands_info: &OperandsInfo,\n    ) -> Result<()> {\n");
+        writeln!(
+            output,
+            "        convert_bar_warp_sync(ctx, rewriter, self.get_operation(), operands_info, {})",
+            lowering_intrinsic(record, false)
+        )
+        .unwrap();
+        output.push_str("    }\n}\n\n");
     }
     output
 }
@@ -975,8 +996,8 @@ fn warp_shuffle_impls(catalog: &CatalogFile) -> String {
                 };
                 writeln!(
                     output,
-                    "        {helper}(ctx, rewriter, self.get_operation(), operands_info, {:?}, {})",
-                    record.llvm_identifier(),
+                    "        {helper}(ctx, rewriter, self.get_operation(), operands_info, {}, {})",
+                    lowering_intrinsic(record, false),
                     shuffle.clamp,
                 )
                 .unwrap();
@@ -1075,7 +1096,12 @@ fn packed_conversion_impls(catalog: &CatalogFile) -> String {
                     PackedConversionAdapter::ReverseHighLowOperands
                 );
                 let typed_intrinsic = packed_conversion_typed_llvm_name(record)
-                    .map(|name| format!("Some({name:?})"))
+                    .map(|name| {
+                        format!(
+                            "Some(Intrinsic::new({name:?}, {}))",
+                            record.semantics.convergent
+                        )
+                    })
                     .unwrap_or_else(|| "None".into());
                 writeln!(
                     output,
@@ -1125,9 +1151,9 @@ fn cp_async_impls(catalog: &CatalogFile) -> String {
         );
         writeln!(
             output,
-            "        convert_generated_cp_async_copy(ctx, rewriter, self.get_operation(), {cache_policy:?}, {}, {has_source_size}, {:?})",
+            "        convert_generated_cp_async_copy(ctx, rewriter, self.get_operation(), {cache_policy:?}, {}, {has_source_size}, {})",
             copy.copy_size.bytes(),
-            record.llvm_identifier(),
+            lowering_intrinsic(record, false),
         )
         .unwrap();
         output.push_str("    }\n}\n\n");
@@ -1149,8 +1175,8 @@ fn cp_async_impls(catalog: &CatalogFile) -> String {
         );
         writeln!(
             output,
-            "        convert_generated_cp_async_control(ctx, rewriter, self.get_operation(), {operation:?}, {:?})",
-            record.llvm_identifier(),
+            "        convert_generated_cp_async_control(ctx, rewriter, self.get_operation(), {operation:?}, {})",
+            lowering_intrinsic(record, false),
         )
         .unwrap();
         output.push_str("    }\n}\n\n");
@@ -1176,8 +1202,8 @@ fn cp_async_impls(catalog: &CatalogFile) -> String {
         );
         writeln!(
             output,
-            "        convert_generated_cp_async_mbarrier(ctx, rewriter, self.get_operation(), {operation:?}, {state_space:?}, {:?})",
-            record.llvm_identifier(),
+            "        convert_generated_cp_async_mbarrier(ctx, rewriter, self.get_operation(), {operation:?}, {state_space:?}, {})",
+            lowering_intrinsic(record, false),
         )
         .unwrap();
         output.push_str("    }\n}\n\n");
@@ -1378,8 +1404,8 @@ fn dotprod_impls(catalog: &CatalogFile) -> String {
         );
         writeln!(
             output,
-            "        convert_generated_dot_product(ctx, rewriter, self.get_operation(), {:?}, {:?}, {insert_low_half_selector})",
-            record.llvm_identifier(),
+            "        convert_generated_dot_product(ctx, rewriter, self.get_operation(), {}, {:?}, {insert_low_half_selector})",
+            lowering_intrinsic(record, false),
             dot_product_ptx(record),
         )
         .unwrap();
@@ -1404,8 +1430,8 @@ fn clc_impls(catalog: &CatalogFile) -> String {
             ClcOperation::TryCancel | ClcOperation::TryCancelMulticast => {
                 writeln!(
                     output,
-                    "        convert_generated_clc_try_cancel(ctx, rewriter, self.get_operation(), operands_info, {:?})",
-                    record.llvm_identifier()
+                    "        convert_generated_clc_try_cancel(ctx, rewriter, self.get_operation(), operands_info, {})",
+                    lowering_intrinsic(record, false)
                 )
                 .unwrap();
             }
@@ -1415,8 +1441,8 @@ fn clc_impls(catalog: &CatalogFile) -> String {
             | ClcOperation::QueryGetFirstCtaidZ => {
                 writeln!(
                     output,
-                    "        convert_generated_clc_query(ctx, rewriter, self.get_operation(), operands_info, {:?}, {})",
-                    record.llvm_identifier(),
+                    "        convert_generated_clc_query(ctx, rewriter, self.get_operation(), operands_info, {}, {})",
+                    lowering_intrinsic(record, false),
                     record.clc.as_ref().unwrap().operation == ClcOperation::QueryIsCanceled
                 )
                 .unwrap();
@@ -1453,8 +1479,8 @@ fn execution_control_impls(catalog: &CatalogFile) -> String {
                 );
                 writeln!(
                     output,
-                    "        convert_counted_barrier(ctx, rewriter, self.get_operation(), operands_info, {:?}, {template:?})",
-                    record.llvm_identifier()
+                    "        convert_counted_barrier(ctx, rewriter, self.get_operation(), operands_info, {}, {template:?})",
+                    lowering_intrinsic(record, false)
                 )
                 .unwrap();
             }
@@ -1467,8 +1493,8 @@ fn execution_control_impls(catalog: &CatalogFile) -> String {
                 );
                 writeln!(
                     output,
-                    "        convert_grid_dependency(ctx, rewriter, self.get_operation(), operands_info, {:?}, {template:?})",
-                    record.llvm_identifier()
+                    "        convert_grid_dependency(ctx, rewriter, self.get_operation(), operands_info, {}, {template:?})",
+                    lowering_intrinsic(record, false)
                 )
                 .unwrap();
             }
@@ -1483,8 +1509,8 @@ fn execution_control_impls(catalog: &CatalogFile) -> String {
                 );
                 writeln!(
                     output,
-                    "        convert_setmaxnreg(ctx, rewriter, self.get_operation(), operands_info, register_count, {:?}, {direction:?})",
-                    record.llvm_identifier()
+                    "        convert_setmaxnreg(ctx, rewriter, self.get_operation(), operands_info, register_count, {}, {direction:?})",
+                    lowering_intrinsic(record, false)
                 )
                 .unwrap();
             }
@@ -1572,9 +1598,9 @@ fn tma_impls(catalog: &CatalogFile) -> String {
                 };
                 writeln!(
                     output,
-                    "        convert_reduce_s2g(ctx, rewriter, self.get_operation(), operands_info, ReduceConfig::new({}, {reduction_name:?}, {load_mode:?}, {:?}))",
+                    "        convert_reduce_s2g(ctx, rewriter, self.get_operation(), operands_info, ReduceConfig::new({}, {reduction_name:?}, {load_mode:?}, {}))",
                     reduction.dimensions,
-                    record.resolved_llvm_identifier()
+                    lowering_intrinsic(record, true)
                 )
                     .unwrap();
             }
@@ -1587,16 +1613,16 @@ fn tma_impls(catalog: &CatalogFile) -> String {
                 };
                 writeln!(
                     output,
-                    "        convert_control(ctx, rewriter, self.get_operation(), operands_info, {operation_name:?}, {:?})",
-                    record.resolved_llvm_identifier()
+                    "        convert_control(ctx, rewriter, self.get_operation(), operands_info, {operation_name:?}, {})",
+                    lowering_intrinsic(record, true)
                 )
                 .unwrap();
             }
             TmaOperation::PrefetchTensorMap => {
                 writeln!(
                     output,
-                    "        convert_prefetch_tensormap(ctx, rewriter, self.get_operation(), operands_info, {:?})",
-                    record.resolved_llvm_identifier()
+                    "        convert_prefetch_tensormap(ctx, rewriter, self.get_operation(), operands_info, {})",
+                    lowering_intrinsic(record, true)
                 )
                 .unwrap();
             }
@@ -1614,7 +1640,7 @@ fn tma_impls(catalog: &CatalogFile) -> String {
             | TmaOperation::PrefetchTileGather4TwoDimensionalCacheHint => {
                 writeln!(
                     output,
-                    "        convert_prefetch_tile(ctx, rewriter, self.get_operation(), operands_info, PrefetchTileConfig::new({}, {}, {}, {:?}))",
+                    "        convert_prefetch_tile(ctx, rewriter, self.get_operation(), operands_info, PrefetchTileConfig::new({}, {}, {}, {}))",
                     operation.prefetch_coordinate_count().unwrap(),
                     matches!(
                         operation,
@@ -1622,7 +1648,7 @@ fn tma_impls(catalog: &CatalogFile) -> String {
                             | TmaOperation::PrefetchTileGather4TwoDimensionalCacheHint
                     ),
                     operation.uses_prefetch_cache_hint(),
-                    record.resolved_llvm_identifier()
+                    lowering_intrinsic(record, true)
                 )
                 .unwrap();
             }
@@ -1665,8 +1691,8 @@ fn tma_impls(catalog: &CatalogFile) -> String {
                 };
                 writeln!(
                     output,
-                    "        convert_tensormap_replace(ctx, rewriter, self.get_operation(), operands_info, {:?}, {field:?}, {value_kind:?}, {ordinal}, {immediate})",
-                    record.resolved_llvm_identifier()
+                    "        convert_tensormap_replace(ctx, rewriter, self.get_operation(), operands_info, {}, {field:?}, {value_kind:?}, {ordinal}, {immediate})",
+                    lowering_intrinsic(record, true)
                 )
                 .unwrap();
             }
@@ -1691,8 +1717,8 @@ fn tma_impls(catalog: &CatalogFile) -> String {
                 };
                 writeln!(
                     output,
-                    "        convert_tensormap_fence(ctx, rewriter, self.get_operation(), operands_info, {:?}, {acquire}, {scope:?})",
-                    record.resolved_llvm_identifier()
+                    "        convert_tensormap_fence(ctx, rewriter, self.get_operation(), operands_info, {}, {acquire}, {scope:?})",
+                    lowering_intrinsic(record, true)
                 )
                 .unwrap();
             }
@@ -1971,8 +1997,8 @@ fn sync_impls(catalog: &CatalogFile) -> String {
             );
             writeln!(
                 output,
-                "                call_intrinsic(ctx, rewriter, op, {:?}, function_ty, vec![barrier_id])?;",
-                record.llvm_identifier()
+                "                call_intrinsic(ctx, rewriter, op, {}, function_ty, vec![barrier_id])?;",
+                lowering_intrinsic(record, false)
             )
             .unwrap();
             output.push_str(
@@ -1985,8 +2011,8 @@ fn sync_impls(catalog: &CatalogFile) -> String {
             );
             writeln!(
                 output,
-                "        call_intrinsic(ctx, rewriter, op, {:?}, function_ty, vec![])?;",
-                record.llvm_identifier()
+                "        call_intrinsic(ctx, rewriter, op, {}, function_ty, vec![])?;",
+                lowering_intrinsic(record, false)
             )
             .unwrap();
             output.push_str(
@@ -2060,6 +2086,7 @@ const LOWERING_INTRINSIC_HELPERS: &[(&str, &str)] = &[
         "clc::convert_generated_clc_try_cancel",
     ),
     ("call_intrinsic", "common::call_intrinsic"),
+    ("Intrinsic", "common::Intrinsic"),
     (
         "cast_to_shared_addrspace",
         "common::cast_to_shared_addrspace",

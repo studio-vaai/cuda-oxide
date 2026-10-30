@@ -10,7 +10,9 @@
 //! Generated conversion interfaces: `warp_match` intrinsics.
 
 use crate::conversion_interface::MirToLlvmConversion;
-use crate::convert::intrinsics::{warp::convert_match_all, warp::convert_match_any};
+use crate::convert::intrinsics::{
+    common::Intrinsic, warp::convert_match_all, warp::convert_match_any,
+};
 use dialect_nvvm::ops::{
     MatchAllSyncI32Op, MatchAllSyncI64Op, MatchAnySyncI32Op, MatchAnySyncI64Op,
 };
@@ -35,7 +37,7 @@ impl MirToLlvmConversion for MatchAllSyncI64Op {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_match_all_sync_i64p",
+            Intrinsic::new("llvm_nvvm_match_all_sync_i64p", true),
             value_ty.into(),
         )
     }
@@ -55,7 +57,7 @@ impl MirToLlvmConversion for MatchAllSyncI32Op {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_match_all_sync_i32p",
+            Intrinsic::new("llvm_nvvm_match_all_sync_i32p", true),
             value_ty.into(),
         )
     }
@@ -75,7 +77,7 @@ impl MirToLlvmConversion for MatchAnySyncI64Op {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_match_any_sync_i64",
+            Intrinsic::new("llvm_nvvm_match_any_sync_i64", true),
             value_ty.into(),
         )
     }
@@ -95,7 +97,7 @@ impl MirToLlvmConversion for MatchAnySyncI32Op {
             rewriter,
             self.get_operation(),
             operands_info,
-            "llvm_nvvm_match_any_sync_i32",
+            Intrinsic::new("llvm_nvvm_match_any_sync_i32", true),
             value_ty.into(),
         )
     }
