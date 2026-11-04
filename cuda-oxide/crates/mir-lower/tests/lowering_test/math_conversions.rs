@@ -3116,37 +3116,62 @@ fn minmax_lowering_shape(
     (callees, fcmps, selects)
 }
 
-#[test]
-fn test_float_minmax_llvm_nvptx_f32_uses_nvvm_intrinsics_f64_uses_compare_select()
--> Result<(), anyhow::Error> {
-    let (ctx, module_ptr) = lower_float_minmax(mir_lower::IntrinsicBackend::LlvmNvptx)?;
-    let (callees, fcmps, selects) =
-        minmax_lowering_shape(&ctx, &lowered_kernel_body(&ctx, module_ptr));
-
-    // f32 max/min: one native NVVM call each, no compare/select.
-    assert_eq!(
-        callees,
-        ["llvm_nvvm_fmax_f", "llvm_nvvm_fmin_f"],
-        "f32 max/min must call the non-.NaN, non-.ftz NVVM intrinsics"
-    );
-    // f64 max/min: the NaN-ignoring expansion, two fcmp + two select each.
-    assert_eq!(fcmps, 4, "only the two f64 ops keep the compare/select");
-    assert_eq!(selects, 4, "only the two f64 ops keep the compare/select");
-    Ok(())
+/// Convergence facts recorded on the module's declarations of `names`.
+fn minmax_declaration_convergence(
+    ctx: &Context,
+    module_ptr: pliron::context::Ptr<Operation>,
+    names: &[&str],
+) -> Vec<Option<bool>> {
+    let module_region = module_ptr.deref(ctx).get_region(0);
+    let module_block = module_region.deref(ctx).iter(ctx).next().unwrap();
+    names
+        .iter()
+        .map(|name| {
+            let declaration = module_block
+                .deref(ctx)
+                .iter(ctx)
+                .find(|op| {
+                    Operation::get_op::<llvm::FuncOp>(*op, ctx)
+                        .is_some_and(|func| func.get_symbol_name(ctx).to_string() == *name)
+                })
+                .unwrap_or_else(|| panic!("missing declaration for {name}"));
+            llvm_export::intrinsics::intrinsic_convergence(ctx, declaration)
+                .unwrap()
+                .map(|fact| fact.convergent)
+        })
+        .collect()
 }
 
+/// Both backends lower f32 and f64 `max`/`min` to the non-`.NaN`, non-`.ftz`
+/// NVVM intrinsics (one PTX `max`/`min` each) and record that the primitive
+/// needs no thread participation.
 #[test]
-fn test_float_minmax_libnvvm_keeps_compare_select_for_both_widths() -> Result<(), anyhow::Error> {
-    let (ctx, module_ptr) = lower_float_minmax(mir_lower::IntrinsicBackend::LibNvvm)?;
-    let (callees, fcmps, selects) =
-        minmax_lowering_shape(&ctx, &lowered_kernel_body(&ctx, module_ptr));
-
-    assert!(
-        callees.is_empty(),
-        "libNVVM max/min must not call an intrinsic, found {callees:?}"
-    );
-    assert_eq!(fcmps, 8, "all four ops expand to two fcmp each");
-    assert_eq!(selects, 8, "all four ops expand to two select each");
+fn test_float_minmax_uses_nvvm_intrinsics_on_both_backends() -> Result<(), anyhow::Error> {
+    const NAMES: [&str; 4] = [
+        "llvm_nvvm_fmax_f",
+        "llvm_nvvm_fmin_f",
+        "llvm_nvvm_fmax_d",
+        "llvm_nvvm_fmin_d",
+    ];
+    for backend in [
+        mir_lower::IntrinsicBackend::LlvmNvptx,
+        mir_lower::IntrinsicBackend::LibNvvm,
+    ] {
+        let (ctx, module_ptr) = lower_float_minmax(backend)?;
+        let (callees, fcmps, selects) =
+            minmax_lowering_shape(&ctx, &lowered_kernel_body(&ctx, module_ptr));
+        assert_eq!(callees, NAMES, "{backend:?}: one native call per max/min");
+        assert_eq!(fcmps, 0, "{backend:?}: no compare/select expansion remains");
+        assert_eq!(
+            selects, 0,
+            "{backend:?}: no compare/select expansion remains"
+        );
+        assert_eq!(
+            minmax_declaration_convergence(&ctx, module_ptr, &NAMES),
+            [Some(false); 4],
+            "{backend:?}: max/min declarations must carry a non-convergent fact"
+        );
+    }
     Ok(())
 }
 

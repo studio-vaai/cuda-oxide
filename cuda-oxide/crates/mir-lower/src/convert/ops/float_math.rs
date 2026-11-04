@@ -78,7 +78,7 @@ impl FloatMathLowering for RustFloatMathIntrinsic {
             if self.minmax_nsz_predicate().is_some() {
                 pliron::input_error!(
                     loc,
-                    "float max/min intrinsics lower to a compare/select expansion, never to libdevice"
+                    "float max/min intrinsics lower to NVVM max/min intrinsics, never to libdevice"
                 )
             } else {
                 pliron::input_error!(
@@ -99,10 +99,8 @@ impl FloatMathLowering for RustFloatMathIntrinsic {
         if self == Self::Fabs {
             return fabs_llvm_intrinsic_name(ctx, result_ty, loc).map(Some);
         }
-        match self {
-            Self::MaxNumNszF32 => return Ok(Some("llvm_nvvm_fmax_f")),
-            Self::MinNumNszF32 => return Ok(Some("llvm_nvvm_fmin_f")),
-            _ => {}
+        if let Some(name) = native_minmax_intrinsic(self) {
+            return Ok(Some(name));
         }
         Ok(self.llvm_symbol(false))
     }
@@ -182,14 +180,8 @@ pub fn convert_rust_float_math_intrinsic(
             propagate_nan,
         } => lower_float_ieee_minmax(ctx, rewriter, op, intrinsic, &args, is_max, propagate_nan),
         RustFloatMathLowering::MinMaxNsz { is_max } => {
-            if matches!(
-                intrinsic,
-                RustFloatMathIntrinsic::MaxNumNszF32 | RustFloatMathIntrinsic::MinNumNszF32
-            ) && matches!(
-                crate::context::lowering_options(ctx).intrinsic_backend,
-                crate::IntrinsicBackend::LlvmNvptx
-            ) {
-                return lower_scalar_call(ctx, rewriter, op, intrinsic, false, &args, loc);
+            if let Some(name) = native_minmax_intrinsic(intrinsic) {
+                return lower_native_minmax(ctx, rewriter, op, intrinsic, name, &args, loc);
             }
             let predicate = if is_max {
                 FCmpPredicateAttr::OGE
@@ -280,6 +272,66 @@ fn emit_fabs(
         args,
         loc,
     )
+}
+
+/// The NVVM intrinsic for a scalar NaN-ignoring `max`/`min` (`*_nsz`).
+///
+/// PTX `max`/`min` without `.NaN` or `.ftz` return the numeric operand when
+/// exactly one input is NaN (quiet or signaling), keep subnormals, and order
+/// signed zeros deterministically, which `_nsz` permits. That is Rust's
+/// contract, unlike LLVM 21's `llvm.maxnum`/`llvm.minnum` (#390). Both
+/// backends accept these intrinsics: libdevice's own `fmax`/`fmin` use them.
+fn native_minmax_intrinsic(intrinsic: RustFloatMathIntrinsic) -> Option<&'static str> {
+    match intrinsic {
+        RustFloatMathIntrinsic::MaxNumNszF32 => Some("llvm_nvvm_fmax_f"),
+        RustFloatMathIntrinsic::MinNumNszF32 => Some("llvm_nvvm_fmin_f"),
+        RustFloatMathIntrinsic::MaxNumNszF64 => Some("llvm_nvvm_fmax_d"),
+        RustFloatMathIntrinsic::MinNumNszF64 => Some("llvm_nvvm_fmin_d"),
+        _ => None,
+    }
+}
+
+/// Lower a scalar NaN-ignoring `max`/`min` to one native call on every backend.
+/// The declaration records that the primitive needs no thread participation,
+/// so convergence inference does not treat its callers as convergent.
+fn lower_native_minmax(
+    ctx: &mut Context,
+    rewriter: &mut DialectConversionRewriter,
+    op: Ptr<Operation>,
+    intrinsic: RustFloatMathIntrinsic,
+    name: &'static str,
+    args: &[Value],
+    loc: pliron::location::Location,
+) -> Result<()> {
+    let is_f64 = matches!(
+        intrinsic,
+        RustFloatMathIntrinsic::MaxNumNszF64 | RustFloatMathIntrinsic::MinNumNszF64
+    );
+    let result_ty = validate_scalar_signature(ctx, op, intrinsic, is_f64, args, loc.clone())?;
+    let arg_types = args.iter().map(|arg| arg.get_type(ctx)).collect::<Vec<_>>();
+    let func_ty = llvm_types::FuncType::get(ctx, result_ty, arg_types, false);
+    let parent_block = op.deref(ctx).get_parent_block().ok_or_else(|| {
+        pliron::input_error!(loc.clone(), "Rust float min/max call has no parent block")
+    })?;
+    helpers::ensure_intrinsic_declared(
+        ctx,
+        parent_block,
+        helpers::Intrinsic::new(name, false),
+        func_ty,
+    )
+    .map_err(|e| pliron::input_error!(loc.clone(), "Failed to declare intrinsic: {e}"))?;
+    let sym_name: pliron::identifier::Identifier = name
+        .try_into()
+        .map_err(|e| pliron::input_error!(loc, "Invalid intrinsic name: {:?}", e))?;
+    let llvm_call = llvm::CallOp::new(
+        ctx,
+        CallOpCallable::Direct(sym_name),
+        func_ty,
+        args.to_vec(),
+    );
+    rewriter.insert_operation(ctx, llvm_call.get_operation());
+    rewriter.replace_operation(ctx, op, llvm_call.get_operation());
+    Ok(())
 }
 
 /// Lower a validated scalar math placeholder to its native LLVM or libdevice call.
@@ -953,7 +1005,8 @@ fn lower_float_ieee_minmax(
     Ok(())
 }
 
-/// Lower Rust's NaN-ignoring `min` and `max` contract without libdevice.
+/// Expand Rust's NaN-ignoring `min` and `max` contract with compare/select.
+/// Fallback for `*_nsz` forms without a native NVVM intrinsic.
 fn lower_float_minmax_nsz(
     ctx: &mut Context,
     rewriter: &mut DialectConversionRewriter,
@@ -1503,7 +1556,7 @@ mod tests {
             RustFloatMathIntrinsic::MinNumNszF64
                 .llvm_intrinsic_name(&ctx, f64_ty, loc.clone())
                 .unwrap(),
-            None
+            Some("llvm_nvvm_fmin_d")
         );
 
         assert_eq!(

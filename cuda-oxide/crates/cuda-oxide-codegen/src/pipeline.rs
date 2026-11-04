@@ -1057,8 +1057,8 @@ fn select_pre_lowering_backend(
     //   path and fall back to libdevice only when the module is emitted as
     //   NVVM IR (the legacy LLVM 7 dialect has no `llvm.roundeven.*`).
     //
-    // The float `max`/`min` placeholders are in neither flavor: they expand
-    // to an ordered compare/select under every backend and never produce a
+    // The float `max`/`min` placeholders are in neither flavor: they lower
+    // to NVVM `fmax`/`fmin` intrinsics under every backend and never produce a
     // `__nv_*` call.
     //
     // Only strict use participates in the emit-NVVM-IR decision; otherwise a
@@ -1925,7 +1925,7 @@ mod tests {
 
     /// Under an explicit NVVM IR request the sign placeholders fall back to
     /// `__nv_fabsf`/`__nv_copysignf` (so libdevice must be predicted), while
-    /// `max`/`min` expand to compare/select under every backend and
+    /// `max`/`min` lower to NVVM intrinsics under every backend and
     /// contribute nothing to the prediction.
     #[test]
     fn sign_module_needs_libdevice_under_nvvm_ir_but_minmax_never_does() {
