@@ -394,7 +394,28 @@ pub fn codegen_cargo_passthrough(
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("CUDA_OXIDE_PTX_DIR").map(std::path::PathBuf::from))
         .expect("artifact directory configured");
-    let status = if cargo_subcommand == CargoPassthroughSubcommand::Build {
+    if std::env::var_os("CUDA_OXIDE_DEVICE_ONLY").is_some() {
+        if cargo_args
+            .iter()
+            .any(|arg| arg == "--target-dir" || arg.starts_with("--target-dir="))
+        {
+            eprintln!("Error: use --cargo-target-dir before `--` with --device-only");
+            std::process::exit(2);
+        }
+        // Object-only root outputs must never replace a normal host library.
+        // This cache is independent of any prior host ABI/contract: helper and
+        // host edits are valid because the caller rebuilds its host separately.
+        let metadata = artifact_only_metadata(&cmd, &ctx.workspace_root, cargo_args);
+        let target = std::path::PathBuf::from(
+            metadata["target_directory"]
+                .as_str()
+                .expect("missing Cargo target"),
+        );
+        cmd.env("CARGO_TARGET_DIR", target.join("oxide-device-only"));
+    }
+    let status = if cargo_subcommand == CargoPassthroughSubcommand::Build
+        && std::env::var_os("CUDA_OXIDE_DEVICE_ONLY").is_none()
+    {
         super::module_snapshots::build(&cmd, &output_root).unwrap_or_else(|error| {
             eprintln!("Error: {error}");
             std::process::exit(2);
@@ -413,4 +434,42 @@ pub fn codegen_cargo_passthrough(
 
     println!();
     println!("✓ Cargo {} succeeded", cargo_subcommand_name);
+}
+
+fn artifact_only_metadata(
+    cmd: &Command,
+    workspace_root: &Path,
+    cargo_args: &[String],
+) -> serde_json::Value {
+    let mut metadata = Command::new("cargo");
+    metadata
+        .args(["metadata", "--format-version=1", "--no-deps"])
+        .current_dir(workspace_root);
+    for (key, value) in cmd.get_envs() {
+        if let Some(value) = value {
+            metadata.env(key, value);
+        }
+    }
+    for pair in cargo_args.windows(2) {
+        if pair[0] == "--manifest-path" {
+            metadata.args([&pair[0], &pair[1]]);
+        }
+    }
+    for arg in cargo_args
+        .iter()
+        .filter(|arg| arg.starts_with("--manifest-path="))
+    {
+        metadata.arg(arg);
+    }
+    let output = metadata
+        .output()
+        .expect("failed to resolve device-file Cargo target");
+    if !output.status.success() {
+        eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+        std::process::exit(2);
+    }
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("invalid Cargo metadata");
+
+    metadata
 }

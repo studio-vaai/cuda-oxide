@@ -47,6 +47,12 @@ mod shared {
             y: value * MULTIPLIER,
         }
     }
+    // Shares the helper LTOIR unit but only the second kernel calls it.
+    #[device]
+    #[inline(never)]
+    pub fn only_second(value: u32) -> u32 {
+        super::second_dependency::identity(value) + 777
+    }
     #[device]
     #[inline(never)]
     pub fn unused(value: u32) -> u32 {
@@ -124,9 +130,7 @@ mod second {
         if let Some(v) = out.get_mut(i) {
             let pair = shared::pair::<5>(shared::read_scratch(value as usize));
             let biases = &[2u32, 4, 6];
-            *v = pair.x
-                + pair.y
-                + 20
+            *v = pair.x + pair.y + 20 + shared::only_second(value) - value - 777
                 + biases[value as usize % 3]
                 + shared::read_dynamic(value as usize)
                 - value
@@ -213,7 +217,10 @@ pub fn run() {
             a[i],
             i as u32 * 4 + 12 + [1u32, 3, 5][i % 3] + argument_value("--first-delta=", 0)
         );
-        assert_eq!(b[i], i as u32 * 6 + 22 + [2u32, 4, 6][i % 3]);
+        assert_eq!(
+            b[i],
+            i as u32 * 6 + 22 + [2u32, 4, 6][i % 3] + argument_value("--second-delta=", 0)
+        );
     }
     assert_eq!(host_value(), argument_value("--host-value=", 7));
     assert_eq!(closure_value(), 7);

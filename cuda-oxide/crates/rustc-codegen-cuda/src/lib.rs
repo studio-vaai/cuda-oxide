@@ -370,7 +370,8 @@ pub struct CudaCodegenBackend {
 }
 
 struct CudaOngoingCodegen {
-    host: Box<dyn Any>,
+    /// `None` for device-only builds, which emit no CPU code.
+    host: Option<Box<dyn Any>>,
     artifact_objects: Vec<PathBuf>,
     module_manifest: Option<Vec<u8>>,
 }
@@ -573,6 +574,18 @@ impl CodegenBackend for CudaCodegenBackend {
             sess.dcx()
                 .fatal("host kernel stubs cannot be used with the CUDA codegen backend");
         }
+        if device_artifacts_only(sess.opts.crate_name.as_deref().unwrap_or(""))
+            && (sess.opts.crate_types != [rustc_session::config::CrateType::StaticLib]
+                || sess.opts.output_types.should_link()
+                || sess
+                    .opts
+                    .output_types
+                    .contains_key(&rustc_session::config::OutputType::Metadata))
+        {
+            sess.dcx().fatal(
+                "device-file compilation must emit only objects as staticlib; use cargo oxide --device-only",
+            );
+        }
         // Note: Don't log here - init() is called for ALL crates including dependencies.
         // We log in codegen_crate() only when there are kernels to compile.
 
@@ -640,12 +653,41 @@ impl CodegenBackend for CudaCodegenBackend {
             });
             // Step 1: Analyze for device code
             let crate_name = tcx.crate_name(rustc_hir::def_id::LOCAL_CRATE);
-            let mono_partitions = tcx.collect_and_partition_mono_items(());
-            let cgus = mono_partitions.codegen_units;
-            let kernel_count = collector::count_kernels_in_cgus(tcx, cgus);
-            let device_fn_count = collector::count_device_fns_in_cgus(tcx, cgus);
+            let device_only = device_artifacts_only(crate_name.as_str());
+            // Native modules cover the default device backend; CUTLASS MLIR
+            // produces its own final cubin and keeps package mode.
+            let native = std::env::var("CUDA_OXIDE_INCREMENTAL_MODULES").map_or(true, |value| {
+                !matches!(value.as_str(), "0" | "false" | "off")
+            }) && matches!(device_backend, mir_importer::DeviceBackend::Native);
+            // Device-only builds walk only local non-generic kernel roots and
+            // never build the CPU monomorphization graph.
+            let mut shader_collection =
+                device_only.then(|| collector::collect_local_kernel_functions(tcx));
+            let mono_partitions = (!device_only).then(|| tcx.collect_and_partition_mono_items(()));
+            let cgus = mono_partitions
+                .as_ref()
+                .map(|partitions| partitions.codegen_units)
+                .unwrap_or(&[]);
+            let kernel_count = shader_collection
+                .as_ref()
+                .map(|collection| {
+                    collection
+                        .functions
+                        .iter()
+                        .filter(|function| function.is_kernel)
+                        .count()
+                })
+                .unwrap_or_else(|| collector::count_kernels_in_cgus(tcx, cgus));
+            let device_fn_count = if shader_collection.is_some() {
+                0
+            } else {
+                collector::count_device_fns_in_cgus(tcx, cgus)
+            };
             let unsupported_protocol_root =
                 collector::unsupported_codegen_protocol_root_in_cgus(tcx, cgus);
+            if device_only && kernel_count == 0 {
+                tcx.dcx().fatal("device-file compilation requires local non-generic kernel entries; run a full build");
+            }
             if reject_unsupported_codegen_protocol(
                 std::env::var_os(reserved_oxide_symbols::CODEGEN_FINGERPRINT_ENV).is_some(),
                 unsupported_protocol_root.is_some(),
@@ -657,6 +699,11 @@ impl CodegenBackend for CudaCodegenBackend {
             }
             let owner_selected = self.config.allows_device_codegen_for(crate_name.as_str());
             let contains_device_code = kernel_count > 0 || device_fn_count > 0;
+            if device_only && (!native || !owner_selected) {
+                tcx.dcx().fatal(
+                    "device-only compilation requires native modules and a selected device owner",
+                );
+            }
 
             // Kernel MIR is produced by this session for `--target`, so its
             // pointer width and endianness flow into device code unchanged.
@@ -724,18 +771,44 @@ impl CodegenBackend for CudaCodegenBackend {
                 );
             }
 
+            // Host queries stay on this rustc thread. Native link workers use
+            // only immutable LTOIR, so host LLVM codegen can proceed while
+            // those workers finalize device images.
+            let mut host_state = None;
+            let mut generate_host = || {
+                if device_only {
+                    eprintln!(
+                        "[device-modules] device-only files: CPU codegen omitted; rebuild host separately"
+                    );
+                    host_state = Some(None);
+                    return;
+                }
+                // Step 3: Delegate ALL host codegen to LLVM backend
+                // (No logging here - it fires for every crate including dependencies)
+                host_state = Some(Some(self.llvm_backend.codegen_crate(tcx)));
+            };
             // Step 2: If device code exists, compile via cuda-oxide
-            // Native modules cover the default device backend. CUTLASS MLIR
-            // produces its own final cubin, and Tile exports publish
-            // descriptions only package mode writes; both keep package mode.
-            let incremental_modules =
-                std::env::var("CUDA_OXIDE_INCREMENTAL_MODULES").map_or(true, |value| {
-                    !matches!(value.as_str(), "0" | "false" | "off")
-                }) && matches!(device_backend, mir_importer::DeviceBackend::Native);
-            let native_collection = (has_device_code && incremental_modules)
-                .then(|| collector::collect_device_functions(tcx, cgus, false))
-                .filter(|collection| collection.tile_exports.is_empty());
+            // Tile exports publish descriptions only package mode writes, so
+            // those crates keep package mode.
+            let mut native_collection = (has_device_code && native).then(|| {
+                shader_collection
+                    .take()
+                    .unwrap_or_else(|| collector::collect_device_functions(tcx, cgus, false))
+            });
+            if native_collection
+                .as_ref()
+                .is_some_and(|collection| !collection.tile_exports.is_empty())
+            {
+                if device_only {
+                    tcx.dcx()
+                        .fatal("device-only compilation does not support #[tile_export] crates");
+                }
+                native_collection = None;
+            }
             let native = native_collection.is_some();
+            if !has_device_code || !native {
+                generate_host();
+            }
             let _device_result = if let Some(collection) = native_collection {
                 let config = device_codegen::DeviceCodegenConfig {
                     minimum_dynamic_shared_alignment: 0,
@@ -755,7 +828,7 @@ impl CodegenBackend for CudaCodegenBackend {
                     dump_mir_dialect: self.config.dump_mir_dialect,
                     dump_llvm_dialect: self.config.dump_llvm_dialect,
                 };
-                match incremental::compile(tcx, &collection, &config) {
+                match incremental::compile(tcx, &collection, &config, &mut generate_host) {
                     Ok(path) => artifact_objects.push(path),
                     Err(error) => tcx.dcx().fatal(format!(
                         "[rustc_codegen_cuda] Incremental device compilation failed: {error}"
@@ -1011,9 +1084,8 @@ impl CodegenBackend for CudaCodegenBackend {
             } else {
                 None
             };
-            // Step 3: Delegate ALL host codegen to LLVM backend
-            // (No logging here - it fires for every crate including dependencies)
-            let host_result = self.llvm_backend.codegen_crate(tcx);
+            drop(generate_host);
+            let host_result = host_state.expect("host codegen must run before device publication");
 
             // Return the LLVM backend's result
             Box::new(CudaOngoingCodegen {
@@ -1035,13 +1107,18 @@ impl CodegenBackend for CudaCodegenBackend {
         let ongoing = *ongoing_codegen
             .downcast::<CudaOngoingCodegen>()
             .expect("rustc_codegen_cuda received unexpected ongoing codegen state");
-        let (mut compiled_modules, work_products) = self.llvm_backend.join_codegen(
-            ongoing.host,
-            sess,
-            incr_comp_session,
-            outputs,
-            crate_info,
-        );
+        let (mut compiled_modules, work_products) = if let Some(host) = ongoing.host {
+            self.llvm_backend
+                .join_codegen(host, sess, incr_comp_session, outputs, crate_info)
+        } else {
+            (
+                CompiledModules {
+                    modules: Vec::new(),
+                    allocator_module: None,
+                },
+                WorkProductMap::default(),
+            )
+        };
         for (index, object) in ongoing.artifact_objects.into_iter().enumerate() {
             compiled_modules.modules.push(CompiledModule {
                 name: format!("oxide_artifact_embed_{index}"),
@@ -1085,6 +1162,21 @@ impl CodegenBackend for CudaCodegenBackend {
         metadata: EncodedMetadata,
         outputs: &OutputFilenames,
     ) {
+        if device_artifacts_only(crate_info.local_crate_name.as_str()) {
+            let object = compiled_modules
+                .modules
+                .first()
+                .and_then(|module| module.object.as_ref())
+                .expect("device-only object missing");
+            std::fs::copy(
+                object,
+                outputs
+                    .path(rustc_session::config::OutputType::Object)
+                    .as_path(),
+            )
+            .expect("could not write device-only object");
+            return;
+        }
         self.llvm_backend
             .link(sess, compiled_modules, crate_info, metadata, outputs);
     }
@@ -1107,6 +1199,10 @@ fn write_tile_export_descriptions(
     text.push('\n');
     std::fs::write(&path, text)?;
     Ok(path)
+}
+
+fn device_artifacts_only(crate_name: &str) -> bool {
+    std::env::var("CUDA_OXIDE_DEVICE_ONLY").is_ok_and(|selected| selected == crate_name)
 }
 
 #[allow(clippy::too_many_arguments)]

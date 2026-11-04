@@ -63,8 +63,12 @@ struct Cli {
     #[arg(long, global = true, conflicts_with = "materialize_cubin")]
     incremental_modules: bool,
     /// Use the legacy package compiler instead of cached native modules.
-    #[arg(long, global = true, conflicts_with_all = ["incremental_modules"])]
+    #[arg(long, global = true, conflicts_with_all = ["incremental_modules", "device_only"])]
     no_incremental_modules: bool,
+    /// Emit native device files only, without a linkable host library.
+    /// Build host code separately; accepts `build -- --release --lib` only.
+    #[arg(long, global = true, conflicts_with = "materialize_cubin")]
+    device_only: Option<String>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -642,7 +646,7 @@ fn native_modules_requested(cli: &Cli, inherited: Option<&str>) -> bool {
     );
     if cli.no_incremental_modules || cli.materialize_cubin {
         false
-    } else if cli.incremental_modules {
+    } else if cli.incremental_modules || cli.device_only.is_some() {
         true
     } else {
         native_command && inherited.is_none_or(|value| !matches!(value, "0" | "false" | "off"))
@@ -759,11 +763,71 @@ fn fuzz_schedule_disposition(
     }
 }
 
+fn validate_object_only_cli(cli: &Cli) -> Result<(), String> {
+    let Some(name) = cli.device_only.as_ref() else {
+        return Ok(());
+    };
+    let option = "--device-only";
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        || name.as_bytes()[0].is_ascii_digit()
+    {
+        return Err(format!("{option} expects a Cargo crate name"));
+    }
+    if !matches!(&cli.command, Commands::Build { cargo_args, .. } if cargo_args.iter().any(|arg| arg == "--lib") && cargo_args.iter().any(|arg| arg == "--release"))
+    {
+        return Err(format!("{option} requires `build -- --release --lib`"));
+    }
+    Ok(())
+}
+
 fn main() {
     // Handle both invocation methods:
     // 1. Cargo subcommand: `cargo oxide run vecadd` → argv = ["cargo-oxide", "oxide", "run", "vecadd"]
     // 2. Cargo alias:      `cargo oxide run vecadd` → argv = ["target/.../cargo-oxide", "run", "vecadd"]
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|arg| {
+        std::path::Path::new(arg)
+            .file_name()
+            .is_some_and(|name| name == "rustc" || name == "rustc.exe")
+            || (std::env::var_os("CUDA_OXIDE_INTERNAL_RUSTC_WRAPPER").is_some()
+                && std::path::Path::new(arg).is_file())
+    }) {
+        let mut compiler_args = args[2..].to_vec();
+        let selected = std::env::var("CUDA_OXIDE_DEVICE_ONLY").ok();
+        let crate_name = compiler_args
+            .windows(2)
+            .find(|pair| pair[0] == "--crate-name")
+            .map(|pair| &pair[1]);
+        if selected
+            .as_ref()
+            .is_some_and(|name| crate_name == Some(name))
+        {
+            for index in 0..compiler_args.len() {
+                if compiler_args[index] == "--crate-type" {
+                    compiler_args[index + 1] = "staticlib".into();
+                }
+                if compiler_args[index].starts_with("--emit=") {
+                    compiler_args[index] = "--emit=dep-info,obj".into();
+                }
+            }
+        }
+        let mut compiler =
+            if let Some(wrapper) = std::env::var_os("CUDA_OXIDE_UPSTREAM_RUSTC_WRAPPER") {
+                let mut command = std::process::Command::new(wrapper);
+                command.arg(&args[1]);
+                command
+            } else {
+                std::process::Command::new(&args[1])
+            };
+        let status = compiler
+            .args(compiler_args)
+            .status()
+            .expect("could not execute rustc");
+        std::process::exit(status.code().unwrap_or(1));
+    }
     let effective_args = if args.get(1).map(|s| s.as_str()) == Some("oxide") {
         let mut filtered = vec![args[0].clone()];
         filtered.extend(args[2..].iter().cloned());
@@ -813,6 +877,33 @@ fn main() {
         }
         unsafe {
             std::env::set_var("CUDA_OXIDE_EMIT_NVVM_IR", "1");
+        }
+    }
+    if let Some(name) = cli.device_only.as_ref() {
+        if let Err(error) = validate_object_only_cli(&cli) {
+            Cli::command()
+                .error(ErrorKind::ArgumentConflict, error)
+                .exit();
+        }
+        unsafe {
+            std::env::set_var("CUDA_OXIDE_DEVICE_ONLY", name.replace('-', "_"));
+            std::env::set_var("CUDA_OXIDE_MODULE_FILES_ONLY", "1");
+            std::env::set_var("CUDA_OXIDE_INTERNAL_RUSTC_WRAPPER", "1");
+            if let Some(wrapper) = std::env::var_os("RUSTC_WRAPPER") {
+                if std::path::Path::new(&wrapper)
+                    != std::env::current_exe().expect("missing cargo-oxide executable")
+                {
+                    std::env::set_var("CUDA_OXIDE_UPSTREAM_RUSTC_WRAPPER", wrapper);
+                } else {
+                    std::env::remove_var("CUDA_OXIDE_UPSTREAM_RUSTC_WRAPPER");
+                }
+            } else {
+                std::env::remove_var("CUDA_OXIDE_UPSTREAM_RUSTC_WRAPPER");
+            }
+            std::env::set_var(
+                "RUSTC_WRAPPER",
+                std::env::current_exe().expect("missing cargo-oxide executable"),
+            );
         }
     }
     let materialize_cubin = cli.materialize_cubin;
@@ -2028,13 +2119,59 @@ mod native_default_tests {
             Cli::try_parse_from([
                 "cargo-oxide",
                 "--no-incremental-modules",
-                "--kernels-only",
+                "--device-only",
                 "toy",
                 "build"
             ])
             .is_err()
         );
     }
+    #[test]
+    fn device_only_requires_a_release_library_build() {
+        let build = Cli::try_parse_from([
+            "cargo-oxide",
+            "--device-only",
+            "toy",
+            "build",
+            "--",
+            "--release",
+            "--lib",
+        ])
+        .unwrap();
+        assert!(validate_object_only_cli(&build).is_ok());
+        assert!(native_modules_requested(&build, Some("0")));
+        for argv in [
+            vec!["cargo-oxide", "--device-only", "toy", "run"],
+            vec!["cargo-oxide", "--device-only", "toy", "test"],
+            vec![
+                "cargo-oxide",
+                "--device-only",
+                "toy",
+                "build",
+                "--",
+                "--release",
+            ],
+            vec![
+                "cargo-oxide",
+                "--device-only",
+                "1bad",
+                "build",
+                "--",
+                "--release",
+                "--lib",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(argv).unwrap();
+            assert!(validate_object_only_cli(&cli).is_err());
+        }
+        for extra in ["--no-incremental-modules", "--materialize-cubin"] {
+            assert!(
+                Cli::try_parse_from(["cargo-oxide", "--device-only", "toy", extra, "build"])
+                    .is_err()
+            );
+        }
+    }
+
     #[test]
     fn inspection_and_materialization_retain_their_requested_formats() {
         let inspect = Cli::try_parse_from(["cargo-oxide", "inspect", "toy"]).unwrap();

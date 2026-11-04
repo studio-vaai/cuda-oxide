@@ -257,8 +257,7 @@ fn input_fingerprint<'tcx>(
             key.starts_with("CUDA_OXIDE_")
                 && !matches!(
                     key.as_ref(),
-                    "CUDA_OXIDE_KERNELS_ONLY"
-                        | "CUDA_OXIDE_INTERNAL_RUSTC_WRAPPER"
+                    "CUDA_OXIDE_INTERNAL_RUSTC_WRAPPER"
                         | "CUDA_OXIDE_UPSTREAM_RUSTC_WRAPPER"
                         | "CUDA_OXIDE_HOST_KEY_TRACE"
                 )
@@ -297,7 +296,9 @@ pub(crate) fn compile<'tcx>(
     tcx: TyCtxt<'tcx>,
     collection: &CollectionResult<'tcx>,
     config: &DeviceCodegenConfig,
+    generate_host: impl FnOnce(),
 ) -> Result<PathBuf, Error> {
+    generate_host();
     let started = Instant::now();
     if !collection
         .functions
