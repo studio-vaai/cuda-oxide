@@ -103,17 +103,25 @@ impl Drop for Allocation {
             _ => None,
         };
         // A free enqueued on the allocation stream from the worker would join
-        // whatever graph that stream is capturing by then. Fence the stream's
-        // work now instead and free on a private stream once the fence passes.
-        if let Some(fence) = allocation_stream.as_deref().and_then(fence) {
-            crate::completion::retain_until_event(
-                FencedFree {
-                    ptr,
-                    context: context.clone(),
-                },
-                fence,
-            );
-            return;
+        // whatever graph that stream is capturing by then, so it goes on a
+        // private stream once the allocation and every access are complete.
+        if let Some(stream) = allocation_stream.as_deref() {
+            let free = FencedFree {
+                ptr,
+                context: context.clone(),
+            };
+            // On the worker, the last owner was a lease released after its
+            // completion event, which followed every access and the allocation.
+            if crate::completion::on_worker() {
+                drop(free);
+                return;
+            }
+            // Elsewhere, fence the work queued so far on the allocation stream.
+            if let Some(fence) = fence(stream) {
+                crate::completion::retain_until_event(free, fence);
+                return;
+            }
+            std::mem::forget(free);
         }
         // All safe users hold an independent access lease until completion.
         // Driver teardown is retired on a worker, never on the dropping thread.
@@ -158,8 +166,8 @@ fn fence(stream: &Stream) -> Option<Arc<crate::Event>> {
     event.ok().map(Arc::new)
 }
 
-/// A stream-ordered free whose fence has passed: the allocation and every access to it are
-/// complete, so it can be freed on any stream of its context.
+/// A stream-ordered free whose allocation and every access are complete, so it can be freed on
+/// any stream of its context. Dropping it frees.
 struct FencedFree {
     ptr: CUdeviceptr,
     context: Arc<Context>,

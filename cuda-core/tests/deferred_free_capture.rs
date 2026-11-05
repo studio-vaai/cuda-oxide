@@ -6,12 +6,16 @@
 //! A dropped stream-ordered buffer is freed off its allocation stream.
 //!
 //! Frees run on the completion worker after the drop. Enqueued on the
-//! allocation stream, a free that runs while that stream captures becomes a
-//! memory node of the caller's graph: every replay would free the memory again,
-//! and graph edits such as removing dependencies are refused.
+//! allocation stream, a free that runs while that stream captures enters the
+//! caller's capture: it becomes a memory node of the caller's graph, which then
+//! frees the memory on every replay and refuses edits such as removing
+//! dependencies, or it fails and leaks the memory.
 
-use cuda_core::{sys, CudaContext, DeviceBuffer};
+use cuda_core::{sys, CudaContext, CudaStream, DeviceBuffer};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+const BYTES: usize = 1 << 20;
 
 /// Bytes the device's current memory pool hands out.
 fn pool_used(ordinal: i32) -> u64 {
@@ -31,40 +35,10 @@ fn pool_used(ordinal: i32) -> u64 {
     used
 }
 
-/// Memory-free nodes in `graph`.
-fn free_nodes(graph: sys::CUgraph) -> usize {
-    let mut count = 0;
-    let status = unsafe { sys::cuGraphGetNodes(graph, std::ptr::null_mut(), &mut count) };
-    assert_eq!(status, 0, "cuGraphGetNodes(count)");
-    if count == 0 {
-        return 0;
-    }
-    let mut nodes = vec![std::ptr::null_mut(); count];
-    let status = unsafe { sys::cuGraphGetNodes(graph, nodes.as_mut_ptr(), &mut count) };
-    assert_eq!(status, 0, "cuGraphGetNodes");
-    nodes
-        .into_iter()
-        .filter(|&node| {
-            let mut ty = 0;
-            assert_eq!(unsafe { sys::cuGraphNodeGetType(node, &mut ty) }, 0);
-            ty == sys::CUgraphNodeType_enum_CU_GRAPH_NODE_TYPE_MEM_FREE
-        })
-        .count()
-}
-
-#[test]
-fn deferred_stream_ordered_free_stays_out_of_a_later_capture() {
-    let ctx = CudaContext::new(0).expect("failed to create CUDA context");
-    let stream = ctx.new_stream().expect("failed to create stream");
-    const BYTES: usize = 1 << 20;
-    let buffer = unsafe { DeviceBuffer::<u8>::uninitialized_async(&stream, BYTES) }
-        .expect("stream-ordered allocation");
-    stream.synchronize().expect("allocation completes");
-    let used = pool_used(0);
-    assert!(used >= BYTES as u64, "the allocation comes from the pool");
-    drop(buffer);
-
-    ctx.bind_to_thread().expect("bind context");
+/// Captures `stream` for `duration` while the completion worker runs, and
+/// returns how many memory-free nodes the captured graph holds.
+fn free_nodes_captured_during(stream: &CudaStream, duration: Duration) -> usize {
+    stream.context().bind_to_thread().expect("bind context");
     let status = unsafe {
         sys::cuStreamBeginCapture_v2(
             stream.cu_stream(),
@@ -72,17 +46,32 @@ fn deferred_stream_ordered_free_stays_out_of_a_later_capture() {
         )
     };
     assert_eq!(status, 0, "cuStreamBeginCapture");
-    // The completion worker polls every millisecond; give it many turns while
-    // the allocation stream captures.
-    std::thread::sleep(Duration::from_millis(100));
+    std::thread::sleep(duration);
     let mut graph = std::ptr::null_mut();
     let status = unsafe { sys::cuStreamEndCapture(stream.cu_stream(), &mut graph) };
     assert_eq!(status, 0, "cuStreamEndCapture");
-    let captured = free_nodes(graph);
+    let mut count = 0;
+    let status = unsafe { sys::cuGraphGetNodes(graph, std::ptr::null_mut(), &mut count) };
+    assert_eq!(status, 0, "cuGraphGetNodes(count)");
+    let mut nodes = vec![std::ptr::null_mut(); count];
+    if count != 0 {
+        let status = unsafe { sys::cuGraphGetNodes(graph, nodes.as_mut_ptr(), &mut count) };
+        assert_eq!(status, 0, "cuGraphGetNodes");
+    }
+    let frees = nodes
+        .into_iter()
+        .filter(|&node| {
+            let mut ty = 0;
+            assert_eq!(unsafe { sys::cuGraphNodeGetType(node, &mut ty) }, 0);
+            ty == sys::CUgraphNodeType_enum_CU_GRAPH_NODE_TYPE_MEM_FREE
+        })
+        .count();
     assert_eq!(unsafe { sys::cuGraphDestroy(graph) }, 0);
-    assert_eq!(captured, 0, "the deferred free joined the capture");
+    frees
+}
 
-    // The memory still returns to the pool, once the private stream runs the free.
+/// Waits until the pool hands out `BYTES` less than `used`.
+fn wait_for_release(used: u64) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while pool_used(0) + BYTES as u64 > used {
         assert!(
@@ -91,4 +80,42 @@ fn deferred_stream_ordered_free_stays_out_of_a_later_capture() {
         );
         std::thread::sleep(Duration::from_millis(1));
     }
+}
+
+fn allocated(stream: &Arc<CudaStream>) -> (DeviceBuffer<u8>, u64) {
+    let buffer = unsafe { DeviceBuffer::<u8>::uninitialized_async(stream, BYTES) }
+        .expect("stream-ordered allocation");
+    stream.synchronize().expect("allocation completes");
+    let used = pool_used(0);
+    assert!(used >= BYTES as u64, "the allocation comes from the pool");
+    (buffer, used)
+}
+
+#[test]
+fn dropped_stream_ordered_buffer_stays_out_of_a_later_capture() {
+    let ctx = CudaContext::new(0).expect("failed to create CUDA context");
+    let stream = ctx.new_stream().expect("failed to create stream");
+    let (buffer, used) = allocated(&stream);
+    drop(buffer);
+    // The completion worker polls every millisecond; give it many turns while
+    // the allocation stream captures.
+    let frees = free_nodes_captured_during(&stream, Duration::from_millis(100));
+    assert_eq!(frees, 0, "the deferred free joined the capture");
+    wait_for_release(used);
+}
+
+#[test]
+fn buffer_released_by_the_worker_stays_out_of_a_capture() {
+    let ctx = CudaContext::new(0).expect("failed to create CUDA context");
+    let stream = ctx.new_stream().expect("failed to create stream");
+    let (buffer, used) = allocated(&stream);
+    // Hold the stream busy so the completion lease that drop_async retains
+    // only completes, and the worker only drops the allocation, mid-capture.
+    stream
+        .launch_host_function(|| std::thread::sleep(Duration::from_millis(200)))
+        .expect("enqueue host callback");
+    unsafe { buffer.drop_async(&stream) }.expect("drop_async");
+    let frees = free_nodes_captured_during(&stream, Duration::from_millis(400));
+    assert_eq!(frees, 0, "the worker's free joined the capture");
+    wait_for_release(used);
 }

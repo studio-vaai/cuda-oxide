@@ -15,6 +15,15 @@ struct Pending {
     cleanup: Cleanup,
 }
 
+std::thread_local! {
+    static ON_WORKER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the calling thread is the completion worker, which runs every deferred cleanup.
+pub(crate) fn on_worker() -> bool {
+    ON_WORKER.with(std::cell::Cell::get)
+}
+
 fn enqueue(pending: Pending) {
     static QUEUE: OnceLock<Option<mpsc::Sender<Pending>>> = OnceLock::new();
     let queue = QUEUE.get_or_init(|| {
@@ -22,6 +31,7 @@ fn enqueue(pending: Pending) {
         std::thread::Builder::new()
             .name("cuda-resource-retirement".into())
             .spawn(move || {
+                ON_WORKER.with(|worker| worker.set(true));
                 let mut pending = Vec::<Pending>::new();
                 loop {
                     match receiver.recv_timeout(Duration::from_millis(1)) {
