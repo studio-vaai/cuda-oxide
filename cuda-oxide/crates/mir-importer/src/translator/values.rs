@@ -507,10 +507,18 @@ impl SlotAddrSpaceMap {
     /// local's state. Unclassified pointer writes contribute the pointer's
     /// declared lowering; only temporarily unresolved copy chains are skipped.
     ///
+    /// Copies are optimistic at first: a copy from a still-`Uninit` source is
+    /// skipped until the source classifies. Once that settles, a second round
+    /// treats every remaining such copy as unclassified. Its source never
+    /// received a classified write (a pointer cast from a slice reference,
+    /// say, which has no thin-pointer address space), but the copy is still a
+    /// reachable write. Skipping it would let the slot's other writes narrow
+    /// it to a concrete address space it does not always hold.
+    ///
     /// Convergence: each local can transition at most
     /// `Uninit → Known(n) → Generic` (two steps). Propagation chains
     /// `_a = _b = … = _z` are bounded by `num_locals`, so `num_locals + 2`
-    /// iterations are guaranteed sufficient.
+    /// iterations per round are guaranteed sufficient.
     pub fn analyze(
         body: &mir::Body,
         reachable: &std::collections::BTreeSet<usize>,
@@ -536,52 +544,54 @@ impl SlotAddrSpaceMap {
         }
 
         let cap = num_locals.saturating_add(2).max(2);
-        for _ in 0..cap {
-            let mut changed = false;
+        for settle_pending in [false, true] {
+            for _ in 0..cap {
+                let mut changed = false;
 
-            for &block_idx in reachable {
-                let block = &body.blocks[block_idx];
-                for stmt in &block.statements {
-                    let mir::StatementKind::Assign(place, rvalue) = &stmt.kind else {
+                for &block_idx in reachable {
+                    let block = &body.blocks[block_idx];
+                    for stmt in &block.statements {
+                        let mir::StatementKind::Assign(place, rvalue) = &stmt.kind else {
+                            continue;
+                        };
+                        if !place.projection.is_empty() {
+                            continue;
+                        }
+                        let class = settle(classify_rvalue(rvalue, &classes), settle_pending);
+                        let local_idx: usize = place.local;
+                        let declared = declared_addr_spaces.get(local_idx).copied().flatten();
+                        if let Some(observation) = resolve(class, declared)
+                            && merge_into(&mut classes, place.local, observation)
+                        {
+                            changed = true;
+                        }
+                    }
+
+                    let mir::TerminatorKind::Call {
+                        func,
+                        args,
+                        destination,
+                        ..
+                    } = &block.terminator.kind
+                    else {
                         continue;
                     };
-                    if !place.projection.is_empty() {
+                    if !destination.projection.is_empty() {
                         continue;
                     }
-                    let class = classify_rvalue(rvalue, &classes);
-                    let local_idx: usize = place.local;
+                    let class = settle(classify_call(func, args, &classes), settle_pending);
+                    let local_idx: usize = destination.local;
                     let declared = declared_addr_spaces.get(local_idx).copied().flatten();
                     if let Some(observation) = resolve(class, declared)
-                        && merge_into(&mut classes, place.local, observation)
+                        && merge_into(&mut classes, destination.local, observation)
                     {
                         changed = true;
                     }
                 }
 
-                let mir::TerminatorKind::Call {
-                    func,
-                    args,
-                    destination,
-                    ..
-                } = &block.terminator.kind
-                else {
-                    continue;
-                };
-                if !destination.projection.is_empty() {
-                    continue;
+                if !changed {
+                    break;
                 }
-                let class = classify_call(func, args, &classes);
-                let local_idx: usize = destination.local;
-                let declared = declared_addr_spaces.get(local_idx).copied().flatten();
-                if let Some(observation) = resolve(class, declared)
-                    && merge_into(&mut classes, destination.local, observation)
-                {
-                    changed = true;
-                }
-            }
-
-            if !changed {
-                break;
             }
         }
 
@@ -606,6 +616,15 @@ impl SlotAddrSpaceMap {
             SlotAddrSpace::Known(n) => n,
             SlotAddrSpace::Generic => address_space::GENERIC,
         }
+    }
+}
+
+/// In the settling round, a copy whose source never classified counts as an
+/// unclassified write (see [`SlotAddrSpaceMap::analyze`]).
+fn settle(class: WriteClass, settle_pending: bool) -> WriteClass {
+    match class {
+        WriteClass::Pending if settle_pending => WriteClass::Unclassified,
+        class => class,
     }
 }
 
@@ -1142,6 +1161,19 @@ mod tests {
         let unknown = resolve(WriteClass::Unclassified, Some(address_space::GENERIC)).unwrap();
 
         assert_eq!(shared.merge(unknown), SlotAddrSpace::Generic);
+    }
+
+    #[test]
+    fn settled_unclassified_copy_prevents_concrete_narrowing() {
+        let source = mir::Local::from(0usize);
+        let copy = propagate_from_local(source, &[SlotAddrSpace::Uninit]);
+        assert!(matches!(copy, WriteClass::Pending));
+        assert!(matches!(settle(copy, false), WriteClass::Pending));
+        assert!(resolve(settle(copy, false), Some(address_space::GENERIC)).is_none());
+
+        let shared = SlotAddrSpace::Known(address_space::SHARED);
+        let settled = resolve(settle(copy, true), Some(address_space::GENERIC)).unwrap();
+        assert_eq!(shared.merge(settled), SlotAddrSpace::Generic);
     }
 
     #[test]

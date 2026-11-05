@@ -1,0 +1,23 @@
+[package]
+name = "shared_slot_merge"
+version = "0.1.0"
+edition = "2024"
+authors = ["NVIDIA CORPORATION"]
+license = "Apache-2.0"
+
+# Mark as standalone crate (not part of parent workspace)
+[workspace]
+
+# Regression: a pointer slot written from shared memory on one path and from a
+# slice-derived pointer on another must stay generic.
+# Build with:
+#   cargo oxide run shared_slot_merge
+
+[dependencies]
+# Device-side intrinsics (thread indexing, barriers, DynamicSharedArray, etc.)
+cuda-device = { path = "../../../cuda-device" }
+
+# Host-side utilities (CudaKernel trait, etc.)
+cuda-host = { path = "../../../cuda-host" }
+
+cuda-core = { path = "../../../../../cuda-core" }
