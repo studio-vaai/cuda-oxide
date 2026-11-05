@@ -5,7 +5,7 @@
 
 //! Shared allocation ownership, byte views, and in-flight access tracking.
 
-use crate::{Context, DriverError, Stream};
+use crate::{Context, DriverError, IntoResult, Stream};
 use cuda_bindings::CUdeviceptr;
 use std::sync::{Arc, Mutex};
 
@@ -102,6 +102,19 @@ impl Drop for Allocation {
             Owner::StreamOrdered(s) => Some(s.clone()),
             _ => None,
         };
+        // A free enqueued on the allocation stream from the worker would join
+        // whatever graph that stream is capturing by then. Fence the stream's
+        // work now instead and free on a private stream once the fence passes.
+        if let Some(fence) = allocation_stream.as_deref().and_then(fence) {
+            crate::completion::retain_until_event(
+                FencedFree {
+                    ptr,
+                    context: context.clone(),
+                },
+                fence,
+            );
+            return;
+        }
         // All safe users hold an independent access lease until completion.
         // Driver teardown is retired on a worker, never on the dropping thread.
         crate::completion::defer(move || {
@@ -123,6 +136,45 @@ impl Drop for Allocation {
                 std::mem::forget((context, allocation_stream));
             }
         });
+    }
+}
+
+/// An event that completes after all work queued so far on `stream`, or `None` while the stream
+/// captures. The calling thread keeps its current context.
+fn fence(stream: &Stream) -> Option<Arc<crate::Event>> {
+    // SAFETY: the allocation keeps its stream, and so the handle, alive.
+    let status = unsafe { crate::cudarc_shim::stream::is_capturing(stream.cu_stream()) }.ok()?;
+    if status != cuda_bindings::CUstreamCaptureStatus_enum_CU_STREAM_CAPTURE_STATUS_NONE {
+        return None;
+    }
+    let mut current = std::ptr::null_mut();
+    // SAFETY: an out-pointer for the calling thread's current context.
+    unsafe { cuda_bindings::cuCtxGetCurrent(&mut current) }
+        .result()
+        .ok()?;
+    let event = stream.record_event(None);
+    // SAFETY: restores the context that was current, possibly none.
+    let _ = unsafe { cuda_bindings::cuCtxSetCurrent(current) };
+    event.ok().map(Arc::new)
+}
+
+/// A stream-ordered free whose fence has passed: the allocation and every access to it are
+/// complete, so it can be freed on any stream of its context.
+struct FencedFree {
+    ptr: CUdeviceptr,
+    context: Arc<Context>,
+}
+
+impl Drop for FencedFree {
+    fn drop(&mut self) {
+        // A pooled private stream is never one a caller captures.
+        let result = self.context.new_stream().and_then(|stream| {
+            // SAFETY: the fence proved the allocation complete and no longer accessed.
+            unsafe { crate::memory::free_async(self.ptr, stream.cu_stream()) }
+        });
+        if let Err(error) = result {
+            self.context.record_err(Err::<(), _>(error));
+        }
     }
 }
 
