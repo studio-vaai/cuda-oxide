@@ -6,6 +6,8 @@ error[E0080]: evaluation panicked: cluster dimensions must be greater than zero
   |
  ::: $WORKSPACE/crates/cuda-device/src/cluster.rs
   |
+  |   pub const fn __cluster_config<const X: u32, const Y: u32, const Z: u32>() {
+  |       const {
   | /         assert!(
   | |             X > 0 && Y > 0 && Z > 0,
   | |             "cluster dimensions must be greater than zero",

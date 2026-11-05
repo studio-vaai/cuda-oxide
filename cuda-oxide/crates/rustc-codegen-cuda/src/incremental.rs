@@ -11,6 +11,7 @@ use cuda_artifact_finalizer::{
 use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_data_structures::stable_hash::{StableHash, StableHasher};
 use rustc_hir::def::DefKind;
+use rustc_middle::ty::consts::ConstExt;
 use rustc_middle::ty::{EarlyBinder, TyCtxt, TyKind, TypingEnv};
 use rustc_span::def_id::{DefId, LOCAL_CRATE};
 use serde_json::json;

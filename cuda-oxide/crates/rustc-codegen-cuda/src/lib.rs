@@ -321,6 +321,7 @@ extern crate rustc_metadata;
 extern crate rustc_middle;
 extern crate rustc_session;
 extern crate rustc_span;
+extern crate rustc_structures;
 extern crate rustc_target;
 
 // rustc_public (stable MIR) and its bridge - for calling mir-importer
@@ -344,7 +345,7 @@ use rustc_middle::dep_graph::WorkProductMap;
 use rustc_middle::ty::TyCtxt;
 use rustc_middle::ty::print::with_no_trimmed_paths;
 use rustc_session::config::OutputFilenames;
-use rustc_session::{IncrCompSession, Session};
+use rustc_session::{CodegenBackendInit, EarlySession, IncrCompSession, Session};
 use std::any::Any;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -567,7 +568,7 @@ impl CodegenBackend for CudaCodegenBackend {
         "cuda"
     }
 
-    fn init(&self, sess: &Session) {
+    fn init(&mut self, sess: &EarlySession) -> CodegenBackendInit {
         let host_stubs = std::env::var(reserved_oxide_symbols::HOST_KERNEL_STUBS_ENV).ok();
         if host_stubs.as_deref().is_some_and(|setting| {
             reserved_oxide_symbols::host_kernel_stubs(Some(setting), true) == Ok(true)
@@ -576,7 +577,7 @@ impl CodegenBackend for CudaCodegenBackend {
                 .fatal("host kernel stubs cannot be used with the CUDA codegen backend");
         }
         if device_artifacts_only(sess.opts.crate_name.as_deref().unwrap_or(""))
-            && (sess.opts.crate_types != [rustc_session::config::CrateType::StaticLib]
+            && (sess.opts.crate_types != [rustc_structures::CrateType::StaticLib]
                 || sess.opts.output_types.should_link()
                 || sess
                     .opts
@@ -591,7 +592,7 @@ impl CodegenBackend for CudaCodegenBackend {
         // We log in codegen_crate() only when there are kernels to compile.
 
         // Initialize the underlying LLVM backend
-        self.llvm_backend.init(sess);
+        self.llvm_backend.init(sess)
     }
 
     fn print_version(&self) {
@@ -606,7 +607,7 @@ impl CodegenBackend for CudaCodegenBackend {
         self.llvm_backend.target_cpu(sess)
     }
 
-    fn target_config(&self, sess: &Session) -> rustc_codegen_ssa::TargetConfig {
+    fn target_config(&self, sess: &EarlySession) -> rustc_codegen_ssa::TargetConfig {
         self.llvm_backend.target_config(sess)
     }
 
@@ -1130,12 +1131,11 @@ impl CodegenBackend for CudaCodegenBackend {
                 assembly: None,
                 llvm_ir: None,
                 global_asm_object: None,
-                links_from_incr_cache: Vec::new(),
             });
         }
         if crate_info
             .crate_types
-            .contains(&rustc_session::config::CrateType::Rlib)
+            .contains(&rustc_structures::CrateType::Rlib)
         {
             let snapshot = serde_json::json!({
                 "version": 1,
